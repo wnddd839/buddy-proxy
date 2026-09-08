@@ -69,6 +69,7 @@ func TestShouldRetryNextAccount(t *testing.T) {
 		{name: "429", err: "CodeBuddy chat completion failed with 429: too many requests", want: true},
 		{name: "503", err: "CodeBuddy chat completion failed with 503: service unavailable", want: true},
 		{name: "rate limit text", err: "upstream rate limit exceeded", want: true},
+		{name: "quota exhausted", err: "CodeBuddy chat completion failed: quota exhausted", want: true},
 		{name: "11140 no retry", err: "request illegal 11140", want: false},
 		{name: "11128 no retry", err: "unapproved channel 11128", want: false},
 		{name: "11101 no retry", err: "tool_choice unmarshal 11101", want: false},
@@ -134,6 +135,76 @@ func TestPoolSelectRoundRobin(t *testing.T) {
 	}
 	if s3.Account.ID == s1.Account.ID {
 		t.Fatalf("exclude should skip %s", s1.Account.ID)
+	}
+}
+
+func TestCompleteRetryLimitScalesWithPool(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/accounts.json"
+	pool := accounts.NewPool(path)
+	t.Cleanup(func() { _ = pool.Close() })
+	for i := 0; i < 12; i++ {
+		_, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+			Label:       "a" + string(rune('a'+i)),
+			Site:        "global",
+			BearerToken: "token-" + string(rune('a'+i)),
+			Enabled:     true,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := New(config.Config{Site: "global", AccountsPath: path}, slog.Default())
+	if got := svc.completeRetryLimit(nil); got != 12 {
+		t.Fatalf("completeRetryLimit=%d want 12 for 12-account pool", got)
+	}
+	for i := 12; i < 20; i++ {
+		_, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+			Label:       "a" + string(rune('a'+i)),
+			Site:        "global",
+			BearerToken: "token-" + string(rune('a'+i)),
+			Enabled:     true,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := svc.completeRetryLimit(nil); got != defaultMaxAccountRetries {
+		t.Fatalf("completeRetryLimit=%d want %d for 20-account pool", got, defaultMaxAccountRetries)
+	}
+}
+
+func TestCompleteRetryLimitRespectsExcludeIDs(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/accounts.json"
+	svc := New(config.Config{Site: "global", AccountsPath: path}, slog.Default())
+	t.Cleanup(func() { _ = svc.Close() })
+	for i := 0; i < 5; i++ {
+		_, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+			Label:       "a" + string(rune('a'+i)),
+			Site:        "global",
+			BearerToken: "token-" + string(rune('a'+i)),
+			Enabled:     true,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := svc.Pool.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exclude := []string{store.Accounts[0].ID, store.Accounts[1].ID, store.Accounts[2].ID, store.Accounts[3].ID}
+	if got := svc.completeRetryLimit(exclude); got != 1 {
+		t.Fatalf("completeRetryLimit=%d want 1 with 4 excluded of 5", got)
+	}
+}
+
+func TestResolveFailureCooldownSkipsProbeOn429(t *testing.T) {
+	svc := &Service{}
+	got := svc.resolveFailureCooldown(context.Background(), accounts.Account{}, errors.New("429 too many requests"))
+	if got != 2*time.Minute {
+		t.Fatalf("resolveFailureCooldown=%s want 2m without probe", got)
 	}
 }
 

@@ -34,17 +34,18 @@ type Credits struct {
 }
 
 type Package struct {
-	PackageCode    string   `json:"packageCode"`
-	PackageName    string   `json:"packageName"`
-	ResourceID     string   `json:"resourceId"`
-	Status         any      `json:"status"`
-	CapacityType   int      `json:"capacityType"`
-	Unit           string   `json:"unit"`
-	Remaining      *float64 `json:"remaining"`
-	Total          *float64 `json:"total"`
-	Used           *float64 `json:"used"`
-	CycleStartTime string   `json:"cycleStartTime,omitempty"`
-	CycleEndTime   string   `json:"cycleEndTime,omitempty"`
+	PackageCode          string   `json:"packageCode"`
+	PackageName          string   `json:"packageName"`
+	ResourceID           string   `json:"resourceId"`
+	Status               any      `json:"status"`
+	CapacityType         int      `json:"capacityType"`
+	Unit                 string   `json:"unit"`
+	Remaining            *float64 `json:"remaining"`
+	Total                *float64 `json:"total"`
+	Used                 *float64 `json:"used"`
+	CycleStartTime       string   `json:"cycleStartTime,omitempty"`
+	CycleEndTime         string   `json:"cycleEndTime,omitempty"`
+	SlicePeriodEndTime   string   `json:"slicePeriodEndTime,omitempty"`
 }
 
 type Notify struct {
@@ -228,12 +229,22 @@ func summarizeResourceAccounts(items []any) Credits {
 		}
 		capacityType := int(asNumberOr(item["CapacityType"], item["capacityType"], 0))
 		var left, size, usedAmount *float64
+		slicePeriodEnd := ""
 		if capacityType == 4 {
 			if details, ok := item["SlicePeriodUsageDetails"].([]any); ok && len(details) > 0 {
 				if slice, ok := details[0].(map[string]any); ok {
 					left = toFinitePtr(firstAny(slice, "SlicePeriodCapacityRemainPrecise", "SlicePeriodCapacityRemain"))
 					size = toFinitePtr(firstAny(slice, "SlicePeriodCapacitySizePrecise", "SlicePeriodCapacitySize"))
 					usedAmount = toFinitePtr(firstAny(slice, "SlicePeriodCapacityUsedPrecise", "SlicePeriodCapacityUsed"))
+					slicePeriodEnd = strings.TrimSpace(fmt.Sprint(firstAny(
+						slice,
+						"SlicePeriodEndTime", "slicePeriodEndTime",
+						"PeriodEndTime", "periodEndTime",
+						"EndTime", "endTime",
+					)))
+					if slicePeriodEnd == "<nil>" {
+						slicePeriodEnd = ""
+					}
 				}
 			}
 		}
@@ -266,8 +277,9 @@ func summarizeResourceAccounts(items []any) Credits {
 			Remaining:      left,
 			Total:          size,
 			Used:           usedAmount,
-			CycleStartTime: strings.TrimSpace(fmt.Sprint(firstAny(item, "CycleStartTime", "cycleStartTime"))),
-			CycleEndTime:   strings.TrimSpace(fmt.Sprint(firstAny(item, "CycleEndTime", "cycleEndTime"))),
+			CycleStartTime:     strings.TrimSpace(fmt.Sprint(firstAny(item, "CycleStartTime", "cycleStartTime"))),
+			CycleEndTime:       strings.TrimSpace(fmt.Sprint(firstAny(item, "CycleEndTime", "cycleEndTime"))),
+			SlicePeriodEndTime: slicePeriodEnd,
 		})
 	}
 

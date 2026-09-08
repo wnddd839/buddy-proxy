@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
+	"github.com/wnddd839/codebuddy-proxy/internal/billing"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
@@ -24,8 +25,10 @@ import (
 
 const (
 	modelsCacheTTL = 60 * time.Second
-	// maxCompleteRetryDepth 限制换号 / OAuth 刷新递归，避免账号规模变大后指数重试。
+	// maxCompleteRetryDepth 为无号池信息时的兜底重试上限。
 	maxCompleteRetryDepth = 3
+	// defaultMaxAccountRetries 大池场景下单请求最多尝试的账号数。
+	defaultMaxAccountRetries = 16
 )
 
 var (
@@ -253,8 +256,9 @@ type CompleteResult struct {
 }
 
 func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (CompleteResult, error) {
-	if opts.RetryDepth >= maxCompleteRetryDepth {
-		return CompleteResult{}, fmt.Errorf("CodeBuddy 请求重试深度超限（max=%d）", maxCompleteRetryDepth)
+	retryLimit := s.completeRetryLimit(opts.ExcludeIDs)
+	if opts.RetryDepth >= retryLimit {
+		return CompleteResult{}, fmt.Errorf("CodeBuddy 请求重试深度超限（max=%d）", retryLimit)
 	}
 	// 当前号池区域（管理台一键切换）限制可选账号；具体 upstream 仍由账号 site 决定。
 	selection, err := s.Pool.Select(accounts.SelectOptions{
@@ -282,7 +286,8 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			return CompleteResult{}, err
 		}
 		if s.shouldRetryNextAccount(err, selection, opts) {
-			_ = s.Pool.MarkResult(selection, false, err.Error(), failureCooldown(err))
+			cooldown := s.resolveFailureCooldown(ctx, account, err)
+			_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
 			s.Log.Warn("retrying codebuddy request with next account", "accountId", account.ID, "error", err.Error())
 			next := append(append([]string{}, opts.ExcludeIDs...), account.ID)
 			opts.ExcludeIDs = next
@@ -307,7 +312,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				return s.CompleteFromPool(ctx, opts)
 			}
 		}
-		_ = s.Pool.MarkResult(selection, false, err.Error(), failureCooldown(err))
+		_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
 		return CompleteResult{}, err
 	}
 	_ = s.Pool.MarkResult(selection, true, "", 0)
@@ -349,6 +354,11 @@ func (s *Service) refreshSelected(ctx context.Context, selection accounts.Select
 	updated.LastUsedAt = account.LastUsedAt
 	updated.LastSelectedAt = account.LastSelectedAt
 	updated.CreatedAt = account.CreatedAt
+	updated.CooldownUntil = account.CooldownUntil
+	updated.QuotaRemaining = account.QuotaRemaining
+	updated.QuotaUnlimited = account.QuotaUnlimited
+	updated.QuotaResetAt = account.QuotaResetAt
+	updated.QuotaCheckedAt = account.QuotaCheckedAt
 	saved, _, err := s.Pool.ReplaceAccount(updated)
 	if err != nil {
 		return selection, err
@@ -395,6 +405,9 @@ func (s *Service) shouldRetryNextAccount(err error, selection accounts.Selection
 	if strings.Contains(msg, "11140") || strings.Contains(msg, "request illegal") {
 		return false
 	}
+	if billing.IsQuotaExhaustedError(err) {
+		return true
+	}
 	return reRetryNextAccount.MatchString(err.Error())
 }
 
@@ -405,13 +418,93 @@ func failureCooldown(err error) time.Duration {
 		strings.Contains(msg, "11128"), strings.Contains(msg, "unapproved channel"),
 		strings.Contains(msg, "11101"), strings.Contains(msg, "11102"):
 		return 5 * time.Minute
-	case strings.Contains(msg, "429"), strings.Contains(msg, "rate limit"), strings.Contains(msg, "too many requests"):
-		return 2 * time.Minute
 	case strings.Contains(msg, "502"), strings.Contains(msg, "503"), strings.Contains(msg, "504"):
 		return 30 * time.Second
+	case strings.Contains(msg, "429"), strings.Contains(msg, "rate limit"), strings.Contains(msg, "too many requests"):
+		return 2 * time.Minute
 	default:
 		return 0
 	}
+}
+
+func (s *Service) completeRetryLimit(excludeIDs []string) int {
+	store, err := s.Pool.Read()
+	if err != nil {
+		return maxCompleteRetryDepth
+	}
+	site := s.ActivePoolSite()
+	exclude := map[string]struct{}{}
+	for _, id := range excludeIDs {
+		exclude[id] = struct{}{}
+	}
+	active := 0
+	for _, account := range store.Accounts {
+		if !account.Enabled || !accounts.HasCredentials(account) {
+			continue
+		}
+		if site != "" && config.NormalizeSite(account.Site) != site {
+			continue
+		}
+		if _, skip := exclude[account.ID]; skip {
+			continue
+		}
+		active++
+	}
+	limit := active
+	if limit > defaultMaxAccountRetries {
+		limit = defaultMaxAccountRetries
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	return limit
+}
+
+func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.Account, err error) time.Duration {
+	base := failureCooldown(err)
+	if s == nil || s.Pool == nil || s.Provider == nil {
+		return base
+	}
+	if !billing.IsQuotaExhaustedError(err) {
+		return base
+	}
+	usage, probeErr := billing.FetchAccountUsage(ctx, s.Provider, account, s.Config())
+	if probeErr != nil {
+		s.Log.Debug("quota probe skipped after upstream failure", "accountId", account.ID, "error", probeErr.Error())
+		return base
+	}
+	now := time.Now()
+	state := billing.QuotaStateFromUsage(usage, now)
+	if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
+		s.Log.Warn("quota state apply failed after probe", "accountId", account.ID, "error", applyErr.Error())
+	}
+	if quotaCooldown := state.CooldownDuration(now); quotaCooldown > base {
+		s.Log.Info("account quota cooldown aligned with upstream reset",
+			"accountId", account.ID,
+			"resetAt", state.ResetAt,
+			"cooldown", quotaCooldown.String(),
+		)
+		return quotaCooldown
+	}
+	return base
+}
+
+func (s *Service) ApplyQuotaFromUsage(account accounts.Account, usage billing.UsageResult) (accounts.Account, billing.QuotaState, error) {
+	now := time.Now()
+	state := billing.QuotaStateFromUsage(usage, now)
+	updated, err := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt)
+	if err != nil {
+		return account, state, err
+	}
+	return updated, state, nil
+}
+
+func (s *Service) SyncAccountQuota(ctx context.Context, account accounts.Account) (accounts.Account, billing.QuotaState, error) {
+	usage, err := billing.FetchAccountUsage(ctx, s.Provider, account, s.Config())
+	if err != nil {
+		return account, billing.QuotaState{}, err
+	}
+	return s.ApplyQuotaFromUsage(account, usage)
 }
 
 func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult, error) {

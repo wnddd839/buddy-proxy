@@ -341,7 +341,7 @@ pre{
     <div class="overview-notes">
       <div class="note-item">
         <h3>429 限频隔离与自动熔断</h3>
-        <p>上游 429 时将该账号冷却 2 分钟（111xx 为 5 分钟，部分 5xx 为 30 秒），冷却期内不参与轮询；同区全冷却时选最早恢复者继续服务，避免整体不可用。</p>
+        <p>纯 429 / rate limit 短冷却 2 分钟并自动换号；配额类错误会查询官方余额并对齐至 CycleEnd / SlicePeriod 结束。111xx 策略码仍为 5 分钟，部分 5xx 为 30 秒。</p>
       </div>
       <div class="note-item">
         <h3>Reasoning 思考链透传</h3>
@@ -567,6 +567,11 @@ function setHealth(ok, text){
   $('healthText').textContent = text;
 }
 
+function formatResetAt(ms){
+  if (!ms) return '-';
+  try { return new Date(ms).toLocaleString(); } catch (e) { return String(ms); }
+}
+
 const usageByAccount = {};
 function renderAccounts(summary, activeSite) {
   const box = $('accounts');
@@ -582,6 +587,14 @@ function renderAccounts(summary, activeSite) {
     const logged = a.loggedIn && a.hasCredentials;
     const site = normalizeSite(a.site);
     const inPool = !activeSite || site === activeSite;
+    let poolStateHtml = '';
+    if (a.quotaExhausted && a.quotaResetAt) {
+      poolStateHtml = '<div class="usage-line"><span class="pill bad">配额耗尽 · ' + escapeHtml(formatResetAt(a.quotaResetAt)) + ' 恢复</span></div>';
+    } else if (a.cooldownUntil && a.cooldownUntil > Date.now()) {
+      poolStateHtml = '<div class="usage-line"><span class="pill warn">冷却中 · ' + escapeHtml(formatResetAt(a.cooldownUntil)) + ' 恢复</span></div>';
+    } else if (a.quotaRemaining != null && Number(a.quotaRemaining) <= 0) {
+      poolStateHtml = '<div class="usage-line"><span class="pill warn">配额可能已耗尽</span></div>';
+    }
     const usage = usageByAccount[a.id];
     let usageHtml = '<div class="usage-line"><button class="ghost" data-act="usage" data-id="' + escapeHtml(a.id) + '" type="button">查余额</button></div>';
     if (usage && usage.error) {
@@ -625,6 +638,7 @@ function renderAccounts(summary, activeSite) {
         (a.tokenExpired ? ' · <span class="err">token expired</span>' : '') +
       '</div>' +
       usageHtml +
+      poolStateHtml +
       (a.lastError ? ('<div class="err">' + escapeHtml(a.lastError) + '</div>') : '') +
     '</div>';
   }).join('');

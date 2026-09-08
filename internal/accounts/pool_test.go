@@ -211,6 +211,77 @@ func TestPoolSelectSkipsCooldown(t *testing.T) {
 	}
 }
 
+func TestPoolSelectSkipsQuotaExhausted(t *testing.T) {
+	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
+	defer pool.Close()
+	zero := 0.0
+	one, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "one", BearerToken: "token-one", Site: "domestic",
+		QuotaRemaining: &zero,
+		QuotaResetAt:   time.Now().Add(5 * time.Hour).UnixMilli(),
+		QuotaCheckedAt: time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "two", BearerToken: "token-two", Site: "domestic",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 8; i++ {
+		picked, err := pool.Select(accounts.SelectOptions{Site: "domestic"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if picked.Account.ID == one.ID {
+			t.Fatalf("expected quota-exhausted account skipped, got %s on attempt %d", one.ID, i+1)
+		}
+	}
+}
+
+func TestMarkResultSuccessClearsQuotaBlock(t *testing.T) {
+	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
+	defer pool.Close()
+	zero := 0.0
+	resetAt := time.Now().Add(5 * time.Hour).UnixMilli()
+	one, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "one", BearerToken: "token-one", Site: "domestic",
+		QuotaRemaining: &zero,
+		QuotaResetAt:   resetAt,
+		QuotaCheckedAt: time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel, err := pool.Select(accounts.SelectOptions{Site: "domestic", AccountID: one.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel.BypassedCooldown = true
+	if err := pool.MarkResult(sel, true, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	store, err := pool.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated accounts.Account
+	for _, item := range store.Accounts {
+		if item.ID == one.ID {
+			updated = item
+			break
+		}
+	}
+	if updated.QuotaRemaining != nil || updated.QuotaResetAt != 0 {
+		t.Fatalf("expected quota block cleared, got remaining=%v resetAt=%d", updated.QuotaRemaining, updated.QuotaResetAt)
+	}
+	if accounts.QuotaBlocked(updated, time.Now().UnixMilli()) {
+		t.Fatal("account should not be quota-blocked after successful request")
+	}
+}
+
 func TestUpsertSameUserDifferentSites(t *testing.T) {
 	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
 	defer pool.Close()

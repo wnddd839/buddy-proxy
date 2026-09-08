@@ -82,6 +82,10 @@ type Account struct {
 	FailedRequests      int64      `json:"failedRequests"`
 	LastError           string     `json:"lastError,omitempty"`
 	CooldownUntil       int64      `json:"cooldownUntil,omitempty"`
+	QuotaRemaining      *float64   `json:"quotaRemaining,omitempty"`
+	QuotaUnlimited      bool       `json:"quotaUnlimited,omitempty"`
+	QuotaResetAt        int64      `json:"quotaResetAt,omitempty"`
+	QuotaCheckedAt      int64      `json:"quotaCheckedAt,omitempty"`
 }
 
 type Store struct {
@@ -427,6 +431,10 @@ func NormalizeAccount(raw Account, now int64) Account {
 		FailedRequests:      raw.FailedRequests,
 		LastError:           strutil.Compact(raw.LastError),
 		CooldownUntil:       raw.CooldownUntil,
+		QuotaRemaining:      copyFloatPtr(raw.QuotaRemaining),
+		QuotaUnlimited:      raw.QuotaUnlimited,
+		QuotaResetAt:        raw.QuotaResetAt,
+		QuotaCheckedAt:      raw.QuotaCheckedAt,
 	}
 	return account
 }
@@ -450,6 +458,55 @@ func CreateAccount(raw Account) Account {
 
 func HasCredentials(account Account) bool {
 	return strutil.Compact(account.BearerToken) != "" || strutil.Compact(account.APIKey) != ""
+}
+
+func copyFloatPtr(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	return &out
+}
+
+const quotaCacheMaxAge = 6 * time.Hour
+
+// QuotaBlocked reports whether cached billing says the account is exhausted until QuotaResetAt.
+func QuotaBlocked(account Account, nowMillis int64) bool {
+	if account.QuotaUnlimited {
+		return false
+	}
+	if account.QuotaRemaining == nil {
+		return false
+	}
+	if *account.QuotaRemaining > 0 {
+		return false
+	}
+	if account.QuotaResetAt <= nowMillis {
+		return false
+	}
+	if account.QuotaCheckedAt > 0 && nowMillis-account.QuotaCheckedAt > quotaCacheMaxAge.Milliseconds() {
+		return false
+	}
+	return true
+}
+
+func unavailableUntil(account Account, nowMillis int64) int64 {
+	until := account.CooldownUntil
+	if QuotaBlocked(account, nowMillis) && account.QuotaResetAt > until {
+		until = account.QuotaResetAt
+	}
+	return until
+}
+
+func applyQuotaFields(account Account, remaining *float64, unlimited bool, resetAt, checkedAt int64, nowMillis int64) Account {
+	account.QuotaRemaining = copyFloatPtr(remaining)
+	account.QuotaUnlimited = unlimited
+	account.QuotaResetAt = resetAt
+	account.QuotaCheckedAt = checkedAt
+	if !unlimited && remaining != nil && *remaining <= 0 && resetAt > nowMillis && resetAt > account.CooldownUntil {
+		account.CooldownUntil = resetAt
+	}
+	return account
 }
 
 func (p *Pool) Select(opts SelectOptions) (Selection, error) {
@@ -505,10 +562,10 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 		if _, skip := exclude[account.ID]; skip {
 			continue
 		}
-		if InCooldown(account, now) {
-			if account.CooldownUntil > 0 && (fallbackIdx < 0 || account.CooldownUntil < fallbackUntil) {
+		if blockedUntil := unavailableUntil(account, now); blockedUntil > now {
+			if blockedUntil > 0 && (fallbackIdx < 0 || blockedUntil < fallbackUntil) {
 				fallbackIdx = idx
-				fallbackUntil = account.CooldownUntil
+				fallbackUntil = blockedUntil
 			}
 			continue
 		}
@@ -567,6 +624,10 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 			p.mem.Accounts[i].SuccessRequests++
 			p.mem.Accounts[i].LastError = ""
 			p.mem.Accounts[i].CooldownUntil = 0
+			p.mem.Accounts[i].QuotaRemaining = nil
+			p.mem.Accounts[i].QuotaUnlimited = false
+			p.mem.Accounts[i].QuotaResetAt = 0
+			p.mem.Accounts[i].QuotaCheckedAt = 0
 		} else {
 			p.mem.Accounts[i].FailedRequests++
 			p.mem.Accounts[i].LastError = strutil.Truncate(errMsg, 600)
@@ -578,6 +639,38 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 		return nil
 	}
 	return nil
+}
+
+// ApplyQuotaState 将上游 billing 快照写入账号，并在配额耗尽时对齐 cooldownUntil。
+func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited bool, resetAt, checkedAt int64) (Account, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return Account{}, fmt.Errorf("%w: empty id", ErrAccountNotFound)
+	}
+	p.mu.Lock()
+	if err := p.ensureLoadedLocked(); err != nil {
+		p.mu.Unlock()
+		return Account{}, err
+	}
+	now := time.Now().UnixMilli()
+	found := false
+	var updated Account
+	for i := range p.mem.Accounts {
+		if p.mem.Accounts[i].ID != accountID {
+			continue
+		}
+		p.mem.Accounts[i] = applyQuotaFields(p.mem.Accounts[i], remaining, unlimited, resetAt, checkedAt, now)
+		updated = p.mem.Accounts[i]
+		found = true
+		break
+	}
+	if !found {
+		p.mu.Unlock()
+		return Account{}, fmt.Errorf("%w: %s", ErrAccountNotFound, accountID)
+	}
+	p.markDirtyLocked()
+	p.mu.Unlock()
+	return updated, nil
 }
 
 func (p *Pool) Upsert(account Account) (Account, Store, error) {
@@ -602,6 +695,10 @@ func (p *Pool) Upsert(account Account) (Account, Store, error) {
 			normalized.LastUsedAt = existing.LastUsedAt
 			normalized.LastSelectedAt = existing.LastSelectedAt
 			normalized.CooldownUntil = existing.CooldownUntil
+			normalized.QuotaRemaining = copyFloatPtr(existing.QuotaRemaining)
+			normalized.QuotaUnlimited = existing.QuotaUnlimited
+			normalized.QuotaResetAt = existing.QuotaResetAt
+			normalized.QuotaCheckedAt = existing.QuotaCheckedAt
 			store.Accounts[i] = normalized
 			replaced = true
 			break
@@ -751,9 +848,15 @@ type Summary struct {
 	LastSelectedAt      int64  `json:"lastSelectedAt,omitempty"`
 	SuccessRequests     int64  `json:"successRequests"`
 	FailedRequests      int64  `json:"failedRequests"`
-	LastError           string `json:"lastError,omitempty"`
-	TokenExpiresAt      int64  `json:"tokenExpiresAt,omitempty"`
-	TokenExpired        bool   `json:"tokenExpired"`
+	LastError           string   `json:"lastError,omitempty"`
+	TokenExpiresAt      int64    `json:"tokenExpiresAt,omitempty"`
+	TokenExpired        bool     `json:"tokenExpired"`
+	CooldownUntil       int64    `json:"cooldownUntil,omitempty"`
+	QuotaRemaining      *float64 `json:"quotaRemaining,omitempty"`
+	QuotaUnlimited      bool     `json:"quotaUnlimited,omitempty"`
+	QuotaResetAt        int64    `json:"quotaResetAt,omitempty"`
+	QuotaCheckedAt      int64    `json:"quotaCheckedAt,omitempty"`
+	QuotaExhausted      bool     `json:"quotaExhausted"`
 }
 
 func SummarizeAccount(account Account) Summary {
@@ -792,6 +895,12 @@ func SummarizeAccount(account Account) Summary {
 		LastError:           account.LastError,
 		TokenExpiresAt:      account.TokenExpiresAt,
 		TokenExpired:        account.TokenExpiresAt > 0 && account.TokenExpiresAt <= time.Now().UnixMilli(),
+		CooldownUntil:       account.CooldownUntil,
+		QuotaRemaining:      copyFloatPtr(account.QuotaRemaining),
+		QuotaUnlimited:      account.QuotaUnlimited,
+		QuotaResetAt:        account.QuotaResetAt,
+		QuotaCheckedAt:      account.QuotaCheckedAt,
+		QuotaExhausted:      QuotaBlocked(account, time.Now().UnixMilli()),
 	}
 }
 
