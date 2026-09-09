@@ -1,8 +1,7 @@
 # 更新日记
 
 > CodeBuddy Proxy（Go · `protocol_direct`）发布说明。  
-> 主仓库：[`wnddd839/codebuddyapi-proxy`](https://github.com/wnddd839/codebuddyapi-proxy)  
-> 镜像：[`wnddd839/codebuddy-proxy`](https://github.com/wnddd839/codebuddy-proxy)
+> 仓库：[`wnddd839/buddy-proxy`](https://github.com/wnddd839/buddy-proxy)
 
 ---
 
@@ -21,7 +20,7 @@
 - 删除未使用的 `gateway.Service.ApplyQuotaFromUsage` / `SyncAccountQuota`，server 层直接编排 `QuotaStateFromUsage` + `Pool.ApplyQuotaState`。
 - 补 `QuotaState` JSON `omitzero` 表驱动测试，锁定 admin usage API 的 `quota` 字段序列化行为。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v4.0
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v4.0
 
 ---
 
@@ -40,7 +39,7 @@
 
 - `system` 消息去除 ` (you will usually use this for PRs)` 括号注解（保留分支名，`Main branch: <branch>`），用户原文与工具结果原样透传。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v0.3.10
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.3.10
 
 ---
 
@@ -53,7 +52,7 @@
 - 概览说明与号池冷却语义对齐（429 → 2min，111xx → 5min，全冷却降级选最早恢复者）。
 - DOM id / JS API / 后端协议仍零变更。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v0.3.9
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.3.9
 
 ---
 
@@ -66,7 +65,7 @@
 - **设计规格**：`design/` 目录改为 Editorial 唯一源；旧深色仪器风 / 粒子环境层规格作废。
 - **DOM 契约保持**：管理台 id / JS 行为 / 后端 API / 账号池协议零回归；仅展示层变更。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v0.3.8
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.3.8
 
 ---
 
@@ -92,7 +91,7 @@
 - `slices.Contains`、`new(loggedIn)`；`.githooks/pre-commit`（gofmt 检查 + 受影响包测试，不自动改暂存）。
 - Pi：`.agents/pi-system-prompt-go.md` + skill `go-codebuddy-modern`。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v0.3.7
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.3.7
 
 ---
 
@@ -130,7 +129,7 @@
 - **Windows 64 位请下载 `codebuddy-proxy-windows-x64.exe`**（与 `windows-amd64.exe` 相同，后者为兼容旧名）。
 - 勿在 Windows PC 上下载 `darwin-arm64` / `darwin-amd64`（macOS 专用）。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v0.3.6
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.3.6
 
 ---
 
@@ -141,7 +140,7 @@
 - **模型列表**：`/v1/models` 透传 `supportsReasoning` / `onlyReasoning` / `reasoning`（含 `supportedEfforts`、`defaultEffort`）。
 - **响应**：流式 delta 与 non-stream `message.reasoning_content` 回传思考内容；无思考时 `omitempty` 零回归。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v0.3.5
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.3.5
 
 ---
 
@@ -152,7 +151,7 @@
 - **修复**：`UsageFromProvider` 在命中时同时写出 `prompt_tokens_details.cached_tokens` + `prompt_cache_hit_tokens` + `cache_read_input_tokens`，并推导 `prompt_cache_miss_tokens`；`ParseUsage` 兼容 `cached_tokens` / `input_tokens_details`。
 - **流式**：usage chunk 写出后显式 `Flush()`，降低下游提前断开丢统计的概率。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v0.3.4
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.3.4
 
 ---
 
@@ -162,6 +161,6 @@
 - **原因**：typed struct 的 `json.Marshal` 已是 **2 allocs / ~288B**；混合路径 **9 allocs / ~552B**，实测为负优化（上轮基线误用 `map[string]any`）。
 - **保留**：v0.3.1 SSE 缓冲聚合、v0.3.0 上游 typed 解析、中文 token 估算等有效优化不受影响。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v0.3.3
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.3.3
 
 ---

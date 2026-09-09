@@ -33,4 +33,4 @@
 - `go build ./...`、`go vet ./...`、`go test ./...` 全绿。
 - review 修复：quota 文件 LF 行尾、`nul` 误建文件已删除。
 
-完整说明见 [`CHANGELOG.md`](https://github.com/wnddd839/codebuddyapi-proxy/blob/main/CHANGELOG.md)。
+完整说明见 [`CHANGELOG.md`](https://github.com/wnddd839/buddy-proxy/blob/main/CHANGELOG.md)。

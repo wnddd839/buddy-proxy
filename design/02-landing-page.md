@@ -66,8 +66,8 @@ footer       反相底 #1C1C1C 字 #F9F8F6，xs uppercase · 分隔
 
 ## §3 明确保留（事实层）
 
-- 仓库：`wnddd839/codebuddyapi-proxy`  
-- Pages：`https://wnddd839.github.io/codebuddyapi-proxy/`  
+- 仓库：`wnddd839/buddy-proxy`  
+- Pages：`https://wnddd839.github.io/buddy-proxy/`  
 - 端口 `32126`，路径 `/v1` `/direct-admin/` `/health`  
 - 下载名：`codebuddy-proxy-windows-x64.exe` 等  
 - 文案风格：具体、给工程师，零营销黑话  

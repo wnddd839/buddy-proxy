@@ -9,14 +9,14 @@
 </p>
 
 <p align="center">
-  <a href="https://wnddd839.github.io/codebuddyapi-proxy/"><img src="https://img.shields.io/badge/Product-Page-1C1C1C?style=flat-square" alt="Product Page" /></a>
-  <a href="https://github.com/wnddd839/codebuddyapi-proxy/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-BSD--3--Clause-1C1C1C?style=flat-square" alt="License" /></a>
+  <a href="https://wnddd839.github.io/buddy-proxy/"><img src="https://img.shields.io/badge/Product-Page-1C1C1C?style=flat-square" alt="Product Page" /></a>
+  <a href="https://github.com/wnddd839/buddy-proxy/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-BSD--3--Clause-1C1C1C?style=flat-square" alt="License" /></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-%E2%89%A51.26-1C1C1C?style=flat-square&logo=go&logoColor=white" alt="Go" /></a>
   <img src="https://img.shields.io/badge/Transport-protocol__direct-1C1C1C?style=flat-square" alt="protocol_direct" />
 </p>
 
 <p align="center">
-  <a href="https://wnddd839.github.io/codebuddyapi-proxy/">产品页</a> ·
+  <a href="https://wnddd839.github.io/buddy-proxy/">产品页</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#接入客户端">接入</a> ·
   <a href="#文档">文档</a> ·
@@ -61,7 +61,7 @@
 
 ### 方式 A：下载即用（推荐）
 
-从 [GitHub Releases](https://github.com/wnddd839/codebuddyapi-proxy/releases/latest) 下载对应平台文件，直接运行。
+从 [GitHub Releases](https://github.com/wnddd839/buddy-proxy/releases/latest) 下载对应平台文件，直接运行。
 
 | 系统 | 文件 |
 |------|------|
@@ -86,8 +86,8 @@ chmod +x ./codebuddy-proxy-linux-amd64
 ### 方式 B：从源码
 
 ```bash
-git clone https://github.com/wnddd839/codebuddyapi-proxy.git
-cd codebuddyapi-proxy/go-codebuddy
+git clone https://github.com/wnddd839/buddy-proxy.git
+cd buddy-proxy/go-codebuddy
 go run ./cmd/codebuddy-proxy
 ```
 
@@ -152,14 +152,14 @@ CODEBUDDY_INTERNET_ENVIRONMENT=public
 
 | 资源 | 链接 |
 | :--- | :--- |
-| 产品页 | [wnddd839.github.io/codebuddyapi-proxy](https://wnddd839.github.io/codebuddyapi-proxy/) |
+| 产品页 | [wnddd839.github.io/buddy-proxy](https://wnddd839.github.io/buddy-proxy/) |
 | 文档索引 | [`docs/README.md`](docs/README.md) |
 | 快速开始 | [`guides/getting-started.md`](docs/guides/getting-started.md) |
 | 配置参考 | [`guides/configuration.md`](docs/guides/configuration.md) |
 | HTTP API | [`api/http.md`](docs/api/http.md) |
 | 架构说明 | [`architecture/overview.md`](docs/architecture/overview.md) |
 | 运维排障 | [`operations/runbook.md`](docs/operations/runbook.md) |
-| 预编译包 | [GitHub Releases](https://github.com/wnddd839/codebuddyapi-proxy/releases/latest) |
+| 预编译包 | [GitHub Releases](https://github.com/wnddd839/buddy-proxy/releases/latest) |
 | 更新日记 | [`CHANGELOG.md`](CHANGELOG.md) · [安全说明](SECURITY.md) |
 
 开发命令（仓库根目录）：

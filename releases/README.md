@@ -2,8 +2,7 @@
 
 二进制**不进 Git**。请从 GitHub Releases 下载：
 
-- 最新版：https://github.com/wnddd839/codebuddyapi-proxy/releases/latest
-- 镜像仓库：https://github.com/wnddd839/codebuddy-proxy/releases/latest
+- 最新版：https://github.com/wnddd839/buddy-proxy/releases/latest
 
 | 平台 | 资源名 |
 |------|--------|
@@ -31,7 +30,7 @@ make release
 
 ## Windows 快速开始
 
-1. 从 [Releases](https://github.com/wnddd839/codebuddyapi-proxy/releases/latest) 下载 **`codebuddy-proxy-windows-x64.exe`**
+1. 从 [Releases](https://github.com/wnddd839/buddy-proxy/releases/latest) 下载 **`codebuddy-proxy-windows-x64.exe`**
 2. 直接运行（会自动读取/创建同目录 `.env`）
 
 ```powershell

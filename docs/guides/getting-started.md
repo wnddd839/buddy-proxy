@@ -7,7 +7,7 @@
 
 ## 方式 A：预编译二进制（推荐）
 
-从 [GitHub Releases](https://github.com/wnddd839/codebuddyapi-proxy/releases/latest) 下载对应平台文件，直接运行。
+从 [GitHub Releases](https://github.com/wnddd839/buddy-proxy/releases/latest) 下载对应平台文件，直接运行。
 程序会自动读取（必要时创建）同目录 `.env`。
 
 ```powershell
