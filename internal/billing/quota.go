@@ -2,16 +2,17 @@ package billing
 
 import (
 	"strings"
+	"sync"
 	"time"
 )
 
 // QuotaState 是从上游 billing 接口提炼的配额快照，用于号池冷却与选号。
 type QuotaState struct {
 	Remaining  *float64 `json:"remaining"`
-	Unlimited  bool     `json:"unlimited"`
-	ResetAt    int64    `json:"resetAt"` // unix millis，配额窗口结束时间
-	CheckedAt  int64    `json:"checkedAt"`
-	NotifyCode int      `json:"notifyCode"`
+	Unlimited  bool     `json:"unlimited,omitzero"`
+	ResetAt    int64    `json:"resetAt,omitzero"`
+	CheckedAt  int64    `json:"checkedAt,omitzero"`
+	NotifyCode int      `json:"notifyCode,omitzero"`
 }
 
 func (q QuotaState) Exhausted(now time.Time) bool {
@@ -32,10 +33,7 @@ func (q QuotaState) Exhausted(now time.Time) bool {
 }
 
 func (q QuotaState) CooldownDuration(now time.Time) time.Duration {
-	if !q.Exhausted(now) {
-		return 0
-	}
-	if q.ResetAt <= now.UnixMilli() {
+	if !q.Exhausted(now) || q.ResetAt <= now.UnixMilli() {
 		return 0
 	}
 	return time.Duration(q.ResetAt-now.UnixMilli()) * time.Millisecond
@@ -43,7 +41,7 @@ func (q QuotaState) CooldownDuration(now time.Time) time.Duration {
 
 func QuotaStateFromUsage(usage UsageResult, now time.Time) QuotaState {
 	state := QuotaState{
-		Remaining: copyFloatPtr(usage.Credits.Remaining),
+		Remaining: cloneFloatPtr(usage.Credits.Remaining),
 		Unlimited: usage.Credits.Unlimited,
 		ResetAt:   creditsNextResetAt(usage.Credits, now),
 		CheckedAt: now.UnixMilli(),
@@ -78,17 +76,19 @@ func IsQuotaExhaustedError(err error) bool {
 func creditsNextResetAt(credits Credits, now time.Time) int64 {
 	nowMs := now.UnixMilli()
 	best := int64(0)
-	for _, candidate := range []string{credits.CycleEndTime} {
-		if ms := parseBillingTimeMillis(candidate); ms > nowMs && (best == 0 || ms < best) {
+	consider := func(raw string) {
+		ms := parseBillingTimeMillis(raw)
+		if ms <= nowMs {
+			return
+		}
+		if best == 0 || ms < best {
 			best = ms
 		}
 	}
+	consider(credits.CycleEndTime)
 	for _, pkg := range credits.Packages {
-		for _, candidate := range []string{pkg.CycleEndTime, pkg.SlicePeriodEndTime} {
-			if ms := parseBillingTimeMillis(candidate); ms > nowMs && (best == 0 || ms < best) {
-				best = ms
-			}
-		}
+		consider(pkg.CycleEndTime)
+		consider(pkg.SlicePeriodEndTime)
 	}
 	return best
 }
@@ -118,18 +118,17 @@ func parseBillingTimeMillis(raw string) int64 {
 	return 0
 }
 
-func billingLocalLocation() *time.Location {
+var billingLocalLocation = sync.OnceValue(func() *time.Location {
 	loc, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
 		return time.Local
 	}
 	return loc
-}
+})
 
-func copyFloatPtr(v *float64) *float64 {
+func cloneFloatPtr(v *float64) *float64 {
 	if v == nil {
 		return nil
 	}
-	out := *v
-	return &out
+	return new(*v)
 }

@@ -447,7 +447,7 @@ func asNumberOr(values ...any) float64 {
 	return 0
 }
 
-func floatPtr(v float64) *float64 { return &v }
+func floatPtr(v float64) *float64 { return new(v) }
 
 func formatNumber(v float64) string {
 	if math.Mod(v, 1) == 0 {

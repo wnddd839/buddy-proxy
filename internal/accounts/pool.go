@@ -431,7 +431,7 @@ func NormalizeAccount(raw Account, now int64) Account {
 		FailedRequests:      raw.FailedRequests,
 		LastError:           strutil.Compact(raw.LastError),
 		CooldownUntil:       raw.CooldownUntil,
-		QuotaRemaining:      copyFloatPtr(raw.QuotaRemaining),
+		QuotaRemaining:      cloneFloatPtr(raw.QuotaRemaining),
 		QuotaUnlimited:      raw.QuotaUnlimited,
 		QuotaResetAt:        raw.QuotaResetAt,
 		QuotaCheckedAt:      raw.QuotaCheckedAt,
@@ -460,12 +460,11 @@ func HasCredentials(account Account) bool {
 	return strutil.Compact(account.BearerToken) != "" || strutil.Compact(account.APIKey) != ""
 }
 
-func copyFloatPtr(v *float64) *float64 {
+func cloneFloatPtr(v *float64) *float64 {
 	if v == nil {
 		return nil
 	}
-	out := *v
-	return &out
+	return new(*v)
 }
 
 const quotaCacheMaxAge = 6 * time.Hour
@@ -492,21 +491,17 @@ func QuotaBlocked(account Account, nowMillis int64) bool {
 
 func unavailableUntil(account Account, nowMillis int64) int64 {
 	until := account.CooldownUntil
-	if QuotaBlocked(account, nowMillis) && account.QuotaResetAt > until {
-		until = account.QuotaResetAt
+	if QuotaBlocked(account, nowMillis) {
+		until = max(until, account.QuotaResetAt)
 	}
 	return until
 }
 
-func applyQuotaFields(account Account, remaining *float64, unlimited bool, resetAt, checkedAt int64, nowMillis int64) Account {
-	account.QuotaRemaining = copyFloatPtr(remaining)
-	account.QuotaUnlimited = unlimited
-	account.QuotaResetAt = resetAt
-	account.QuotaCheckedAt = checkedAt
-	if !unlimited && remaining != nil && *remaining <= 0 && resetAt > nowMillis && resetAt > account.CooldownUntil {
-		account.CooldownUntil = resetAt
-	}
-	return account
+func clearQuotaCache(account *Account) {
+	account.QuotaRemaining = nil
+	account.QuotaUnlimited = false
+	account.QuotaResetAt = 0
+	account.QuotaCheckedAt = 0
 }
 
 func (p *Pool) Select(opts SelectOptions) (Selection, error) {
@@ -624,10 +619,7 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 			p.mem.Accounts[i].SuccessRequests++
 			p.mem.Accounts[i].LastError = ""
 			p.mem.Accounts[i].CooldownUntil = 0
-			p.mem.Accounts[i].QuotaRemaining = nil
-			p.mem.Accounts[i].QuotaUnlimited = false
-			p.mem.Accounts[i].QuotaResetAt = 0
-			p.mem.Accounts[i].QuotaCheckedAt = 0
+			clearQuotaCache(&p.mem.Accounts[i])
 		} else {
 			p.mem.Accounts[i].FailedRequests++
 			p.mem.Accounts[i].LastError = strutil.Truncate(errMsg, 600)
@@ -659,8 +651,15 @@ func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited b
 		if p.mem.Accounts[i].ID != accountID {
 			continue
 		}
-		p.mem.Accounts[i] = applyQuotaFields(p.mem.Accounts[i], remaining, unlimited, resetAt, checkedAt, now)
-		updated = p.mem.Accounts[i]
+		account := &p.mem.Accounts[i]
+		account.QuotaRemaining = cloneFloatPtr(remaining)
+		account.QuotaUnlimited = unlimited
+		account.QuotaResetAt = resetAt
+		account.QuotaCheckedAt = checkedAt
+		if !unlimited && remaining != nil && *remaining <= 0 && resetAt > now && resetAt > account.CooldownUntil {
+			account.CooldownUntil = resetAt
+		}
+		updated = *account
 		found = true
 		break
 	}
@@ -695,7 +694,7 @@ func (p *Pool) Upsert(account Account) (Account, Store, error) {
 			normalized.LastUsedAt = existing.LastUsedAt
 			normalized.LastSelectedAt = existing.LastSelectedAt
 			normalized.CooldownUntil = existing.CooldownUntil
-			normalized.QuotaRemaining = copyFloatPtr(existing.QuotaRemaining)
+			normalized.QuotaRemaining = cloneFloatPtr(existing.QuotaRemaining)
 			normalized.QuotaUnlimited = existing.QuotaUnlimited
 			normalized.QuotaResetAt = existing.QuotaResetAt
 			normalized.QuotaCheckedAt = existing.QuotaCheckedAt
@@ -896,7 +895,7 @@ func SummarizeAccount(account Account) Summary {
 		TokenExpiresAt:      account.TokenExpiresAt,
 		TokenExpired:        account.TokenExpiresAt > 0 && account.TokenExpiresAt <= time.Now().UnixMilli(),
 		CooldownUntil:       account.CooldownUntil,
-		QuotaRemaining:      copyFloatPtr(account.QuotaRemaining),
+		QuotaRemaining:      cloneFloatPtr(account.QuotaRemaining),
 		QuotaUnlimited:      account.QuotaUnlimited,
 		QuotaResetAt:        account.QuotaResetAt,
 		QuotaCheckedAt:      account.QuotaCheckedAt,

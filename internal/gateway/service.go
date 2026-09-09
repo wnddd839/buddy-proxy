@@ -433,10 +433,6 @@ func (s *Service) completeRetryLimit(excludeIDs []string) int {
 		return maxCompleteRetryDepth
 	}
 	site := s.ActivePoolSite()
-	exclude := map[string]struct{}{}
-	for _, id := range excludeIDs {
-		exclude[id] = struct{}{}
-	}
 	active := 0
 	for _, account := range store.Accounts {
 		if !account.Enabled || !accounts.HasCredentials(account) {
@@ -445,27 +441,17 @@ func (s *Service) completeRetryLimit(excludeIDs []string) int {
 		if site != "" && config.NormalizeSite(account.Site) != site {
 			continue
 		}
-		if _, skip := exclude[account.ID]; skip {
+		if slices.Contains(excludeIDs, account.ID) {
 			continue
 		}
 		active++
 	}
-	limit := active
-	if limit > defaultMaxAccountRetries {
-		limit = defaultMaxAccountRetries
-	}
-	if limit < 1 {
-		limit = 1
-	}
-	return limit
+	return max(1, min(active, defaultMaxAccountRetries))
 }
 
 func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.Account, err error) time.Duration {
 	base := failureCooldown(err)
-	if s == nil || s.Pool == nil || s.Provider == nil {
-		return base
-	}
-	if !billing.IsQuotaExhaustedError(err) {
+	if s == nil || s.Pool == nil || s.Provider == nil || !billing.IsQuotaExhaustedError(err) {
 		return base
 	}
 	usage, probeErr := billing.FetchAccountUsage(ctx, s.Provider, account, s.Config())
@@ -487,24 +473,6 @@ func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.A
 		return quotaCooldown
 	}
 	return base
-}
-
-func (s *Service) ApplyQuotaFromUsage(account accounts.Account, usage billing.UsageResult) (accounts.Account, billing.QuotaState, error) {
-	now := time.Now()
-	state := billing.QuotaStateFromUsage(usage, now)
-	updated, err := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt)
-	if err != nil {
-		return account, state, err
-	}
-	return updated, state, nil
-}
-
-func (s *Service) SyncAccountQuota(ctx context.Context, account accounts.Account) (accounts.Account, billing.QuotaState, error) {
-	usage, err := billing.FetchAccountUsage(ctx, s.Provider, account, s.Config())
-	if err != nil {
-		return account, billing.QuotaState{}, err
-	}
-	return s.ApplyQuotaFromUsage(account, usage)
 }
 
 func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult, error) {

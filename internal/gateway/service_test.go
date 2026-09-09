@@ -202,7 +202,7 @@ func TestCompleteRetryLimitRespectsExcludeIDs(t *testing.T) {
 
 func TestResolveFailureCooldownSkipsProbeOn429(t *testing.T) {
 	svc := &Service{}
-	got := svc.resolveFailureCooldown(context.Background(), accounts.Account{}, errors.New("429 too many requests"))
+	got := svc.resolveFailureCooldown(t.Context(), accounts.Account{}, errors.New("429 too many requests"))
 	if got != 2*time.Minute {
 		t.Fatalf("resolveFailureCooldown=%s want 2m without probe", got)
 	}

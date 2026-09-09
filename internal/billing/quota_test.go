@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -11,7 +12,7 @@ func TestQuotaStateFromUsageUsesCycleEnd(t *testing.T) {
 	reset := now.Add(5 * time.Hour)
 	usage := UsageResult{
 		Credits: Credits{
-			Remaining: floatPtr(0),
+			Remaining:    floatPtr(0),
 			CycleEndTime: reset.UTC().Format(time.RFC3339),
 			Packages: []Package{{
 				CycleEndTime: reset.UTC().Format(time.RFC3339),
@@ -64,6 +65,54 @@ func TestIsQuotaExhaustedErrorRejectsPlain429(t *testing.T) {
 	}
 	if !IsQuotaExhaustedError(errors.New("quota exhausted")) {
 		t.Fatal("quota message should match")
+	}
+}
+
+func TestQuotaStateJSONMarshalOmitzero(t *testing.T) {
+	tests := []struct {
+		name  string
+		state QuotaState
+		want  string
+	}{
+		{
+			name:  "zero values omit bool and numeric fields",
+			state: QuotaState{},
+			want:  `{"remaining":null}`,
+		},
+		{
+			name:  "zero remaining only",
+			state: QuotaState{Remaining: floatPtr(0)},
+			want:  `{"remaining":0}`,
+		},
+		{
+			name: "exhausted with reset metadata",
+			state: QuotaState{
+				Remaining:  floatPtr(0),
+				ResetAt:    1_800_000_000_000,
+				CheckedAt:  1_700_000_000_000,
+				NotifyCode: 2,
+			},
+			want: `{"remaining":0,"resetAt":1800000000000,"checkedAt":1700000000000,"notifyCode":2}`,
+		},
+		{
+			name: "unlimited keeps true",
+			state: QuotaState{
+				Remaining: floatPtr(99),
+				Unlimited: true,
+			},
+			want: `{"remaining":99,"unlimited":true}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tt.want {
+				t.Fatalf("marshal=%s want=%s", got, tt.want)
+			}
+		})
 	}
 }
 

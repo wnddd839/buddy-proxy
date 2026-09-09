@@ -672,11 +672,9 @@ func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, pat
 			httputil.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		updated, quotaState, applyErr := s.Svc.ApplyQuotaFromUsage(selected, usage)
-		if applyErr == nil {
+		quotaState := billing.QuotaStateFromUsage(usage, time.Now())
+		if updated, applyErr := s.Svc.Pool.ApplyQuotaState(selected.ID, quotaState.Remaining, quotaState.Unlimited, quotaState.ResetAt, quotaState.CheckedAt); applyErr == nil {
 			selected = updated
-		} else {
-			quotaState = billing.QuotaStateFromUsage(usage, time.Now())
 		}
 		payload := map[string]any{
 			"ok":               usage.OK,
