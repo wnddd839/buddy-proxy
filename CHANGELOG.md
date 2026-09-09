@@ -6,7 +6,7 @@
 
 ---
 
-## v0.3.11 · 2026-09-09 · 号池配额冷却与 Go 1.26 现代化
+## v4.0 · 2026-09-09 · 号池配额冷却与 Go 1.26 现代化
 
 ### 号池 / 计费
 
@@ -21,7 +21,7 @@
 - 删除未使用的 `gateway.Service.ApplyQuotaFromUsage` / `SyncAccountQuota`，server 层直接编排 `QuotaStateFromUsage` + `Pool.ApplyQuotaState`。
 - 补 `QuotaState` JSON `omitzero` 表驱动测试，锁定 admin usage API 的 `quota` 字段序列化行为。
 
-下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v0.3.11
+下载：https://github.com/wnddd839/codebuddyapi-proxy/releases/tag/v4.0
 
 ---
 
