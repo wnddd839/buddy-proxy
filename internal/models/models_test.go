@@ -71,6 +71,47 @@ func TestToAdminModelsPreservesContextLimits(t *testing.T) {
 	}
 }
 
+func TestEnrichModelsFillsCLIReasoningFromIDE(t *testing.T) {
+	cli := []map[string]any{
+		{
+			"id":            "deepseek-v4.1-flash",
+			"onlyReasoning": true,
+			"reasoning":     map[string]any{"effort": "high", "summary": "auto"},
+		},
+		{
+			"id":            "deepseek-v4-flash",
+			"onlyReasoning": true,
+			"reasoning":     map[string]any{"effort": "high"},
+		},
+	}
+	ide := []map[string]any{
+		{
+			"id": "deepseek-v4.1-flash",
+			"reasoning": map[string]any{
+				"canDisableThinking": true,
+				"defaultEffort":      "high",
+				"supportedEfforts":   []any{"low", "high", "xhigh"},
+			},
+		},
+	}
+	out := enrichModelsWithIDEReasoning(cli, ide)
+	v41 := out[0]["reasoning"].(map[string]any)
+	if v41["canDisableThinking"] != true {
+		t.Fatalf("v4.1 canDisableThinking=%v", v41["canDisableThinking"])
+	}
+	if v41["effort"] != "high" {
+		t.Fatalf("v4.1 effort should stay CLI value: %v", v41["effort"])
+	}
+	efforts, _ := v41["supportedEfforts"].([]any)
+	if len(efforts) != 3 {
+		t.Fatalf("v4.1 supportedEfforts=%v", v41["supportedEfforts"])
+	}
+	v4 := out[1]["reasoning"].(map[string]any)
+	if v4["canDisableThinking"] != true {
+		t.Fatalf("CLI-only flash should still expose canDisableThinking: %v", v4)
+	}
+}
+
 func TestPublicModelIDStripsCodeBuddyPrefix(t *testing.T) {
 	cases := map[string]string{
 		"":                          "auto",

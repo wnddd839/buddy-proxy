@@ -67,6 +67,8 @@ Query：
 
 `context_length` / `max_input_tokens` / `max_output_tokens` / `limit` 透传上游 `/v3/config` 的 `maxInputTokens`（缺省回落 `maxAllowedSize`）与 `maxOutputTokens`。客户端应使用这些值作为上下文窗与输出预算，而不是把 1M 窗口再按比例预留一大块输出（例如 DeepSeek V4 Flash 上游输出上限是 5 万）。
 
+CLI 目录里部分思考模型（尤其是 DeepSeek Flash）会省略 `canDisableThinking` / `supportedEfforts`。代理会再用 VSCode 头拉一次 IDE `/v3/config`，把这两项以及 `defaultEffort` 补进 `reasoning_config`（不覆盖 CLI 已有值）；若仍缺失 `canDisableThinking`，则默认 `true`。这样 `/v1/models` 才会带上 `variants.none` 与 `reasoning_options` 的 toggle，避免客户端把 Flash 当成「思考始终开启」并预留约 30% 窗口。
+
 单一模型查询 `GET /v1/models/{id}` **不支持**，会返回 404 `not_found_error`。请拉取列表后在客户端侧匹配 `id`。
 
 **模型缓存**：默认 60s TTL。切换号池区域会自动失效；管理台「刷新模型」走 `fresh=true`。
@@ -140,6 +142,14 @@ OpenCode 配置示例：
 | `stream` | `false` → `application/json`；`true` → `text/event-stream` |
 | `max_tokens` / `max_completion_tokens` | 二者取正数，后者优先 |
 | `tool_choice` | 对象型会被归一为 `auto` / `none` / `required` |
+
+JSON 请求体上限 **64MiB**（`httputil.MaxJSONBodyBytes`）。超过时返回 `413`：
+
+```json
+{"error":{"message":"Request body exceeds 64MB. 1M-context requests need a larger JSON body.","type":"invalid_request_error"}}
+```
+
+非法 JSON 仍为 `400` `Invalid JSON body`。
 
 **流式行为**：
 

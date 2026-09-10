@@ -279,13 +279,101 @@ func (c *Lister) fetchV3(ctx context.Context, client *provider.Client, opts prov
 		batches = append(batches, rows)
 	}
 	merged := mergeModelsByID(batches...)
-	if len(merged) > 0 {
-		return fetchResult{Models: merged}, nil
+	if len(merged) == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("v3 config unavailable")
+		}
+		return fetchResult{}, lastErr
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("v3 config unavailable")
+	ideRows := c.fetchIDECatalog(ctx, client, opts, candidates)
+	return fetchResult{Models: enrichModelsWithIDEReasoning(merged, ideRows)}, nil
+}
+
+func (c *Lister) fetchIDECatalog(ctx context.Context, client *provider.Client, opts provider.ChatOptions, bases []string) []map[string]any {
+	if len(bases) == 0 {
+		return nil
 	}
-	return fetchResult{}, lastErr
+	ideOpts := opts
+	if ideOpts.ExtraHeaders == nil {
+		ideOpts.ExtraHeaders = map[string]string{}
+	} else {
+		cloned := make(map[string]string, len(opts.ExtraHeaders)+8)
+		for k, v := range opts.ExtraHeaders {
+			cloned[k] = v
+		}
+		ideOpts.ExtraHeaders = cloned
+	}
+	domain := "www.codebuddy.cn"
+	if provider.RegionOf(opts) == "global" {
+		domain = "www.codebuddy.ai"
+	}
+	ideOpts.ExtraHeaders["X-IDE-Type"] = "VSCode"
+	ideOpts.ExtraHeaders["X-IDE-Name"] = "VSCode"
+	ideOpts.ExtraHeaders["X-IDE-Version"] = "1.119.0"
+	ideOpts.ExtraHeaders["X-Product-Version"] = "4.9.29177644"
+	ideOpts.ExtraHeaders["X-Env-ID"] = "production"
+	ideOpts.ExtraHeaders["User-Agent"] = "VSCode/1.119.0 CodeBuddy/4.9.29177644"
+	ideOpts.ExtraHeaders["X-Domain"] = domain
+	headers := client.BuildProtocolDirectHeaders(ideOpts)
+	headers.Set("Accept", "application/json")
+	rows, err := c.fetchJSONModels(ctx, client.HTTP, provider.NormalizeBaseURL(bases[0])+upstreamConfigPath, headers)
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+	return rows
+}
+
+// enrichModelsWithIDEReasoning copies WorkBuddy/IDE /v3/config reasoning fields onto the
+// CLI catalog. CLI omits canDisableThinking / supportedEfforts, which makes clients treat
+// DeepSeek Flash as "thinking always on" and reserve ~30% of the 1M window.
+func enrichModelsWithIDEReasoning(cli, ide []map[string]any) []map[string]any {
+	ideByID := make(map[string]map[string]any, len(ide))
+	for _, row := range ide {
+		if id := modelRowID(row); id != "" {
+			ideByID[id] = row
+		}
+	}
+	for _, row := range cli {
+		if src, ok := ideByID[modelRowID(row)]; ok {
+			copyReasoningMetadata(row, src)
+		}
+		ensureCanDisableThinking(row)
+	}
+	return cli
+}
+
+func copyReasoningMetadata(dst, src map[string]any) {
+	srcReasoning, _ := src["reasoning"].(map[string]any)
+	if len(srcReasoning) == 0 {
+		return
+	}
+	dstReasoning, _ := dst["reasoning"].(map[string]any)
+	if dstReasoning == nil {
+		cloned := make(map[string]any, len(srcReasoning))
+		for k, v := range srcReasoning {
+			cloned[k] = v
+		}
+		dst["reasoning"] = cloned
+		return
+	}
+	for _, key := range []string{"canDisableThinking", "supportedEfforts", "defaultEffort"} {
+		if _, exists := dstReasoning[key]; exists {
+			continue
+		}
+		if v, ok := srcReasoning[key]; ok {
+			dstReasoning[key] = v
+		}
+	}
+}
+
+func ensureCanDisableThinking(row map[string]any) {
+	reasoning, _ := row["reasoning"].(map[string]any)
+	if len(reasoning) == 0 {
+		return
+	}
+	if _, exists := reasoning["canDisableThinking"]; !exists {
+		reasoning["canDisableThinking"] = true
+	}
 }
 
 func (c *Lister) fetchJSONModels(ctx context.Context, httpClient *http.Client, endpoint string, headers http.Header) ([]map[string]any, error) {

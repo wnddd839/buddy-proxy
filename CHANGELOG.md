@@ -5,6 +5,35 @@
 
 ---
 
+## v4.3 · 2026-09-10 · DeepSeek Flash 1M 上下文不再卡在 70%
+
+### 解决了什么
+
+ZCode 使用 DeepSeek V4 Flash（上游声明 1M 输入）时，上下文大约到 **70%** 就报超出长度；同样 1M 窗口的 GLM / HY4 正常。别的 CodeBuddy 反代能跑满 1M。这不是上游把窗口砍掉了，是我们发给客户端的**模型元数据**和请求体上限有问题。
+
+### 根因
+
+1. **思考关不掉，客户端预留约 30%。** 我们用 CLI 头拉 `/v3/config`。DeepSeek Flash（`deepseek-v4-flash` / `deepseek-v4.1-flash`）在 CLI 目录里是 `onlyReasoning: true` + `effort: high`，**没有** `canDisableThinking`。ZCode 把它当成思考模型且关不掉，按约 30% 预留思考预算：`1M × 0.7 ≈ 70%` 就报超窗。GLM / HY4 的 CLI 目录自带 `canDisableThinking: true`，所以不受影响。WorkBuddy / 不少其它反代用 VSCode 头，同一模型能拿到 `canDisableThinking` 和 `supportedEfforts`。
+2. **JSON 体以前只读 8MiB。** 中文 + 工具定义的接近 1M 请求可能在代理侧被截断，表现成 Invalid JSON。其它 FastAPI 反代通常没有这么紧的上限。
+
+v4.2 已经把 `max_output_tokens` / `limit.output` 透传出去（Flash 输出上限约 5 万），避免客户端把 1M 再按比例预留输出。但思考元数据缺失时，ZCode 仍会按「思考始终开启」预留 30%，所以 v4.2 之后这个问题还会在 Flash 上出现。
+
+### 改了什么
+
+- **补齐思考元数据：** 拉 CLI 模型列表后再用 VSCode 头打一次 IDE `/v3/config`，把 `canDisableThinking`、`supportedEfforts`、`defaultEffort` 合并进 CLI 目录（不覆盖 CLI 已有字段）。这些值会进入 `GET /v1/models` 的 `reasoning_config`、`variants.none`、`reasoning_options` 的 toggle，以及 `GET /v1/model/info` 的 `supports_none_reasoning_effort`。
+- **CLI 独有的旧 Flash：** IDE 目录可能没有 `deepseek-v4-flash`。只要该模型已有 `reasoning` 对象但缺 `canDisableThinking`，代理会补 `true`（上游接受 `thinking: disabled`）。
+- **请求体上限 8MiB → 64MiB。** `POST /v1/chat/completions` 超限返回 **413**，错误信息明确说明是 body 超过 64MB，而不再变成含糊的 Invalid JSON。
+
+### 升级注意
+
+1. 用新二进制覆盖旧文件后重启。配置与账号池格式不变。
+2. 让 ZCode **重新拉模型列表**（管理台「刷新模型」，或 `GET /v1/models?fresh=1`）。代理列表默认缓存 60 秒，客户端也可能自己缓存。
+3. 列表里应出现可关闭思考（`variants.none` / `reasoning_config.canDisableThinking`）。若 ZCode 仍把思考开在 high，窗口照样会被思考占用，这是正常的；只是不应再被错误地锁死在 70%。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v4.3
+
+---
+
 ## v4.2 · 2026-09-10 · 透传上游上下文长度
 
 ### 模型列表

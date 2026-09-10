@@ -2,12 +2,20 @@ package httputil
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// MaxJSONBodyBytes is large enough for 1M-context chat payloads (messages + tools).
+// Other CodeBuddy proxies typically do not apply an 8MiB JSON cap.
+const MaxJSONBodyBytes int64 = 64 << 20
+
+var ErrBodyTooLarge = errors.New("request body exceeds 64MB")
 
 func WriteJSON(w http.ResponseWriter, status int, payload any) {
 	raw, err := json.Marshal(payload)
@@ -162,8 +170,19 @@ func WriteSSEComment(w http.ResponseWriter, comment string) {
 }
 
 func ReadJSON(r *http.Request, dst any) error {
+	return readJSONLimited(r, dst, MaxJSONBodyBytes)
+}
+
+func readJSONLimited(r *http.Request, dst any, limit int64) error {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 8<<20))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(raw)) > limit {
+		return ErrBodyTooLarge
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	return decoder.Decode(dst)
 }

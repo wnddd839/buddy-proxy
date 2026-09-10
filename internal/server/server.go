@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -248,6 +249,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Thinking            map[string]any   `json:"thinking"`
 	}
 	if err := httputil.ReadJSON(r, &body); err != nil {
+		if errors.Is(err, httputil.ErrBodyTooLarge) {
+			httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError("Request body exceeds 64MB. 1M-context requests need a larger JSON body.", "invalid_request_error"))
+			return
+		}
 		httputil.WriteJSON(w, http.StatusBadRequest, openai.NewError("Invalid JSON body", "invalid_request_error"))
 		return
 	}
