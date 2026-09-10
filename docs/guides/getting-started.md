@@ -13,8 +13,6 @@
 ```powershell
 # Windows
 .\codebuddy-proxy-windows-x64.exe
-# 或
-.\codebuddy-proxy-windows-amd64.exe
 ```
 
 ```bash

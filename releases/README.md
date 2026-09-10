@@ -7,7 +7,6 @@
 | 平台 | 资源名 |
 |------|--------|
 | **Windows 64 位** | `codebuddy-proxy-windows-x64.exe`（推荐） |
-| Windows 64 位（旧名） | `codebuddy-proxy-windows-amd64.exe`（与 x64 相同） |
 | Linux 64 位 | `codebuddy-proxy-linux-amd64` |
 | macOS Apple 芯片 (M1/M2/M3) | `codebuddy-proxy-darwin-arm64` |
 | macOS Intel | `codebuddy-proxy-darwin-amd64` |

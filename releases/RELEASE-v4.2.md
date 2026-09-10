@@ -9,7 +9,9 @@
 | macOS Apple 芯片 | `codebuddy-proxy-darwin-arm64` |
 | macOS Intel | `codebuddy-proxy-darwin-amd64` |
 
-> Windows 请勿下载 `darwin-*` 或 `linux-amd64`。兼容旧名 `windows-amd64.exe`。
+> Windows 请勿下载 `darwin-*` 或 `linux-amd64`。
+
+本版起**不再**附带旧的 `windows-amd64.exe`（与 `windows-x64.exe` 内容一字不差）。若你之前的脚本写死了旧名，请改为 `codebuddy-proxy-windows-x64.exe`。
 
 校验：`SHA256SUMS.txt`
 

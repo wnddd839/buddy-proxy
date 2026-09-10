@@ -13,6 +13,11 @@
 - `GET /v1/model/info` 同步带上 LiteLLM 的 `max_input_tokens`、`max_output_tokens`、`max_tokens`（输出上限）。
 - 管理台模型 JSON 同样保留这三项原始字段，方便核对。
 
+### Release 资产
+
+- 不再发布冗余的 `codebuddy-proxy-windows-amd64.exe`：它与 `codebuddy-proxy-windows-x64.exe` 内容完全相同。Windows 64 位请下载 **`codebuddy-proxy-windows-x64.exe`**。
+- 历史版本（≤ v4.1）仍保留该旧名，使用 v4.2 请改用它名字。
+
 ---
 
 ## v4.1 · 2026-09-10 · 管理台每日签到
