@@ -52,7 +52,28 @@ func ModelListFields(model models.Model) map[string]any {
 	if variants := VariantsForModel(model); len(variants) > 0 {
 		fields["variants"] = variants
 	}
+	if n := model.ContextLength(); n > 0 {
+		fields["context_length"] = n
+		fields["max_input_tokens"] = n
+	}
+	if model.MaxOutputTokens > 0 {
+		fields["max_output_tokens"] = model.MaxOutputTokens
+	}
+	if limit := tokenLimitObject(model); len(limit) > 0 {
+		fields["limit"] = limit
+	}
 	return fields
+}
+
+func tokenLimitObject(model models.Model) map[string]any {
+	limit := map[string]any{}
+	if n := model.ContextLength(); n > 0 {
+		limit["context"] = n
+	}
+	if model.MaxOutputTokens > 0 {
+		limit["output"] = model.MaxOutputTokens
+	}
+	return limit
 }
 
 func reasoningOptionsFromModel(model models.Model) []ReasoningOption {
@@ -134,6 +155,13 @@ func LiteLLMModelInfoEntry(model models.Model) map[string]any {
 	info := map[string]any{
 		"key":  model.ID,
 		"mode": "chat",
+	}
+	if n := model.ContextLength(); n > 0 {
+		info["max_input_tokens"] = n
+	}
+	if model.MaxOutputTokens > 0 {
+		info["max_output_tokens"] = model.MaxOutputTokens
+		info["max_tokens"] = model.MaxOutputTokens
 	}
 	if model.SupportsReasoning {
 		info["supports_reasoning"] = true

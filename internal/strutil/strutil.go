@@ -4,6 +4,9 @@ import (
 	"cmp"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -66,4 +69,79 @@ func MaskSecret(value string, visible int) string {
 		return text[:visible] + "..."
 	}
 	return text[:visible] + "..." + text[len(text)-visible:]
+}
+
+// PositiveInt 从 JSON 常见数值类型取出正整数；非正数、小数、无法解析时返回 0。
+func PositiveInt(value any) int {
+	n, ok := asInt(value)
+	if !ok || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// FirstPositiveInt 返回第一个正整数。
+func FirstPositiveInt(values ...any) int {
+	for _, value := range values {
+		if n := PositiveInt(value); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+func asInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case int64:
+		if v > int64(math.MaxInt) || v < int64(math.MinInt) {
+			return 0, false
+		}
+		return int(v), true
+	case uint:
+		if v > uint(math.MaxInt) {
+			return 0, false
+		}
+		return int(v), true
+	case uint32:
+		if uint64(v) > uint64(math.MaxInt) {
+			return 0, false
+		}
+		return int(v), true
+	case uint64:
+		if v > uint64(math.MaxInt) {
+			return 0, false
+		}
+		return int(v), true
+	case float64:
+		if v > float64(math.MaxInt) || v < float64(math.MinInt) {
+			return 0, false
+		}
+		n := int(v)
+		if float64(n) != v {
+			return 0, false
+		}
+		return n, true
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil || i > int64(math.MaxInt) || i < int64(math.MinInt) {
+			return 0, false
+		}
+		return int(i), true
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	default:
+		return 0, false
+	}
 }

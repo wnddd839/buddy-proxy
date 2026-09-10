@@ -5,6 +5,16 @@
 
 ---
 
+## v4.2 · 2026-09-10 · 透传上游上下文长度
+
+### 模型列表
+
+- `GET /v1/models` 透传上游 `maxInputTokens` / `maxAllowedSize` / `maxOutputTokens`，映射为 `context_length`、`max_input_tokens`、`max_output_tokens` 与 `limit.{context,output}`。
+- `GET /v1/model/info` 同步带上 LiteLLM 的 `max_input_tokens`、`max_output_tokens`、`max_tokens`（输出上限）。
+- 管理台模型 JSON 同样保留这三项原始字段，方便核对。
+
+---
+
 ## v4.1 · 2026-09-10 · 管理台每日签到
 
 ### 管理台

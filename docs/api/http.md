@@ -53,13 +53,19 @@ Query：
       "credits": "1",
       "credit_multiplier": 1,
       "free": false,
-      "description": "..."
+      "description": "...",
+      "context_length": 1000000,
+      "max_input_tokens": 1000000,
+      "max_output_tokens": 50000,
+      "limit": { "context": 1000000, "output": 50000 }
     }
   ]
 }
 ```
 
 `credits` / `credit_multiplier` / `free` / `description` 为可选字段，仅当上游提供时出现。
+
+`context_length` / `max_input_tokens` / `max_output_tokens` / `limit` 透传上游 `/v3/config` 的 `maxInputTokens`（缺省回落 `maxAllowedSize`）与 `maxOutputTokens`。客户端应使用这些值作为上下文窗与输出预算，而不是把 1M 窗口再按比例预留一大块输出（例如 DeepSeek V4 Flash 上游输出上限是 5 万）。
 
 单一模型查询 `GET /v1/models/{id}` **不支持**，会返回 404 `not_found_error`。请拉取列表后在客户端侧匹配 `id`。
 
@@ -78,17 +84,22 @@ Query：
 |------|------|
 | `fresh` | 同 `/v1/models`，强制回源 |
 
-返回 LiteLLM enricher 形状（`data[]` 每项含 `key`、`mode`、`supports_reasoning`、`reasoning_options`、`variants` 等）：
+返回 LiteLLM enricher 形状（`data[]` 每项含 `model_info.max_input_tokens` / `max_output_tokens` / `max_tokens`，以及 `supports_reasoning` 等）：
 
 ```json
 {
   "data": [
     {
-      "key": "glm-5.3-flash",
-      "mode": "chat",
-      "supports_reasoning": true,
-      "reasoning_options": [{"type": "effort", "values": ["low", "high"]}],
-      "variants": {"none": {"thinking": {"type": "disabled"}}, "high": {"reasoningEffort": "high"}}
+      "model_name": "glm-5.3-flash",
+      "litellm_params": { "model": "glm-5.3-flash" },
+      "model_info": {
+        "key": "glm-5.3-flash",
+        "mode": "chat",
+        "max_input_tokens": 1000000,
+        "max_output_tokens": 32000,
+        "max_tokens": 32000,
+        "supports_reasoning": true
+      }
     }
   ]
 }

@@ -316,6 +316,41 @@ func TestNormalizeModelsPreservesCredits(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelsPreservesContextLimits(t *testing.T) {
+	rows := provider.NormalizeModels(map[string]any{
+		"data": map[string]any{
+			"models": []any{
+				map[string]any{
+					"id":               "deepseek-v4-flash",
+					"name":             "DeepSeek V4 Flash",
+					"maxInputTokens":   float64(1_000_000),
+					"maxOutputTokens":  float64(50_000),
+					"maxAllowedSize":   float64(1_000_000),
+					"supportsToolCall": true,
+				},
+				map[string]any{
+					"id":              "hy4-preview",
+					"name":            "HY4",
+					"maxInputTokens":  1_000_000,
+					"maxOutputTokens": 64_000,
+				},
+			},
+		},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(rows))
+	}
+	if rows[0]["maxInputTokens"] != 1_000_000 || rows[0]["maxOutputTokens"] != 50_000 || rows[0]["maxAllowedSize"] != 1_000_000 {
+		t.Fatalf("deepseek limits: %+v", rows[0])
+	}
+	if rows[1]["maxInputTokens"] != 1_000_000 || rows[1]["maxOutputTokens"] != 64_000 {
+		t.Fatalf("hy4 limits: %+v", rows[1])
+	}
+	if _, ok := rows[1]["maxAllowedSize"]; ok {
+		t.Fatalf("unexpected maxAllowedSize on hy4: %+v", rows[1])
+	}
+}
+
 func TestParseCreditMultiplier(t *testing.T) {
 	n, ok := provider.ParseCreditMultiplier("x0.29 credits")
 	if !ok || n != 0.29 {

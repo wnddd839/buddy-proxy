@@ -39,8 +39,16 @@ type Model struct {
 	CreditMultiplier  *float64       `json:"creditMultiplier,omitempty"`
 	Free              *bool          `json:"free,omitempty"`
 	Description       string         `json:"description,omitempty"`
+	MaxInputTokens    int            `json:"maxInputTokens,omitzero"`
+	MaxOutputTokens   int            `json:"maxOutputTokens,omitzero"`
+	MaxAllowedSize    int            `json:"maxAllowedSize,omitzero"`
 	Verified          bool           `json:"verified"`
 	Source            string         `json:"source"`
+}
+
+// ContextLength 优先用上游 maxInputTokens，缺省回落到 maxAllowedSize。
+func (m Model) ContextLength() int {
+	return strutil.FirstPositiveInt(m.MaxInputTokens, m.MaxAllowedSize)
 }
 
 type ListResult struct {
@@ -112,6 +120,9 @@ func ToAdminModels(rows []map[string]any, source string) []Model {
 			OnlyReasoning:     truthy(row["onlyReasoning"]),
 			Credits:           credits,
 			Description:       strutil.First(fmt.Sprint(row["description"]), fmt.Sprint(row["descriptionZh"]), fmt.Sprint(row["descriptionEn"])),
+			MaxInputTokens:    strutil.PositiveInt(row["maxInputTokens"]),
+			MaxOutputTokens:   strutil.PositiveInt(row["maxOutputTokens"]),
+			MaxAllowedSize:    strutil.PositiveInt(row["maxAllowedSize"]),
 			Verified:          allVerified || upstreamID == "auto",
 			Source:            source,
 		}

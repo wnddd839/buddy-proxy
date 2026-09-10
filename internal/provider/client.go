@@ -1309,6 +1309,15 @@ func NormalizeModels(input any) []map[string]any {
 		if desc := strutil.First(fmt.Sprint(m["descriptionZh"]), fmt.Sprint(m["descriptionEn"])); desc != "" && desc != "<nil>" {
 			item["description"] = desc
 		}
+		if n := strutil.PositiveInt(m["maxInputTokens"]); n > 0 {
+			item["maxInputTokens"] = n
+		}
+		if n := strutil.PositiveInt(m["maxOutputTokens"]); n > 0 {
+			item["maxOutputTokens"] = n
+		}
+		if n := strutil.PositiveInt(m["maxAllowedSize"]); n > 0 {
+			item["maxAllowedSize"] = n
+		}
 		out = append(out, item)
 	}
 	return out

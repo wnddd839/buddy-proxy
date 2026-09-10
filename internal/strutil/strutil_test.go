@@ -1,6 +1,9 @@
 package strutil
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestFirst(t *testing.T) {
 	if got := First(" ", "", "<nil>", " a ", "b"); got != "a" {
@@ -26,6 +29,32 @@ func TestMaskSecret(t *testing.T) {
 	}
 	if got := MaskSecret("ab", 3); got != "ab..." {
 		t.Fatalf("short MaskSecret=%q", got)
+	}
+}
+
+func TestPositiveInt(t *testing.T) {
+	cases := []struct {
+		in   any
+		want int
+	}{
+		{1_000_000, 1_000_000},
+		{int64(50_000), 50_000},
+		{float64(1_000_000), 1_000_000},
+		{json.Number("64000"), 64_000},
+		{"48000", 48_000},
+		{0, 0},
+		{-1, 0},
+		{1.5, 0},
+		{"", 0},
+		{nil, 0},
+	}
+	for _, tc := range cases {
+		if got := PositiveInt(tc.in); got != tc.want {
+			t.Fatalf("PositiveInt(%v)=%d want %d", tc.in, got, tc.want)
+		}
+	}
+	if got := FirstPositiveInt(0, float64(0), 1_000_000, 50_000); got != 1_000_000 {
+		t.Fatalf("FirstPositiveInt=%d", got)
 	}
 }
 
