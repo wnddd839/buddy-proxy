@@ -60,6 +60,7 @@ curl -fsS http://127.0.0.1:32126/health
 | Turn execution failed / reason=unknown | 看管理台 `stats.lastError`；多为上游 11128/11101 被客户端包装 |
 | 跨域写管理台 API 报 403 | CSRF 保护生效；确认请求 `Origin` 与站点一致 |
 | 账号统计丢失 | 进程被 `SIGKILL` 时内存中的 dirty 统计可能未落盘；正常退出会 flush |
+| 每日签到失败 / 无反应 | 管理台「每日签到」作用于**当前激活号池**（跟随 `CODEBUDDY_SITE`，可切换号池后重试）；单账号总计 20s，批次上限 5 分钟（账号多时需等待）。上游 `active:false` → `supported` 缺省（不支持）；HTTP 401/单账号超时 → `failed` 且批次 `ok=false`；批次 deadline 耗尽、未执行的账号 → `skipped`（批次仍 `ok=false`）；`code=10001` → 幂等成功 |
 
 ## 账号池持久化
 

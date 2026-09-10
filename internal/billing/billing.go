@@ -34,18 +34,18 @@ type Credits struct {
 }
 
 type Package struct {
-	PackageCode          string   `json:"packageCode"`
-	PackageName          string   `json:"packageName"`
-	ResourceID           string   `json:"resourceId"`
-	Status               any      `json:"status"`
-	CapacityType         int      `json:"capacityType"`
-	Unit                 string   `json:"unit"`
-	Remaining            *float64 `json:"remaining"`
-	Total                *float64 `json:"total"`
-	Used                 *float64 `json:"used"`
-	CycleStartTime       string   `json:"cycleStartTime,omitempty"`
-	CycleEndTime         string   `json:"cycleEndTime,omitempty"`
-	SlicePeriodEndTime   string   `json:"slicePeriodEndTime,omitempty"`
+	PackageCode        string   `json:"packageCode"`
+	PackageName        string   `json:"packageName"`
+	ResourceID         string   `json:"resourceId"`
+	Status             any      `json:"status"`
+	CapacityType       int      `json:"capacityType"`
+	Unit               string   `json:"unit"`
+	Remaining          *float64 `json:"remaining"`
+	Total              *float64 `json:"total"`
+	Used               *float64 `json:"used"`
+	CycleStartTime     string   `json:"cycleStartTime,omitempty"`
+	CycleEndTime       string   `json:"cycleEndTime,omitempty"`
+	SlicePeriodEndTime string   `json:"slicePeriodEndTime,omitempty"`
 }
 
 type Notify struct {
@@ -268,15 +268,15 @@ func summarizeResourceAccounts(items []any) Credits {
 			used += math.Max(0, *size-*left)
 		}
 		packages = append(packages, Package{
-			PackageCode:    strings.TrimSpace(fmt.Sprint(firstAny(item, "PackageCode", "packageCode"))),
-			PackageName:    strings.TrimSpace(fmt.Sprint(firstAny(item, "PackageName", "packageName"))),
-			ResourceID:     strings.TrimSpace(fmt.Sprint(firstAny(item, "ResourceId", "resourceId"))),
-			Status:         firstAny(item, "Status", "status"),
-			CapacityType:   capacityType,
-			Unit:           strutil.First(strings.TrimSpace(fmt.Sprint(firstAny(item, "CapacityUnit", "OriginUnit"))), "credits"),
-			Remaining:      left,
-			Total:          size,
-			Used:           usedAmount,
+			PackageCode:        strings.TrimSpace(fmt.Sprint(firstAny(item, "PackageCode", "packageCode"))),
+			PackageName:        strings.TrimSpace(fmt.Sprint(firstAny(item, "PackageName", "packageName"))),
+			ResourceID:         strings.TrimSpace(fmt.Sprint(firstAny(item, "ResourceId", "resourceId"))),
+			Status:             firstAny(item, "Status", "status"),
+			CapacityType:       capacityType,
+			Unit:               strutil.First(strings.TrimSpace(fmt.Sprint(firstAny(item, "CapacityUnit", "OriginUnit"))), "credits"),
+			Remaining:          left,
+			Total:              size,
+			Used:               usedAmount,
 			CycleStartTime:     strings.TrimSpace(fmt.Sprint(firstAny(item, "CycleStartTime", "cycleStartTime"))),
 			CycleEndTime:       strings.TrimSpace(fmt.Sprint(firstAny(item, "CycleEndTime", "cycleEndTime"))),
 			SlicePeriodEndTime: slicePeriodEnd,

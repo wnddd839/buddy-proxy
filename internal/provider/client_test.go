@@ -7,6 +7,25 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 )
 
+func TestResolveProtocolDirectBillingEndpoint(t *testing.T) {
+	opts := provider.ChatOptions{
+		Site:        "domestic",
+		APIEndpoint: "https://copilot.tencent.com/v2/chat/completions",
+	}
+	got := provider.ResolveProtocolDirectBillingEndpoint(opts, "/v2/billing/meter/daily-checkin")
+	want := "https://copilot.tencent.com/v2/billing/meter/daily-checkin"
+	if got != want {
+		t.Fatalf("billing endpoint=%s want=%s", got, want)
+	}
+
+	opts.APIEndpoint = "https://copilot.tencent.com/v2"
+	got = provider.ResolveProtocolDirectBillingEndpoint(opts, "/v2/billing/meter/daily-checkin")
+	want = "https://copilot.tencent.com/v2/billing/meter/daily-checkin"
+	if got != want {
+		t.Fatalf("dedup billing endpoint=%s want=%s", got, want)
+	}
+}
+
 func TestResolveProtocolDirectDomestic(t *testing.T) {
 	opts := provider.ChatOptions{
 		Site:    "domestic",

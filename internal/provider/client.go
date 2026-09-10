@@ -231,6 +231,34 @@ func ResolveProtocolDirectEndpoint(opts ChatOptions) string {
 	return base + path
 }
 
+// ResolveProtocolDirectBillingEndpoint builds a /v2/billing/meter/* URL with the same
+// region + custom APIEndpoint rules as chat, including /v2 prefix deduplication.
+func ResolveProtocolDirectBillingEndpoint(opts ChatOptions, meterPath string) string {
+	meterPath = strings.TrimSpace(meterPath)
+	if !strings.HasPrefix(meterPath, "/") {
+		meterPath = "/" + meterPath
+	}
+	region := RegionOf(opts)
+	base := strings.TrimRight(ResolveProtocolDirectBaseURL(opts), "/")
+	if endpoint := strings.TrimRight(strings.TrimSpace(opts.APIEndpoint), "/"); endpoint != "" && endpointMatchesRegion(endpoint, region) {
+		base = strings.TrimRight(protocolDirectHostBase(endpoint), "/")
+	}
+	if strings.HasSuffix(base, "/v2") && strings.HasPrefix(meterPath, "/v2/") {
+		meterPath = meterPath[3:]
+	}
+	return base + meterPath
+}
+
+func protocolDirectHostBase(endpoint string) string {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	for _, marker := range []string{"/v2/", "/v3/"} {
+		if idx := strings.Index(endpoint, marker); idx > 0 {
+			return endpoint[:idx]
+		}
+	}
+	return endpoint
+}
+
 // ResolveProtocolDirectDomain 返回 chat 请求的 X-Domain。
 // 官方 CLI 从 chat endpoint 主机推导，而非账号上的 portal 登录域（常为 www.codebuddy.cn）。
 func ResolveProtocolDirectDomain(opts ChatOptions) string {

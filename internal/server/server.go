@@ -602,6 +602,22 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		}
 		httputil.WriteJSON(w, http.StatusOK, listed)
 		return
+	// Batch check-in for enabled accounts. Defaults to the active pool site so the
+	// button follows CODEBUDDY_SITE; optional body {"site":"domestic"} overrides it.
+	case path == "/direct-admin/api/codebuddy/checkin" && r.Method == http.MethodPost:
+		store, err := s.Svc.Pool.Read()
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		var body struct {
+			Site string `json:"site"`
+		}
+		_ = httputil.ReadJSON(r, &body)
+		poolSite := config.NormalizeSite(strutil.First(body.Site, s.Svc.ActivePoolSite()))
+		result := billing.RunPoolCheckin(r.Context(), s.Svc.Provider, store, s.Svc.Config(), poolSite)
+		httputil.WriteJSON(w, http.StatusOK, result)
+		return
 	}
 
 	if strings.HasPrefix(path, "/direct-admin/api/codebuddy/accounts/") {

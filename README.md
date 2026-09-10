@@ -87,7 +87,7 @@ chmod +x ./codebuddy-proxy-linux-amd64
 
 ```bash
 git clone https://github.com/wnddd839/buddy-proxy.git
-cd buddy-proxy/go-codebuddy
+cd buddy-proxy
 go run ./cmd/codebuddy-proxy
 ```
 

@@ -80,6 +80,50 @@ func TestAdminOpenWithoutPassword(t *testing.T) {
 	}
 }
 
+func TestAdminCheckinRouteUsesActivePoolSiteByDefault(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantSite string
+	}{
+		{"empty body falls back to active pool", `{}`, "domestic"},
+		{"explicit global overrides", `{"site":"global"}`, "global"},
+		{"alias normalizes to domestic", `{"site":"cn"}`, "domestic"},
+		{"invalid json falls back to active pool", `not-json`, "domestic"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t, false, "", "")
+			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/direct-admin/api/codebuddy/checkin", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", "http://127.0.0.1:32126")
+			req.Host = "127.0.0.1:32126"
+			rec := httptest.NewRecorder()
+			srv.HTTP.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var payload struct {
+				OK       bool   `json:"ok"`
+				PoolSite string `json:"poolSite"`
+				Summary  struct {
+					Total int `json:"total"`
+				} `json:"summary"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.PoolSite != tc.wantSite {
+				t.Fatalf("poolSite=%q want=%q", payload.PoolSite, tc.wantSite)
+			}
+			// Empty pool: no upstream calls, but the batch must still report cleanly.
+			if !payload.OK || payload.Summary.Total != 0 {
+				t.Fatalf("payload=%s", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestAdminCSRFBlocksCrossOriginMutation(t *testing.T) {
 	srv := testServer(t, false, "", "")
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/direct-admin/api/pool-site", strings.NewReader(`{"site":"global"}`))

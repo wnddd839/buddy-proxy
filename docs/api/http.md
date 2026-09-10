@@ -210,6 +210,39 @@ usage chunk 形如：
 | POST | `/direct-admin/api/codebuddy/accounts/{id}/disable` | 禁用 |
 | GET | `/direct-admin/api/codebuddy/accounts/{id}/usage` | 拉取该账号 Credits（剩余/总额） |
 | POST | `/direct-admin/api/codebuddy/accounts/{id}/refresh-token` | 强制刷新 token |
+| POST | `/direct-admin/api/codebuddy/checkin` | 对指定号池内已启用账号批量每日签到；body 可选 `{"site":"domestic"}`，省略时跟随当前激活号池（`CODEBUDDY_SITE`） |
+
+`checkin` 响应示例：
+
+```json
+{
+  "ok": true,
+  "poolSite": "domestic",
+  "note": "国内站每日签到约 100 积分，连续第 7 天可达 1000 积分。",
+  "summary": {
+    "total": 2,
+    "checkedIn": 1,
+    "unsupported": 1
+  },
+  "results": [
+    {
+      "ok": true,
+      "accountId": "…",
+      "site": "domestic",
+      "supported": true,
+      "rewardCredits": 100,
+      "streakDays": 1,
+      "message": "签到成功，+100 积分"
+    }
+  ]
+}
+```
+
+响应字段采用 `omitzero` 序列化（`coding-standards` 要求）：`ok` / `supported` / `alreadyCheckedIn` 等 bool 与 `rewardCredits` / `streakDays` 等数值为 `false` / `0` 时不出现在 JSON 里，`summary` 中计数为 0 的项同样省略（上例已按线上形态省略零值）。管理台按 truthy 读取，缺失与 `false` / `0` 等价；若你在脚本里断言字段存在，请先判空。
+
+字段说明：`supported` 缺省表示上游 `active:false` 或活动未开启；`alreadyCheckedIn=true` 含上游 `code=10001` 幂等；网络/鉴权失败时 `supported=true` 且计入 `summary.failed`。单账号总计超时 20s（含状态查询 + 签到）；批次总上限 5 分钟（约 `20s × 账号数`）。
+
+`site` 缺省时取当前激活号池（`ActivePoolSite()`，即 `CODEBUDDY_SITE`），与 `/direct-admin/api/status`、`models` 保持一致；显式传 `site` 时才覆盖（`cn` 等别名归一化为 `domestic`）。批次 deadline 耗尽时，未执行的账号计入 `summary.skipped` 并附 `message`（不会发起注定超时的请求），批次 `ok` 仍为 false。
 
 账号动作未知时返回 `404` + `{"ok":false,"error":"unknown account action"}`。
 

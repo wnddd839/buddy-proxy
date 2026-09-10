@@ -125,6 +125,8 @@ h1{
   font-size:clamp(24px,3vw,32px);color:var(--fg);
 }
 .lede{margin:0;color:var(--fg-60);font-size:13.5px;line-height:1.6;max-width:52ch}
+.checkin-hint{margin:12px 0 0;font-size:11.5px;line-height:1.5;color:var(--fg-40);max-width:58ch}
+.checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
 .metrics{
   display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:24px;
 }
@@ -333,8 +335,11 @@ pre{
         </div>
         <div class="actions" style="margin-top:24px">
           <button class="primary" id="btnRefresh" type="button">刷新状态</button>
+          <button class="ghost" id="btnCheckin" type="button" disabled aria-describedby="checkinHint">每日签到</button>
           <button class="ghost" id="btnModels" type="button">拉取模型</button>
         </div>
+        <p class="checkin-hint" id="checkinHint">一键为当前号池全部已启用账号签到（国内站约 100 积分/天）。</p>
+        <pre class="checkin-detail" id="checkinRaw" hidden></pre>
       </div>
     </section>
 
@@ -683,8 +688,16 @@ function normalizeSite(site){
 function siteLabel(site){
   return normalizeSite(site) === 'domestic' ? '国内' : '国际';
 }
+// 签到按钮跟随当前激活号池；paintPoolSite 每次刷新状态时同步。
+// 空字符串表示尚未从 /status 拿到号池，按钮保持 disabled，避免首屏误打国际站。
+let activeCheckinSite = '';
+let checkinBusy = false;
+
 function paintPoolSite(site, accounts){
   site = normalizeSite(site);
+  activeCheckinSite = site;
+  const checkinBtn = $('btnCheckin');
+  if (checkinBtn && !checkinBusy) checkinBtn.disabled = false;
   const domesticBtn = $('btnPoolDomestic');
   const globalBtn = $('btnPoolGlobal');
   if (domesticBtn) domesticBtn.className = site === 'domestic' ? 'active' : '';
@@ -695,7 +708,20 @@ function paintPoolSite(site, accounts){
   if ($('poolSiteHint')) {
     $('poolSiteHint').textContent = '当前号池：' + siteLabel(site) + ' · 可用启用账号 ' + activeEnabled + ' · 国内账号 ' + domestic + ' / 国际账号 ' + global + '（仅当前区域会参与请求）';
   }
+  // 切号池 / 刷新状态时清掉上一次的签明细，避免与新号池并存造成误导。
+  // 签到进行中不清理：runPoolCheckin 会在 refreshStatus 之后重新写入。
+  const checkinRaw = $('checkinRaw');
+  if (checkinRaw && !checkinBusy) {
+    checkinRaw.hidden = true;
+    checkinRaw.textContent = '';
+  }
+  if ($('checkinHint')) {
+    $('checkinHint').textContent = activeCheckinSite === 'global'
+      ? '一键为国际号池全部已启用账号签到；国际站通常无签到活动，会提示不支持。账号多时整体耗时约 20s × 账号数（上限 5 分钟）。'
+      : '一键为国内号池全部已启用账号签到（约 100 积分/天，连续第 7 天可达 1000）；账号多时整体耗时约 20s × 账号数（上限 5 分钟）。';
+  }
 }
+
 async function switchPoolSite(site){
   site = normalizeSite(site);
   const data = await api('/direct-admin/api/pool-site', {method:'POST', body: JSON.stringify({site: site})});
@@ -829,6 +855,56 @@ async function refreshStatus(){
   paintStatus(data);
 }
 
+function formatCheckinSummary(data){
+  const s = data.summary || {};
+  const parts = [];
+  if (s.checkedIn > 0) parts.push('新签 ' + s.checkedIn);
+  if (s.alreadyDone > 0) parts.push('已签 ' + s.alreadyDone);
+  if (s.skipped > 0) parts.push('跳过 ' + s.skipped);
+  if (s.unsupported > 0) parts.push('不支持 ' + s.unsupported);
+  if (s.failed > 0) parts.push('失败 ' + s.failed);
+  if (!parts.length) return data.note || '当前号池没有可签到的账号';
+  return parts.join(' · ');
+}
+
+async function runPoolCheckin(){
+  if (!activeCheckinSite) {
+    showToast('号池状态尚未加载，请稍后再试', 'error');
+    return;
+  }
+  const btn = $('btnCheckin');
+  checkinBusy = true;
+  if (btn) { btn.disabled = true; btn.textContent = '签到中…'; }
+  try {
+    const data = await api('/direct-admin/api/codebuddy/checkin', {method:'POST', body: JSON.stringify({site: activeCheckinSite})});
+    const summary = formatCheckinSummary(data);
+    showToast(summary, data.ok ? undefined : 'error');
+    const results = data.results || [];
+    for (const item of results) {
+      if (item.ok && item.accountId && !item.alreadyCheckedIn) {
+        await fetchAccountUsage(item.accountId, true);
+      }
+    }
+    await refreshStatus();
+    if (results.length && $('checkinRaw')) {
+      const lines = results.map(function(item){
+        const name = item.label || item.accountId || '账号';
+        if (!item.supported) return name + '：' + (item.message || '不支持');
+        if (item.ok && item.alreadyCheckedIn) return name + '：今日已签';
+        if (item.ok) return name + '：' + (item.message || ('+' + (item.rewardCredits || 0) + ' 积分'));
+        return name + '：' + (item.message || '失败');
+      });
+      $('checkinRaw').textContent = lines.join('\n');
+      $('checkinRaw').hidden = false;
+    }
+  } catch (e) {
+    showToast('签到失败：' + (e.message || e), 'error');
+  } finally {
+    checkinBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = '每日签到'; }
+  }
+}
+
 async function refreshModels(){
   const data = await api('/direct-admin/api/codebuddy/models?fresh=1');
   const raw = JSON.stringify(data, null, 2);
@@ -896,6 +972,7 @@ if ($('btnPoolDomestic')) $('btnPoolDomestic').onclick = function(){ switchPoolS
 if ($('btnPoolGlobal')) $('btnPoolGlobal').onclick = function(){ switchPoolSite('global').catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('site')) $('site').addEventListener('change', function(){ $('site').dataset.userTouched = '1'; });
 $('btnRefresh').onclick = function(){ refreshStatus().catch(function(e){ $('statusRaw').textContent = e.message; setHealth(false, '刷新失败'); }); };
+if ($('btnCheckin')) $('btnCheckin').onclick = function(){ runPoolCheckin().catch(function(e){ showToast(e.message, 'error'); }); };
 $('btnModels').onclick = function(){ refreshModels().catch(function(e){ $('modelsRaw').textContent = e.message; $('modelChips').innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>'; }); };
 $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 $('btnPoll').onclick = function(){ pollOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
