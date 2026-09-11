@@ -5,6 +5,44 @@
 
 ---
 
+## v4.4 · 2026-09-11 · 换号重试不再提前放弃剩余账号
+
+### 感谢
+
+本版修复由社区 issue 推动。感谢：
+
+- [@carter003](https://github.com/carter003) 提出 [#6](https://github.com/wnddd839/buddy-proxy/issues/6)：换号重试把「累计次数」和「剩余账号数」直接比较，导致还有账号没试就提前终止。
+- [@dyed-fanxing](https://github.com/dyed-fanxing) 提出 [#4](https://github.com/wnddd839/buddy-proxy/issues/4)：DeepSeek V4 Flash 在 ZCode 里 1M 上下文大约卡在 70%（已于 **v4.3** 修复）。
+
+### 解决了什么
+
+多账号号池里，第一个号返回 429 / 503 等可恢复错误后，可能直接报：
+
+```text
+CodeBuddy 请求重试深度超限（max=1）
+```
+
+下一个号根本没被请求。原始 429 / 503 也会被这条超限错误盖掉，排障更难。
+
+### 根因
+
+`RetryDepth` 是已经尝试过的次数，旧的 `completeRetryLimit(ExcludeIDs)` 却按**还没排除的剩余账号数**动态缩小。失败一次后两者反向变化，比较会提前成立。两个可用账号时：试完 A 再递归，限额变成 1，而深度已经是 1，B 就被跳过。
+
+### 改了什么
+
+- 已尝试账号只记在 `ExcludeIDs` 里，选号时跳过。
+- `RetryDepth` 只跟固定上限 **16** 比较，防止无限递归。
+- 号池试尽或撞到上限时，把最后一次真实上游错误返回给客户端，不再用「重试深度超限」覆盖 429 / 503。
+- 补测试：A=429、B=成功 → 继续打 B 并成功；两个号都 429 → 返回原始 429。
+
+### 升级注意
+
+用新二进制覆盖旧文件后重启即可。配置与账号池格式不变。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v4.4
+
+---
+
 ## v4.3 · 2026-09-10 · DeepSeek Flash 1M 上下文不再卡在 70%
 
 ### 解决了什么

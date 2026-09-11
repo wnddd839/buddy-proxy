@@ -3,9 +3,12 @@ package gateway
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +36,127 @@ func TestResolveProviderModel(t *testing.T) {
 	}
 }
 
+type scriptedChatTransport struct {
+	mu     sync.Mutex
+	calls  []string
+	byAuth map[string]int
+}
+
+func (t *scriptedChatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	token := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	t.mu.Lock()
+	t.calls = append(t.calls, token)
+	status := t.byAuth[token]
+	t.mu.Unlock()
+	if status == 0 {
+		status = http.StatusOK
+	}
+	header := make(http.Header)
+	var body string
+	if status >= 200 && status < 300 {
+		header.Set("Content-Type", "text/event-stream")
+		body = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+	} else {
+		header.Set("Content-Type", "application/json")
+		body = `{"error":"too many requests"}`
+	}
+	return &http.Response{
+		StatusCode: status,
+		Status:     http.StatusText(status),
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}, nil
+}
+
+func TestCompleteFromPoolRetriesNextAccountAfter429(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/accounts.json"
+	svc := New(config.Config{Site: "domestic", AccountsPath: path}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+
+	a, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "a", Site: "domestic", BearerToken: "token-a", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "b", Site: "domestic", BearerToken: "token-b", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	transport := &scriptedChatTransport{byAuth: map[string]int{
+		"token-a": http.StatusTooManyRequests,
+		"token-b": http.StatusOK,
+	}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model:    "auto",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("expected second account to succeed, got %v", err)
+	}
+	if result.AccountID != b.ID {
+		t.Fatalf("AccountID=%s want %s (account B)", result.AccountID, b.ID)
+	}
+	if result.Turn.Text != "ok" {
+		t.Fatalf("text=%q want ok", result.Turn.Text)
+	}
+	transport.mu.Lock()
+	calls := append([]string{}, transport.calls...)
+	transport.mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("upstream calls=%v want token-a then token-b", calls)
+	}
+	if calls[0] != "token-a" || calls[1] != "token-b" {
+		t.Fatalf("upstream calls=%v want [token-a token-b]; first account was %s", calls, a.ID)
+	}
+}
+
+func TestCompleteFromPoolPreserves429WhenAllAccountsFail(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/accounts.json"
+	svc := New(config.Config{Site: "domestic", AccountsPath: path}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	for _, token := range []string{"token-a", "token-b"} {
+		if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+			Label: token, Site: "domestic", BearerToken: token, Enabled: true,
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := &scriptedChatTransport{byAuth: map[string]int{
+		"token-a": http.StatusTooManyRequests,
+		"token-b": http.StatusTooManyRequests,
+	}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model:    "auto",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected upstream 429")
+	}
+	if strings.Contains(err.Error(), "重试深度") {
+		t.Fatalf("retry budget must not mask original 429: %v", err)
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	transport.mu.Lock()
+	n := len(transport.calls)
+	transport.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("upstream calls=%d want 2", n)
+	}
+}
+
 func TestCompleteFromPoolRetryDepthExceeded(t *testing.T) {
 	cfg := config.Config{
 		Host:         "127.0.0.1",
@@ -41,16 +165,17 @@ func TestCompleteFromPoolRetryDepthExceeded(t *testing.T) {
 		Site:         "domestic",
 	}
 	svc := New(cfg, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
 
 	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model:      "auto",
 		Messages:   []map[string]any{{"role": "user", "content": "hi"}},
-		RetryDepth: maxCompleteRetryDepth,
+		RetryDepth: defaultMaxAccountRetries,
 	})
 	if err == nil {
 		t.Fatal("expected retry depth error")
 	}
-	if !strings.Contains(err.Error(), "重试深度") {
+	if !errors.Is(err, errRetryDepthExceeded) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -135,68 +260,6 @@ func TestPoolSelectRoundRobin(t *testing.T) {
 	}
 	if s3.Account.ID == s1.Account.ID {
 		t.Fatalf("exclude should skip %s", s1.Account.ID)
-	}
-}
-
-func TestCompleteRetryLimitScalesWithPool(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/accounts.json"
-	pool := accounts.NewPool(path)
-	t.Cleanup(func() { _ = pool.Close() })
-	for i := 0; i < 12; i++ {
-		_, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
-			Label:       "a" + string(rune('a'+i)),
-			Site:        "global",
-			BearerToken: "token-" + string(rune('a'+i)),
-			Enabled:     true,
-		}))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	svc := New(config.Config{Site: "global", AccountsPath: path}, slog.Default())
-	if got := svc.completeRetryLimit(nil); got != 12 {
-		t.Fatalf("completeRetryLimit=%d want 12 for 12-account pool", got)
-	}
-	for i := 12; i < 20; i++ {
-		_, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
-			Label:       "a" + string(rune('a'+i)),
-			Site:        "global",
-			BearerToken: "token-" + string(rune('a'+i)),
-			Enabled:     true,
-		}))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := svc.completeRetryLimit(nil); got != defaultMaxAccountRetries {
-		t.Fatalf("completeRetryLimit=%d want %d for 20-account pool", got, defaultMaxAccountRetries)
-	}
-}
-
-func TestCompleteRetryLimitRespectsExcludeIDs(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/accounts.json"
-	svc := New(config.Config{Site: "global", AccountsPath: path}, slog.Default())
-	t.Cleanup(func() { _ = svc.Close() })
-	for i := 0; i < 5; i++ {
-		_, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
-			Label:       "a" + string(rune('a'+i)),
-			Site:        "global",
-			BearerToken: "token-" + string(rune('a'+i)),
-			Enabled:     true,
-		}))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	store, err := svc.Pool.Read()
-	if err != nil {
-		t.Fatal(err)
-	}
-	exclude := []string{store.Accounts[0].ID, store.Accounts[1].ID, store.Accounts[2].ID, store.Accounts[3].ID}
-	if got := svc.completeRetryLimit(exclude); got != 1 {
-		t.Fatalf("completeRetryLimit=%d want 1 with 4 excluded of 5", got)
 	}
 }
 

@@ -57,7 +57,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 **失败处理**：
 
 - 鉴权类失败 → 强制 refresh 后重试同一账号一次
-- **429·502·503·504·rate limit** 等可恢复上游故障 → 标记 `failedRequests` + `lastError`，写入 `cooldownUntil`，换下一个账号重试（最多 3 层）
+- **429·502·503·504·rate limit** 等可恢复上游故障 → 标记 `failedRequests` + `lastError`，写入 `cooldownUntil`，用 `ExcludeIDs` 换下一个账号重试（单请求最多 16 个账号）；号池试尽或触达上限时回传真实上游错误，不用「重试深度超限」掩盖 429/503
 - 同区域**全部账号冷却** → 降级选 `cooldownUntil` 最小者（避免整体不可用）
 - `11140` / `11128` / `11101` / `11102` → **不换号**；失败仍写入冷却
 - 客户端主动取消 → 按正常结束计，不计失败

@@ -25,13 +25,12 @@ import (
 
 const (
 	modelsCacheTTL = 60 * time.Second
-	// maxCompleteRetryDepth 为无号池信息时的兜底重试上限。
-	maxCompleteRetryDepth = 3
-	// defaultMaxAccountRetries 大池场景下单请求最多尝试的账号数。
+	// defaultMaxAccountRetries 单请求最多尝试的账号数（含换号重试），防止无限递归。
 	defaultMaxAccountRetries = 16
 )
 
 var (
+	errRetryDepthExceeded = errors.New("CodeBuddy 请求重试深度超限")
 	// 包级预编译，避免热路径（每个 chat 请求）重复编译正则。
 	reProviderModel    = regexp.MustCompile(`(?i)^codebuddy(?:(?:/|:)(.*))?$`)
 	reAuthFailure      = regexp.MustCompile(`(?i)(?:\b401\b|\b403\b|unauthori[sz]ed|forbidden|token|credential|auth|login|not authenticated|未登录|登录|凭证)`)
@@ -256,9 +255,8 @@ type CompleteResult struct {
 }
 
 func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (CompleteResult, error) {
-	retryLimit := s.completeRetryLimit(opts.ExcludeIDs)
-	if opts.RetryDepth >= retryLimit {
-		return CompleteResult{}, fmt.Errorf("CodeBuddy 请求重试深度超限（max=%d）", retryLimit)
+	if opts.RetryDepth >= defaultMaxAccountRetries {
+		return CompleteResult{}, fmt.Errorf("%w（max=%d）", errRetryDepthExceeded, defaultMaxAccountRetries)
 	}
 	// 当前号池区域（管理台一键切换）限制可选账号；具体 upstream 仍由账号 site 决定。
 	selection, err := s.Pool.Select(accounts.SelectOptions{
@@ -295,8 +293,8 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			opts.RetryDepth++
 			retried, retryErr := s.CompleteFromPool(ctx, opts)
 			if retryErr != nil {
-				// 不要用「无可用账号」掩盖真实上游错误。
-				if errors.Is(retryErr, accounts.ErrNoAccounts) || strings.Contains(retryErr.Error(), "no enabled CodeBuddy accounts") {
+				// 不要用「无可用账号 / 重试深度超限」掩盖真实上游错误（429/503 等）。
+				if isRetryExhausted(retryErr) {
 					return CompleteResult{}, err
 				}
 				return CompleteResult{}, retryErr
@@ -427,26 +425,14 @@ func failureCooldown(err error) time.Duration {
 	}
 }
 
-func (s *Service) completeRetryLimit(excludeIDs []string) int {
-	store, err := s.Pool.Read()
-	if err != nil {
-		return maxCompleteRetryDepth
+func isRetryExhausted(err error) bool {
+	if err == nil {
+		return false
 	}
-	site := s.ActivePoolSite()
-	active := 0
-	for _, account := range store.Accounts {
-		if !account.Enabled || !accounts.HasCredentials(account) {
-			continue
-		}
-		if site != "" && config.NormalizeSite(account.Site) != site {
-			continue
-		}
-		if slices.Contains(excludeIDs, account.ID) {
-			continue
-		}
-		active++
+	if errors.Is(err, accounts.ErrNoAccounts) || errors.Is(err, errRetryDepthExceeded) {
+		return true
 	}
-	return max(1, min(active, defaultMaxAccountRetries))
+	return strings.Contains(err.Error(), "no enabled CodeBuddy accounts")
 }
 
 func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.Account, err error) time.Duration {
