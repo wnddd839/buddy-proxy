@@ -20,6 +20,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
+	"github.com/wnddd839/codebuddy-proxy/internal/sessionpin"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 )
 
@@ -100,6 +101,7 @@ type Service struct {
 		expiresAt time.Time
 	}
 	modelsFlight modelsFlight
+	Pins         *sessionpin.Table
 }
 
 func New(cfg config.Config, logger *slog.Logger) *Service {
@@ -116,6 +118,7 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 		Log:      logger,
 		Started:  time.Now(),
 		oauth:    &OAuthSession{Status: "idle"},
+		Pins:     sessionpin.New(0),
 	}
 	svc.storeConfig(cfg)
 	return svc
@@ -186,6 +189,7 @@ func ResolveProviderModel(model string) ProviderModel {
 
 type CompleteOptions struct {
 	AccountID           string
+	SessionKey          string
 	Model               string
 	Messages            []map[string]any
 	Stream              bool
@@ -257,11 +261,21 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if opts.RetryDepth >= defaultMaxAccountRetries {
 		return CompleteResult{}, fmt.Errorf("%w（max=%d）", errRetryDepthExceeded, defaultMaxAccountRetries)
 	}
-	// 当前号池区域（管理台一键切换）限制可选账号；具体 upstream 仍由账号 site 决定。
+	if opts.SessionKey == "" {
+		opts.SessionKey = sessionpin.Key(nil, "", opts.Messages)
+	}
+	if opts.AccountID == "" && opts.SessionKey != "" {
+		if id, ok := s.Pins.Lookup(opts.SessionKey); ok && !slices.Contains(opts.ExcludeIDs, id) {
+			opts.AccountID = id
+		} else if ok {
+			s.Pins.Forget(opts.SessionKey)
+		}
+	}
 	selection, err := s.Pool.Select(accounts.SelectOptions{
-		AccountID:  opts.AccountID,
-		Site:       s.ActivePoolSite(),
-		ExcludeIDs: opts.ExcludeIDs,
+		AccountID:   opts.AccountID,
+		Site:        s.ActivePoolSite(),
+		ExcludeIDs:  opts.ExcludeIDs,
+		PreferQuota: opts.AccountID == "",
 	})
 	if err != nil {
 		return CompleteResult{}, err
@@ -283,6 +297,9 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			return CompleteResult{}, err
 		}
 		if s.shouldRetryNextAccount(err, selection, opts) {
+			if opts.SessionKey != "" {
+				s.Pins.Forget(opts.SessionKey)
+			}
 			cooldown := s.resolveFailureCooldown(ctx, account, err)
 			_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
 			s.Log.Warn("retrying codebuddy request with next account", "accountId", account.ID, "error", err.Error())
@@ -313,6 +330,9 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		return CompleteResult{}, err
 	}
 	_ = s.Pool.MarkResult(selection, true, "", 0)
+	if opts.SessionKey != "" {
+		s.Pins.Remember(opts.SessionKey, account.ID)
+	}
 	return CompleteResult{
 		Result:    result,
 		Account:   accounts.SummarizeAccount(account),

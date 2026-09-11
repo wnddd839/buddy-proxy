@@ -541,6 +541,13 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 	for _, id := range opts.ExcludeIDs {
 		exclude[id] = struct{}{}
 	}
+	if opts.PreferQuota {
+		if sel, ok := p.pickHighestQuotaLocked(&store, now, opts.Site, exclude); ok {
+			p.mem = store
+			p.markDirtyLocked()
+			return sel, nil
+		}
+	}
 	var (
 		fallbackIdx   = -1
 		fallbackUntil int64
@@ -589,10 +596,56 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 	return Selection{}, ErrNoAccounts
 }
 
+func quotaScore(account Account) (float64, bool) {
+	if account.QuotaUnlimited {
+		return 1e18, true
+	}
+	if account.QuotaRemaining == nil {
+		return 0, false
+	}
+	return *account.QuotaRemaining, true
+}
+
+func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site string, exclude map[string]struct{}) (Selection, bool) {
+	bestIdx := -1
+	var bestRemaining float64
+	hasQuota := false
+	for i, account := range store.Accounts {
+		if !account.Enabled || !HasCredentials(account) {
+			continue
+		}
+		if site != "" && config.NormalizeSite(account.Site) != config.NormalizeSite(site) {
+			continue
+		}
+		if _, skip := exclude[account.ID]; skip {
+			continue
+		}
+		if unavailableUntil(account, now) > now {
+			continue
+		}
+		remaining, ok := quotaScore(account)
+		if !ok {
+			continue
+		}
+		if !hasQuota || remaining > bestRemaining {
+			hasQuota = true
+			bestRemaining = remaining
+			bestIdx = i
+		}
+	}
+	if !hasQuota || bestIdx < 0 {
+		return Selection{}, false
+	}
+	store.Accounts[bestIdx].LastSelectedAt = now
+	store.NextIndex = (bestIdx + 1) % len(store.Accounts)
+	return Selection{Source: "pool", Account: store.Accounts[bestIdx], Index: bestIdx, Store: cloneStore(*store)}, true
+}
+
 type SelectOptions struct {
-	AccountID  string
-	Site       string
-	ExcludeIDs []string
+	AccountID   string
+	Site        string
+	ExcludeIDs  []string
+	PreferQuota bool
 }
 
 // InCooldown reports whether the account is temporarily excluded from pool rotation.
@@ -820,33 +873,33 @@ func (p *Pool) ReplaceAccount(account Account) (Account, Store, error) {
 }
 
 type Summary struct {
-	ID                  string `json:"id"`
-	Provider            string `json:"provider"`
-	Label               string `json:"label"`
-	Enabled             bool   `json:"enabled"`
-	Source              string `json:"source"`
-	Site                string `json:"site"`
-	BaseURL             string `json:"baseUrl"`
-	InternetEnvironment string `json:"internetEnvironment"`
-	APIEndpoint         string `json:"apiEndpoint,omitempty"`
-	ChatCompletionsPath string `json:"chatCompletionsPath,omitempty"`
-	Transport           string `json:"transport"`
-	AuthType            string `json:"authType"`
-	HasCredentials      bool   `json:"hasCredentials"`
-	LoggedIn            bool   `json:"loggedIn"`
-	UserID              string `json:"userId,omitempty"`
-	UserName            string `json:"userName,omitempty"`
-	UserNickname        string `json:"userNickname,omitempty"`
-	AuthMode            string `json:"authMode,omitempty"`
-	BearerTokenPreview  string `json:"bearerTokenPreview,omitempty"`
-	RefreshTokenPreview string `json:"refreshTokenPreview,omitempty"`
-	APIKeyPreview       string `json:"apiKeyPreview,omitempty"`
-	CreatedAt           int64  `json:"createdAt"`
-	UpdatedAt           int64  `json:"updatedAt"`
-	LastUsedAt          int64  `json:"lastUsedAt,omitempty"`
-	LastSelectedAt      int64  `json:"lastSelectedAt,omitempty"`
-	SuccessRequests     int64  `json:"successRequests"`
-	FailedRequests      int64  `json:"failedRequests"`
+	ID                  string   `json:"id"`
+	Provider            string   `json:"provider"`
+	Label               string   `json:"label"`
+	Enabled             bool     `json:"enabled"`
+	Source              string   `json:"source"`
+	Site                string   `json:"site"`
+	BaseURL             string   `json:"baseUrl"`
+	InternetEnvironment string   `json:"internetEnvironment"`
+	APIEndpoint         string   `json:"apiEndpoint,omitempty"`
+	ChatCompletionsPath string   `json:"chatCompletionsPath,omitempty"`
+	Transport           string   `json:"transport"`
+	AuthType            string   `json:"authType"`
+	HasCredentials      bool     `json:"hasCredentials"`
+	LoggedIn            bool     `json:"loggedIn"`
+	UserID              string   `json:"userId,omitempty"`
+	UserName            string   `json:"userName,omitempty"`
+	UserNickname        string   `json:"userNickname,omitempty"`
+	AuthMode            string   `json:"authMode,omitempty"`
+	BearerTokenPreview  string   `json:"bearerTokenPreview,omitempty"`
+	RefreshTokenPreview string   `json:"refreshTokenPreview,omitempty"`
+	APIKeyPreview       string   `json:"apiKeyPreview,omitempty"`
+	CreatedAt           int64    `json:"createdAt"`
+	UpdatedAt           int64    `json:"updatedAt"`
+	LastUsedAt          int64    `json:"lastUsedAt,omitempty"`
+	LastSelectedAt      int64    `json:"lastSelectedAt,omitempty"`
+	SuccessRequests     int64    `json:"successRequests"`
+	FailedRequests      int64    `json:"failedRequests"`
 	LastError           string   `json:"lastError,omitempty"`
 	TokenExpiresAt      int64    `json:"tokenExpiresAt,omitempty"`
 	TokenExpired        bool     `json:"tokenExpired"`

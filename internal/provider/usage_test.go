@@ -102,6 +102,36 @@ func TestParseUsageDeepSeekAliases(t *testing.T) {
 	}
 }
 
+func TestParseUsageWorkBuddyCamelCase(t *testing.T) {
+	usage := ParseUsage(map[string]any{
+		"prompt_tokens":          float64(1200),
+		"completion_tokens":      float64(40),
+		"cacheReadInputTokens":   float64(900),
+		"promptCacheHitTokens":   float64(900),
+		"promptTokensDetails": map[string]any{
+			"cachedTokens": float64(900),
+		},
+	})
+	if usage.CachedTokens() != 900 {
+		t.Fatalf("workbuddy camelCase cached=%d want 900", usage.CachedTokens())
+	}
+}
+
+func TestParseUsageNestedCacheTokensAlias(t *testing.T) {
+	usage := ParseUsage(map[string]any{
+		"promptTokens": float64(500),
+		"inputTokensDetails": map[string]any{
+			"cache_tokens": float64(320),
+		},
+	})
+	if usage.PromptTokens != 500 {
+		t.Fatalf("prompt=%d", usage.PromptTokens)
+	}
+	if usage.CachedTokens() != 320 {
+		t.Fatalf("cached=%d want 320", usage.CachedTokens())
+	}
+}
+
 func TestParseUsageTopLevelAndInputDetails(t *testing.T) {
 	u1 := ParseUsage(map[string]any{
 		"prompt_tokens": float64(100),

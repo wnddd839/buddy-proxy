@@ -23,6 +23,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/openai"
 	"github.com/wnddd839/codebuddy-proxy/internal/opencode"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
+	"github.com/wnddd839/codebuddy-proxy/internal/sessionpin"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 )
 
@@ -247,6 +248,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ReasoningEffortAlt  string           `json:"reasoningEffort"`
 		Reasoning           map[string]any   `json:"reasoning"`
 		Thinking            map[string]any   `json:"thinking"`
+		PromptCacheKey      string           `json:"prompt_cache_key"`
 	}
 	if err := httputil.ReadJSON(r, &body); err != nil {
 		if errors.Is(err, httputil.ErrBodyTooLarge) {
@@ -277,6 +279,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ReasoningEffort:     reasoningEffort,
 		Reasoning:           body.Reasoning,
 		Thinking:            body.Thinking,
+		SessionKey:          sessionpin.Key(r.Header, body.PromptCacheKey, body.Messages),
 	}
 
 	if body.Stream {

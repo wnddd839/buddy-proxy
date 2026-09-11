@@ -159,6 +159,52 @@ func TestCompleteFromPoolPreserves429WhenAllAccountsFail(t *testing.T) {
 	}
 }
 
+func TestCompleteFromPoolPinsSessionToOneAccount(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	a, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "a", Site: "domestic", BearerToken: "token-a", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "b", Site: "domestic", BearerToken: "token-b", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	svc.Provider.HTTP = &http.Client{Transport: &scriptedChatTransport{}}
+
+	first, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-1",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-1",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AccountID != second.AccountID {
+		t.Fatalf("session pin broke: %s vs %s", first.AccountID, second.AccountID)
+	}
+	other, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-2",
+		Messages: []map[string]any{{"role": "user", "content": "other"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.AccountID == first.AccountID {
+		t.Fatalf("new session should be able to use another account, both %s (first was %s)", other.AccountID, a.ID)
+	}
+}
+
 func TestCompleteFromPoolRetryDepthExceeded(t *testing.T) {
 	cfg := config.Config{
 		Host:         "127.0.0.1",

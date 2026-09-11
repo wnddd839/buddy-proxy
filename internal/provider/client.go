@@ -1169,20 +1169,25 @@ func ParseUsage(raw map[string]any) Usage {
 		return Usage{}
 	}
 	usage := Usage{
-		PromptTokens:             intFrom(raw["prompt_tokens"], raw["input_tokens"]),
-		CompletionTokens:         intFrom(raw["completion_tokens"], raw["output_tokens"]),
-		TotalTokens:              intFrom(raw["total_tokens"]),
-		CacheReadInputTokens:     intFrom(raw["cache_read_input_tokens"]),
-		CacheCreationInputTokens: intFrom(raw["cache_creation_input_tokens"]),
-		PromptCacheHitTokens:     intFrom(raw["prompt_cache_hit_tokens"], raw["cached_tokens"]),
-		PromptCacheMissTokens:    intFrom(raw["prompt_cache_miss_tokens"]),
+		PromptTokens:             intFrom(raw["prompt_tokens"], raw["input_tokens"], raw["promptTokens"], raw["inputTokens"]),
+		CompletionTokens:         intFrom(raw["completion_tokens"], raw["output_tokens"], raw["completionTokens"], raw["outputTokens"]),
+		TotalTokens:              intFrom(raw["total_tokens"], raw["totalTokens"]),
+		CacheReadInputTokens:     intFrom(raw["cache_read_input_tokens"], raw["cacheReadInputTokens"], raw["cache_tokens"], raw["cacheTokens"]),
+		CacheCreationInputTokens: intFrom(raw["cache_creation_input_tokens"], raw["cacheCreationInputTokens"]),
+		PromptCacheHitTokens:     intFrom(raw["prompt_cache_hit_tokens"], raw["promptCacheHitTokens"], raw["cached_tokens"], raw["cachedTokens"]),
+		PromptCacheMissTokens:    intFrom(raw["prompt_cache_miss_tokens"], raw["promptCacheMissTokens"]),
 	}
-	for _, key := range []string{"prompt_tokens_details", "input_tokens_details"} {
+	for _, key := range []string{"prompt_tokens_details", "promptTokensDetails", "input_tokens_details", "inputTokensDetails"} {
 		details, ok := raw[key].(map[string]any)
 		if !ok || details == nil {
 			continue
 		}
-		cached := intFrom(details["cached_tokens"], details["cache_read_input_tokens"], details["cache_hit_tokens"])
+		cached := intFrom(
+			details["cached_tokens"], details["cachedTokens"],
+			details["cache_read_input_tokens"], details["cacheReadInputTokens"],
+			details["cache_hit_tokens"], details["cacheHitTokens"],
+			details["cache_tokens"], details["cacheTokens"],
+		)
 		if cached > 0 {
 			usage.PromptTokensDetails = &PromptTokensDetails{CachedTokens: cached}
 			break

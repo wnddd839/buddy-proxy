@@ -357,3 +357,60 @@ func TestPoolSelectFallbackWhenAllCooldown(t *testing.T) {
 		}
 	}
 }
+
+func TestPoolPreferQuotaPicksHighestRemaining(t *testing.T) {
+	dir := t.TempDir()
+	pool := accounts.NewPool(filepath.Join(dir, "accounts.json"))
+	defer pool.Close()
+	lowRem := 10.0
+	highRem := 80.0
+	low, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "low", Site: "domestic", BearerToken: "t-low", QuotaRemaining: &lowRem,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	high, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "high", Site: "domestic", BearerToken: "t-high", QuotaRemaining: &highRem,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, err := pool.Select(accounts.SelectOptions{Site: "domestic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rr.Account.ID != low.ID {
+		t.Fatalf("round-robin without PreferQuota should keep insert order, got %s", rr.Account.ID)
+	}
+	sel, err := pool.Select(accounts.SelectOptions{Site: "domestic", PreferQuota: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Account.ID != high.ID {
+		t.Fatalf("PreferQuota picked %s want %s", sel.Account.ID, high.ID)
+	}
+}
+
+func TestPoolPreferQuotaFallsBackToRoundRobinWithoutQuota(t *testing.T) {
+	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
+	defer pool.Close()
+	first, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "first", Site: "domestic", BearerToken: "t-first",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "second", Site: "domestic", BearerToken: "t-second",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	sel, err := pool.Select(accounts.SelectOptions{Site: "domestic", PreferQuota: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Account.ID != first.ID {
+		t.Fatalf("no quota data should keep round-robin, got %s", sel.Account.ID)
+	}
+}
