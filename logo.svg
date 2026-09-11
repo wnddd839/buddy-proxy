@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="cbpTitle">
+  <title id="cbpTitle">CodeBuddy Proxy</title>
+  <rect width="256" height="256" fill="#F9F8F6"/>
+  <g fill="none" stroke="#1C1C1C" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M50 84 122 128 50 172"/>
+    <path d="M122 128h84"/>
+  </g>
+</svg>

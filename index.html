@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Buddy Proxy — 把 CodeBuddy / WorkBuddy 变成 /v1</title>
+  <meta name="description" content="Buddy Proxy：Go 原生协议网关。同一套账号可切 CodeBuddy / WorkBuddy、国内 / 国际。协议直连、OAuth、账号池、真实 Credits、OpenAI 兼容 /v1。" />
+  <meta property="og:title" content="Buddy Proxy" />
+  <meta property="og:description" content="把 CodeBuddy / WorkBuddy 变成 OpenAI 兼容的 /v1 渠道。同一套 token，产品和站点可切换。" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://wnddd839.github.io/buddy-proxy/" />
+  <meta property="og:image" content="https://wnddd839.github.io/buddy-proxy/logo.svg" />
+  <meta name="twitter:card" content="summary" />
+  <link rel="canonical" href="https://wnddd839.github.io/buddy-proxy/" />
+  <link rel="icon" href="./logo.svg" type="image/svg+xml" />
+  <style>
+    :root {
+      /* Editorial 纯单色核心色彩字典 */
+      --bg: #F9F8F6;
+      --fg: #1C1C1C;
+      --fg-80: rgba(28, 28, 28, 0.80);
+      --fg-60: rgba(28, 28, 28, 0.60);
+      --fg-40: rgba(28, 28, 28, 0.40);
+      --fg-20: rgba(28, 28, 28, 0.20);
+      --fg-10: rgba(28, 28, 28, 0.10);
+      --invert-bg: #1C1C1C;
+      --invert-fg: #F9F8F6;
+      --display: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", "Noto Serif SC", serif;
+      --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --max: 1360px;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.625;
+      font-size: 14.5px;
+      letter-spacing: -0.01em;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    .wrap {
+      width: min(100% - 4rem, var(--max));
+      margin-inline: auto;
+    }
+
+    /* 刊头固定导航 (Fixed Navigation) */
+    .nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 50;
+      padding: 20px 0;
+      background: rgba(249, 248, 246, 0.92);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--fg-10);
+    }
+    .nav-inner {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 2rem;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .brand img {
+      width: 22px;
+      height: 22px;
+      display: block;
+    }
+    .brand-title {
+      font-family: var(--display);
+      font-size: 18px;
+      font-weight: 400;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: var(--fg);
+    }
+    .nav-links {
+      display: flex;
+      gap: 2.2rem;
+      align-items: center;
+      font-size: 11.5px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--fg-60);
+    }
+    .nav-links a:hover { color: var(--fg); }
+    .nav-cta {
+      border: 1px solid var(--fg) !important;
+      padding: 7px 18px;
+      color: var(--fg) !important;
+      font-weight: 500;
+      transition: background 200ms ease, color 200ms ease;
+    }
+    .nav-cta:hover {
+      background: var(--invert-bg);
+      color: var(--invert-fg) !important;
+    }
+
+    /* 链接下划线展开动效 (scaleX from right-to-left on hover) */
+    .link-hover {
+      position: relative;
+      display: inline-block;
+    }
+    .link-hover::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      bottom: -2px;
+      width: 100%;
+      height: 1px;
+      background: currentColor;
+      transform: scaleX(0);
+      transform-origin: 100% 50%;
+      transition: transform 300ms ease;
+    }
+    .link-hover:hover::after {
+      transform: scaleX(1);
+      transform-origin: 0% 50%;
+    }
+
+    /* Hero Section (大号衬线标题与 12 栏排版) */
+    .hero {
+      padding-top: clamp(140px, 20vh, 200px);
+      padding-bottom: clamp(64px, 10vh, 120px);
+      border-bottom: 1px solid var(--fg-10);
+    }
+    .hero-kicker {
+      font-size: 11px;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: var(--fg-40);
+      margin-bottom: 2rem;
+    }
+    .hero-title {
+      font-family: var(--display);
+      font-weight: 400;
+      font-size: clamp(3.4rem, 8.5vw, 8.5rem);
+      line-height: 0.92;
+      letter-spacing: -0.04em;
+      margin-bottom: 3.5rem;
+      color: var(--fg);
+    }
+    .hero-title em {
+      font-style: italic;
+      font-family: var(--display);
+      font-weight: 400;
+    }
+
+    .hero-grid-12 {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 2.5rem;
+      align-items: baseline;
+    }
+    .hero-col-lead {
+      grid-column: span 6;
+      color: var(--fg-60);
+      font-size: clamp(16px, 1.8vw, 20px);
+      line-height: 1.65;
+      font-style: italic;
+    }
+    .hero-col-actions {
+      grid-column: span 6;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 1.5rem;
+    }
+    @media (max-width: 900px) {
+      .hero-col-lead, .hero-col-actions { grid-column: span 12; }
+      .nav-links a:not(.nav-cta) { display: none; }
+    }
+
+    .hero-btn-row {
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 14px 32px;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background 200ms ease, color 200ms ease, border-color 200ms ease;
+    }
+    .btn-solid {
+      background: var(--invert-bg);
+      color: var(--invert-fg);
+      border-color: var(--invert-bg);
+    }
+    .btn-solid:hover {
+      background: var(--fg);
+      border-color: var(--fg);
+      opacity: 0.9;
+    }
+    .btn-line {
+      background: transparent;
+      border-color: var(--fg-20);
+      color: var(--fg);
+    }
+    .btn-line:hover {
+      border-color: var(--fg);
+      background: rgba(28, 28, 28, 0.02);
+    }
+
+    /* 通用 12 栏 Section 布局 */
+    section {
+      padding: clamp(80px, 14vh, 150px) 0;
+      border-bottom: 1px solid var(--fg-10);
+    }
+    .grid-12 {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 3.5rem;
+      align-items: start;
+    }
+    .col-sidebar {
+      grid-column: span 4;
+      position: sticky;
+      top: 100px;
+    }
+    .col-content {
+      grid-column: span 8;
+    }
+    @media (max-width: 960px) {
+      .col-sidebar, .col-content { grid-column: span 12; position: static; }
+    }
+
+    .section-num {
+      font-family: var(--display);
+      font-size: 16px;
+      font-style: italic;
+      color: var(--fg-40);
+      margin-bottom: 0.75rem;
+    }
+    .section-label {
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--fg-40);
+      margin-bottom: 1rem;
+    }
+    .section-title {
+      font-family: var(--display);
+      font-weight: 400;
+      font-size: clamp(28px, 3.8vw, 48px);
+      letter-spacing: -0.025em;
+      line-height: 1.1;
+      margin-bottom: 1.25rem;
+      color: var(--fg);
+    }
+    .section-desc {
+      color: var(--fg-60);
+      font-size: 14.5px;
+      line-height: 1.7;
+      max-width: 32rem;
+    }
+
+    /* 编目式特性列表 (group-hover:italic 动效) */
+    .article-item {
+      border-top: 1px solid var(--fg-10);
+      padding: 28px 0;
+      transition: border-color 250ms ease;
+    }
+    .article-item:first-child { border-top: 1px solid var(--fg-20); }
+    .article-item:hover {
+      border-top-color: var(--fg-60);
+    }
+    .article-topline {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 0.75rem;
+    }
+    .article-item h3 {
+      font-family: var(--display);
+      font-weight: 400;
+      font-size: 24px;
+      letter-spacing: -0.015em;
+      color: var(--fg);
+      transition: font-style 400ms ease;
+    }
+    .article-item:hover h3 {
+      font-style: italic;
+    }
+    .article-index {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--fg-40);
+    }
+    .article-item p {
+      color: var(--fg-60);
+      font-size: 14px;
+      line-height: 1.7;
+      max-width: 42rem;
+    }
+    .article-item code {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--fg);
+      background: rgba(28, 28, 28, 0.04);
+      padding: 1px 4px;
+    }
+
+    /* 客户端接入选项卡与终端窗口 */
+    .integration-box {
+      border: 1px solid var(--fg-10);
+      padding: 0;
+      background: transparent;
+    }
+    .integration-nav {
+      display: flex;
+      border-bottom: 1px solid var(--fg-10);
+      background: rgba(28, 28, 28, 0.02);
+      overflow-x: auto;
+    }
+    .tab-trigger {
+      padding: 14px 22px;
+      background: transparent;
+      border: none;
+      border-right: 1px solid var(--fg-10);
+      font-family: var(--sans);
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--fg-60);
+      cursor: pointer;
+      transition: all 200ms ease;
+    }
+    .tab-trigger:hover { color: var(--fg); }
+    .tab-trigger.active {
+      background: var(--bg);
+      color: var(--fg);
+      font-weight: 600;
+      box-shadow: inset 0 -2px 0 var(--fg);
+    }
+    .integration-panel {
+      padding: 28px;
+    }
+    .integration-code-pre {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.75;
+      color: var(--fg-80);
+      white-space: pre;
+      overflow-x: auto;
+    }
+    .integration-code-pre .dim { color: var(--fg-40); }
+    .integration-code-pre .hot {
+      font-weight: 600;
+      color: var(--fg);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .integration-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px dashed var(--fg-10);
+    }
+
+    /* 细线下载表格 */
+    .dl-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .dl-table th, .dl-table td {
+      text-align: left;
+      padding: 20px 0;
+      border-bottom: 1px solid var(--fg-10);
+    }
+    .dl-table th {
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--fg-40);
+      font-weight: 400;
+    }
+    .dl-table tr:hover td {
+      border-bottom-color: var(--fg-40);
+    }
+    .dl-table a {
+      font-family: var(--mono);
+      font-size: 13.5px;
+      color: var(--fg);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .dl-table a:hover {
+      color: var(--fg-60);
+    }
+    .dl-meta {
+      margin-top: 2rem;
+      font-size: 13px;
+      color: var(--fg-60);
+    }
+    .dl-meta a {
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    /* 三步跑起来 (01, 02, 03) */
+    .steps-deck {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2.5rem;
+    }
+    @media (max-width: 800px) { .steps-deck { grid-template-columns: 1fr; } }
+    .step-card {
+      border-top: 1px solid var(--fg-20);
+      padding-top: 1.5rem;
+    }
+    .step-num {
+      font-family: var(--display);
+      font-size: 24px;
+      font-style: italic;
+      color: var(--fg-40);
+      margin-bottom: 0.75rem;
+    }
+    .step-card h4 {
+      font-family: var(--display);
+      font-size: 19px;
+      font-weight: 400;
+      margin-bottom: 0.5rem;
+      color: var(--fg);
+    }
+    .step-card p {
+      color: var(--fg-60);
+      font-size: 13.5px;
+      line-height: 1.65;
+    }
+
+    /* 合规声明三卡片 */
+    .notice-deck {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 2.5rem;
+    }
+    @media (max-width: 800px) { .notice-deck { grid-template-columns: 1fr; } }
+    .notice-block {
+      border-top: 1px solid var(--fg-10);
+      padding-top: 1.5rem;
+    }
+    .notice-block h3 {
+      font-family: var(--display);
+      font-size: 18px;
+      font-weight: 400;
+      margin-bottom: 0.75rem;
+      color: var(--fg);
+    }
+    .notice-block p {
+      color: var(--fg-60);
+      font-size: 13.5px;
+      line-height: 1.7;
+    }
+
+    /* 结语 CTA */
+    .cta-stage {
+      padding: clamp(80px, 16vh, 180px) 0;
+      border-bottom: none;
+    }
+    .cta-title {
+      font-family: var(--display);
+      font-weight: 400;
+      font-size: clamp(2.8rem, 5.5vw, 6rem);
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+      max-width: 16ch;
+      margin-bottom: 2rem;
+      color: var(--fg);
+    }
+    .cta-desc {
+      color: var(--fg-60);
+      font-size: 16px;
+      max-width: 38rem;
+      margin-bottom: 2.5rem;
+      line-height: 1.65;
+    }
+
+    /* 页脚 (Inverted Monochrome Footer) */
+    footer {
+      background: var(--invert-bg);
+      color: var(--invert-fg);
+      padding: 72px 0;
+      font-size: 11.5px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+    .footer-flex {
+      display: flex;
+      justify-content: space-between;
+      gap: 2.5rem;
+      flex-wrap: wrap;
+      align-items: center;
+      color: rgba(249, 248, 246, 0.55);
+    }
+    .footer-flex a {
+      color: var(--invert-fg);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    /* Toast 提示 */
+    .toast-box {
+      position: fixed;
+      bottom: 28px;
+      right: 28px;
+      z-index: 100;
+      padding: 12px 24px;
+      background: var(--invert-bg);
+      color: var(--invert-fg);
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      border: 1px solid var(--invert-bg);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 300ms ease;
+    }
+    .toast-box.show { opacity: 1; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 刊头导航 -->
+  <header class="nav" id="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="./">
+        <img src="./logo.svg" alt="Buddy Proxy" width="22" height="22" />
+        <span class="brand-title">Buddy Proxy</span>
+      </a>
+      <nav class="nav-links" aria-label="导航">
+        <a class="link-hover" href="#capabilities">能力</a>
+        <a class="link-hover" href="#integration">接入</a>
+        <a class="link-hover" href="#releases">下载</a>
+        <a class="link-hover" href="#started">指南</a>
+        <a class="link-hover" href="#compliance">合规</a>
+        <a class="nav-cta" href="https://github.com/wnddd839/buddy-proxy" target="_blank" rel="noopener">GitHub 仓库</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero Section -->
+    <section class="hero" aria-label="Buddy Proxy Hero">
+      <div class="wrap">
+        <div class="hero-kicker">Protocol Direct Gateway · Issue No. 05</div>
+        <h1 class="hero-title">
+          把 CodeBuddy / WorkBuddy<br />
+          变成 <em>/v1.</em>
+        </h1>
+        <div class="hero-grid-12">
+          <div class="hero-col-lead">
+            同一套账号，管理台切换国内 / 国际、CodeBuddy / WorkBuddy。
+            变成任何 OpenAI 客户端都能直连的 /v1 渠道。Go 原生单文件，OAuth 后协议直连，不需要 codebuddy --serve。
+          </div>
+          <div class="hero-col-actions">
+            <div class="hero-btn-row">
+              <a class="btn btn-solid" href="#releases">下载最新发布</a>
+              <a class="btn btn-line" href="http://127.0.0.1:32126/direct-admin/" target="_blank">本地控制台</a>
+            </div>
+            <div style="font-size:12px;color:var(--fg-40);letter-spacing:0.08em;text-transform:uppercase">
+              默认端点 127.0.0.1:32126 · 协议层直通 · 本地安全落盘
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 01 / 核心架构与能力 -->
+    <section id="capabilities">
+      <div class="wrap grid-12">
+        <div class="col-sidebar">
+          <div class="section-num">01 /</div>
+          <div class="section-label">Capabilities</div>
+          <h2 class="section-title">一件事做到位.</h2>
+          <p class="section-desc">
+            不是多厂商聚合，也不是代理池转发。这个项目只做一件事：把 CodeBuddy / WorkBuddy 账号转为标准 OpenAI 兼容接口。
+          </p>
+        </div>
+
+        <div class="col-content">
+          <article class="article-item">
+            <div class="article-topline">
+              <h3>协议直连架构</h3>
+              <span class="article-index">PROT-01</span>
+            </div>
+            <p>
+              默认 <code>protocol_direct</code>。OAuth 授权完成后直接向上游通讯（CodeBuddy CLI 或 WorkBuddy IDE），不再挂起本地 <code>codebuddy --serve</code> 进程，也不依赖任何外部浏览器扩展或 Cookie 嗅探插件。
+            </p>
+          </article>
+
+          <article class="article-item">
+            <div class="article-topline">
+              <h3>标准 OpenAI 形状</h3>
+              <span class="article-index">SPEC-02</span>
+            </div>
+            <p>
+              完整支持 <code>GET /v1/models</code>、<code>GET /v1/model/info</code> 与 <code>POST /v1/chat/completions</code>。流式与非流式调用双向兼容，轻松对接入 NewAPI、Cursor、Claude Code 与 OpenCode。
+            </p>
+          </article>
+
+          <article class="article-item">
+            <div class="article-topline">
+              <h3>智能号池与自动熔断自愈</h3>
+              <span class="article-index">POOL-03</span>
+            </div>
+            <p>
+              号池按区域隔离轮询。上游 429 时将该账号冷却 2 分钟（111xx 为 5 分钟，部分 5xx 为 30 秒），冷却期内不参与轮询；同区全冷却时选最早恢复者继续服务，避免整体不可用。
+            </p>
+          </article>
+
+          <article class="article-item">
+            <div class="article-topline">
+              <h3>直读官网真实 Credits</h3>
+              <span class="article-index">CRED-04</span>
+            </div>
+            <p>
+              管理控制台直接对接官方用量接口，实时拉取并展示「剩余 / 总额」真实数值。剩余额度一目了然，绝无虚标伪造状态。
+            </p>
+          </article>
+
+          <article class="article-item">
+            <div class="article-topline">
+              <h3>国内与国际双区精准调度</h3>
+              <span class="article-index">ROUT-05</span>
+            </div>
+            <p>
+              请求调度端点严格以<strong>账号自身注册区域</strong>为基准，不依赖反代宿主机的出口 IP，确保国内凭证走腾讯云通道，国际凭证直达海外节点。
+            </p>
+          </article>
+
+          <article class="article-item">
+            <div class="article-topline">
+              <h3>CodeBuddy 与 WorkBuddy 产品切换</h3>
+              <span class="article-index">PROD-06</span>
+            </div>
+            <p>
+              与站点正交：同一套 OAuth token，管理台一键切 CodeBuddy（CLI 头）或 WorkBuddy（IDE 头）。模型目录随产品切换，无需重新登录。
+            </p>
+          </article>
+
+          <article class="article-item">
+            <div class="article-topline">
+              <h3>Token 计量与 Reasoning 思考链</h3>
+              <span class="article-index">THNK-07</span>
+            </div>
+            <p>
+              流式响应收尾补发真实 usage chunk 与缓存命中度统计；原生透传 <code>reasoning_effort</code> 思考档位参数，完整支持 Claude 3.7 Thinking 与 DeepSeek R1 思考过程输出。
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 02 / 常用客户端快速接入 (Interactive Client Integration) -->
+    <section id="integration">
+      <div class="wrap grid-12">
+        <div class="col-sidebar">
+          <div class="section-num">02 /</div>
+          <div class="section-label">Client Integration</div>
+          <h2 class="section-title">一行命令，即刻连接.</h2>
+          <p class="section-desc">
+            下游工具链只认 Base URL 与 API Key。网关在本地单文件内静默完成协议翻译，安全落盘。
+          </p>
+        </div>
+
+        <div class="col-content">
+          <div class="integration-box">
+            <nav class="integration-nav">
+              <button type="button" class="tab-trigger active" onclick="switchClientTab('claude', this)">Claude Code</button>
+              <button type="button" class="tab-trigger" onclick="switchClientTab('opencode', this)">OpenCode</button>
+              <button type="button" class="tab-trigger" onclick="switchClientTab('cursor', this)">Cursor</button>
+              <button type="button" class="tab-trigger" onclick="switchClientTab('curl', this)">cURL 终端</button>
+              <button type="button" class="tab-trigger" onclick="switchClientTab('python', this)">Python SDK</button>
+            </nav>
+
+            <div class="integration-panel">
+              <pre class="integration-code-pre" id="integrationCodeBlock"></pre>
+              <div class="integration-actions">
+                <button type="button" class="btn btn-line" style="padding:8px 18px;font-size:11px" onclick="copyIntegrationCode()">
+                  复制代码片段
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 03 / 平台预编译二进制下载 -->
+    <section id="releases">
+      <div class="wrap grid-12">
+        <div class="col-sidebar">
+          <div class="section-num">03 /</div>
+          <div class="section-label">Distribution</div>
+          <h2 class="section-title">单文件即用，无需安装.</h2>
+          <p class="section-desc">
+            下载对应平台可执行文件，直接双击或终端运行。首次启动自动生成 API Key 并安全写入同目录 <code>.env</code>。
+          </p>
+        </div>
+
+        <div class="col-content">
+          <table class="dl-table">
+            <thead>
+              <tr>
+                <th>平台架构 / Platform</th>
+                <th>发布二进制 / Binary Asset</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Windows 64 位 (x64)</td>
+                <td>
+                  <a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-windows-x64.exe">codebuddy-proxy-windows-x64.exe</a>
+                  <span style="color:var(--fg-40);font-size:12px"> (或 <a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-windows-amd64.exe">windows-amd64.exe</a>)</span>
+                </td>
+              </tr>
+              <tr>
+                <td>Linux 64 位 (amd64)</td>
+                <td>
+                  <a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-linux-amd64">codebuddy-proxy-linux-amd64</a>
+                </td>
+              </tr>
+              <tr>
+                <td>macOS Apple 芯片 (Apple Silicon arm64)</td>
+                <td>
+                  <a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-darwin-arm64">codebuddy-proxy-darwin-arm64</a>
+                </td>
+              </tr>
+              <tr>
+                <td>macOS Intel 芯片 (x86_64 amd64)</td>
+                <td>
+                  <a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-darwin-amd64">codebuddy-proxy-darwin-amd64</a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="dl-meta">
+            环境模板配置文件：<a href="https://github.com/wnddd839/buddy-proxy/raw/main/releases/.env.example">.env.example</a>
+            · 完整校验哈希表：<a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 / 三步快速跑起来 -->
+    <section id="started">
+      <div class="wrap">
+        <div style="margin-bottom:3.5rem">
+          <div class="section-num">04 /</div>
+          <div class="section-label">Getting Started</div>
+          <h2 class="section-title">三步跑起来.</h2>
+        </div>
+
+        <div class="steps-deck">
+          <div class="step-card">
+            <div class="step-num">01 /</div>
+            <h4>运行二进制程序</h4>
+            <p>从 Releases 下载对应架构的文件，双击或在终端启动。程序自动读取同目录配置并打印出专属 API Key。</p>
+          </div>
+          <div class="step-card">
+            <div class="step-num">02 /</div>
+            <h4>进入控制台完成 OAuth</h4>
+            <p>在浏览器打开 <code>http://127.0.0.1:32126/direct-admin/</code>，点击「开始认证」一键完成微信/企微或海外授权，账号自动入池。</p>
+          </div>
+          <div class="step-card">
+            <div class="step-num">03 /</div>
+            <h4>配置下游工具使用</h4>
+            <p>在你的编程助手（如 Cursor、Claude Code、OpenCode）中填入 Base URL <code>http://127.0.0.1:32126/v1</code> 与 API Key 即可。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 05 / 责任边界与合规声明 -->
+    <section id="compliance">
+      <div class="wrap">
+        <div style="margin-bottom:3.5rem">
+          <div class="section-num">05 /</div>
+          <div class="section-label">Compliance & Notice</div>
+          <h2 class="section-title">使用前请阅知这一节.</h2>
+        </div>
+
+        <div class="notice-deck">
+          <div class="notice-block">
+            <h3>它是什么</h3>
+            <p>一个自行托管、跑在你本机上的协议翻译工具。不提供模型中继，不代理第三方服务，不托管任何用户账号——<strong>所有流量均从你自己的机器直发你所选的上游（CodeBuddy 或 WorkBuddy）</strong>。</p>
+          </div>
+          <div class="notice-block">
+            <h3>你的责任</h3>
+            <p>请仅对拥有合法授权、且符合其服务条款的账号使用。是否允许此类协议调用，由你与该服务的协议决定——我们无法代为背书，也<strong>不对账号受限承担任何连带责任</strong>。</p>
+          </div>
+          <div class="notice-block">
+            <h3>我们不提供</h3>
+            <p>不提供商用账号或代充额度，不架设公共代理节点，不收集任何用户凭据。软件按开源「原样」免费提供，不保证上游协议持续兼容。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 06 / 结语与引导 -->
+    <section class="cta-stage">
+      <div class="wrap">
+        <h2 class="cta-title">
+          把 CodeBuddy / WorkBuddy 接到你的工具链.
+        </h2>
+        <p class="cta-desc">
+          控制台完成 OAuth，客户端只认 Base URL 和 API Key。纯 Go 单文件极简运行，零冗余开销。
+        </p>
+        <div class="hero-btn-row">
+          <a class="btn btn-solid" href="https://github.com/wnddd839/buddy-proxy" target="_blank" rel="noopener">访问 GitHub 仓库</a>
+          <a class="btn btn-line" href="https://github.com/wnddd839/buddy-proxy#readme" target="_blank" rel="noopener">查阅完整 README</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 反相单色页脚 -->
+  <footer>
+    <div class="wrap footer-flex">
+      <div>Buddy Proxy · BSD-3-Clause · 仅限授权与合规使用</div>
+      <div>与 CodeBuddy、WorkBuddy 官方无关联、无隶属、无背书关系</div>
+      <div>
+        <a href="https://github.com/wnddd839/buddy-proxy" target="_blank" rel="noopener">Repository</a>
+        ·
+        <a href="https://github.com/wnddd839/buddy-proxy#readme" target="_blank" rel="noopener">Documentation</a>
+        ·
+        <a href="https://github.com/wnddd839/buddy-proxy/releases/latest" target="_blank" rel="noopener">Releases</a>
+      </div>
+    </div>
+  </footer>
+
+  <div class="toast-box" id="siteToast">已复制代码到剪贴板</div>
+
+  <script>
+    const codeMap = {
+      claude: `# 导出环境变量直接启动 Claude Code 即可直通\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:32126"\nexport ANTHROPIC_API_KEY="你的网关APIKey"\nclaude`,
+      opencode: `// 写入 ~/.opencode/config.json\n{\n  "provider": "codebuddy-proxy",\n  "base_url": "http://127.0.0.1:32126/v1",\n  "api_key": "你的网关APIKey",\n  "model": "claude-3-7-sonnet"\n}`,
+      cursor: `// 在 Cursor Settings -> Models -> OpenAI API Key\nBase URL: http://127.0.0.1:32126/v1\nAPI Key:  你的网关APIKey\nModel:    claude-3-7-sonnet (或 auto)`,
+      curl: `curl http://127.0.0.1:32126/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer 你的网关APIKey" \\\n  -d '{\n    "model": "claude-3-7-sonnet",\n    "messages": [{"role": "user", "content": "Ping!"}]\n  }'`,
+      python: `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="http://127.0.0.1:32126/v1",\n    api_key="你的网关APIKey"\n)\n\nresp = client.chat.completions.create(\n    model="claude-3-7-sonnet",\n    messages=[{"role": "user", "content": "Hello CodeBuddy!"}]\n)\nprint(resp.choices[0].message.content)`
+    };
+
+    let activeClientKey = 'claude';
+
+    function switchClientTab(key, btn) {
+      activeClientKey = key;
+      document.querySelectorAll('.tab-trigger').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('integrationCodeBlock').textContent = codeMap[key];
+    }
+
+    function showToast(msg) {
+      const el = document.getElementById('siteToast');
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(showToast._timer);
+      showToast._timer = setTimeout(() => el.classList.remove('show'), 2000);
+    }
+
+    function copyIntegrationCode() {
+      const text = codeMap[activeClientKey];
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('已复制代码片段到剪贴板');
+      }).catch(() => {
+        showToast('复制失败，请手动选取');
+      });
+    }
+
+    // 初始化渲染代码选项卡
+    document.getElementById('integrationCodeBlock').textContent = codeMap[activeClientKey];
+  </script>
+</body>
+</html>
