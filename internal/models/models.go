@@ -62,6 +62,7 @@ type ListResult struct {
 
 type ListOptions struct {
 	Site                string
+	Product             string
 	BaseURL             string
 	InternetEnvironment string
 	BearerToken         string
@@ -161,6 +162,7 @@ func (c *Lister) List(ctx context.Context, client *provider.Client, opts ListOpt
 		UserID:              opts.UserID,
 		BaseURL:             opts.BaseURL,
 		Site:                site,
+		Product:             config.NormalizeProduct(opts.Product),
 		InternetEnvironment: opts.InternetEnvironment,
 		APIEndpoint:         opts.APIEndpoint,
 		ChatCompletionsPath: opts.ChatCompletionsPath,
@@ -217,7 +219,7 @@ type fetchResult struct {
 
 func v3ConfigCandidateBases(opts provider.ChatOptions) []string {
 	primary := provider.ResolveProtocolDirectBaseURL(opts)
-	if provider.RegionOf(opts) != "global" {
+	if config.NormalizeProduct(opts.Product) == "workbuddy" || provider.RegionOf(opts) != "global" {
 		return []string{primary}
 	}
 	// 国际站：www.codebuddy.ai/v3/config 有 Gemini/GPT 等，但不含 hy4；
@@ -284,6 +286,9 @@ func (c *Lister) fetchV3(ctx context.Context, client *provider.Client, opts prov
 			lastErr = fmt.Errorf("v3 config unavailable")
 		}
 		return fetchResult{}, lastErr
+	}
+	if config.NormalizeProduct(opts.Product) == "workbuddy" {
+		return fetchResult{Models: merged}, nil
 	}
 	ideRows := c.fetchIDECatalog(ctx, client, opts, candidates)
 	return fetchResult{Models: enrichModelsWithIDEReasoning(merged, ideRows)}, nil

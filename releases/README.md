@@ -58,6 +58,7 @@ chmod +x ./codebuddy-proxy-linux-amd64   # 或 darwin 对应文件
 | `CODEBUDDY_PROXY_API_KEY` | 客户端 API Key |
 | `CODEBUDDY_PROXY_PORT` | 端口，默认 `32126` |
 | `CODEBUDDY_SITE` | `domestic` 或 `global` |
+| `CODEBUDDY_PRODUCT` | `codebuddy`（默认）或 `workbuddy` |
 | `CODEBUDDY_PROXY_ACCOUNTS_PATH` | 账号池 JSON 路径 |
 
 完整说明见 [`../docs/guides/getting-started.md`](../docs/guides/getting-started.md).

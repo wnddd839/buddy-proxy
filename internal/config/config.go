@@ -14,6 +14,8 @@ const (
 	DefaultChatCompletionsPath = "/v2/chat/completions"
 	DefaultTransport           = "protocol_direct"
 	DefaultIDEVersion          = "2.117.2"
+	DefaultWorkBuddyIDEVersion = "1.119.0"
+	DefaultWorkBuddyProductVer = "4.9.29177644"
 	DefaultRefreshWindow       = 10 * time.Minute
 	DefaultStreamKeepAlive     = 5 * time.Second
 	DefaultOAuthSessionTTL     = 15 * time.Minute
@@ -33,6 +35,7 @@ type Config struct {
 	AccountsPath        string
 	BaseURL             string
 	Site                string
+	Product             string
 	InternetEnvironment string
 	APIEndpoint         string
 	ChatCompletionsPath string
@@ -60,6 +63,7 @@ func Load() Config {
 		PublicBaseURL:       strings.TrimRight(firstEnv("CODEBUDDY_PROXY_PUBLIC_BASE_URL", "CURSOR_DIRECT_PUBLIC_BASE_URL"), "/"),
 		AccountsPath:        expandHome(envOr("CODEBUDDY_PROXY_ACCOUNTS_PATH", "CURSOR_DIRECT_CODEBUDDY_ACCOUNTS_PATH", defaultAccountsPath())),
 		Site:                strings.ToLower(firstEnv("CODEBUDDY_SITE", "CURSOR_DIRECT_CODEBUDDY_SITE")),
+		Product:             strings.ToLower(firstEnv("CODEBUDDY_PRODUCT")),
 		InternetEnvironment: strings.ToLower(firstEnv("CODEBUDDY_INTERNET_ENVIRONMENT", "CURSOR_DIRECT_CODEBUDDY_INTERNET_ENVIRONMENT")),
 		APIEndpoint:         strings.TrimRight(firstEnv("CODEBUDDY_API_ENDPOINT", "CURSOR_DIRECT_CODEBUDDY_API_ENDPOINT"), "/"),
 		ChatCompletionsPath: envOr("CODEBUDDY_CHAT_COMPLETIONS_PATH", "CURSOR_DIRECT_CODEBUDDY_CHAT_COMPLETIONS_PATH", DefaultChatCompletionsPath),
@@ -79,7 +83,8 @@ func Load() Config {
 	// /v1 API Key 门禁仍由 CODEBUDDY_PROXY_REQUIRE_API_KEY 独立控制。
 	cfg.RequireAPIKey = envBool("CODEBUDDY_PROXY_REQUIRE_API_KEY", "CURSOR_DIRECT_REQUIRE_API_KEY", cfg.APIKey != "")
 	cfg.Site = NormalizeSite(cfg.Site)
-	cfg.BaseURL = envOr("CODEBUDDY_BASE_URL", "CURSOR_DIRECT_CODEBUDDY_BASE_URL", resolveDefaultBaseURL(cfg.Site, cfg.InternetEnvironment))
+	cfg.Product = NormalizeProduct(cfg.Product)
+	cfg.BaseURL = envOr("CODEBUDDY_BASE_URL", "CURSOR_DIRECT_CODEBUDDY_BASE_URL", resolveDefaultBaseURL(cfg.Site, cfg.InternetEnvironment, cfg.Product))
 	if raw := firstEnv("CODEBUDDY_PROXY_MODELS", "CURSOR_DIRECT_CODEBUDDY_MODELS"); raw != "" {
 		parts := strings.Split(raw, ",")
 		cfg.DefaultModels = cfg.DefaultModels[:0]
@@ -96,7 +101,10 @@ func Load() Config {
 	return cfg
 }
 
-func resolveDefaultBaseURL(site, internetEnvironment string) string {
+func resolveDefaultBaseURL(site, internetEnvironment, product string) string {
+	if NormalizeProduct(product) == "workbuddy" {
+		return ProductPortalBaseURL(site, product)
+	}
 	env := strings.ToLower(strings.TrimSpace(internetEnvironment))
 	site = strings.ToLower(strings.TrimSpace(site))
 	if env == "internal" || env == "ioa" {
@@ -209,4 +217,26 @@ func NormalizeSite(value string) string {
 		// 空 / international / global / 未知 → 归为全球
 		return "global"
 	}
+}
+
+func NormalizeProduct(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "workbuddy", "wb", "ide":
+		return "workbuddy"
+	default:
+		return "codebuddy"
+	}
+}
+
+func ProductPortalBaseURL(site, product string) string {
+	if NormalizeProduct(product) == "workbuddy" {
+		if NormalizeSite(site) == "domestic" {
+			return "https://www.workbuddy.cn"
+		}
+		return "https://www.workbuddy.ai"
+	}
+	if NormalizeSite(site) == "domestic" {
+		return "https://www.codebuddy.cn"
+	}
+	return "https://www.codebuddy.ai"
 }

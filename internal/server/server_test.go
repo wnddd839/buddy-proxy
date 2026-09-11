@@ -158,6 +158,32 @@ func TestAdminCSRFAllowsSameOriginMutation(t *testing.T) {
 	}
 }
 
+func TestAdminProductSwitchSameOrigin(t *testing.T) {
+	srv := testServer(t, false, "", "")
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", filepath.Join(t.TempDir(), ".env"))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/direct-admin/api/pool-product", strings.NewReader(`{"product":"workbuddy"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:32126")
+	req.Host = "127.0.0.1:32126"
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("product switch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["ok"] != true {
+		t.Fatalf("payload=%v", payload)
+	}
+	product, _ := payload["product"].(string)
+	poolProduct, _ := payload["poolProduct"].(string)
+	if product != "workbuddy" && poolProduct != "workbuddy" {
+		t.Fatalf("payload product missing: %v", payload)
+	}
+}
+
 func TestAdminPasswordRequiredWhenConfigured(t *testing.T) {
 	srv := testServer(t, false, "admin-pass", "")
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/direct-admin/api/status", nil)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
+	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 )
 
 func TestResolveProviderModel(t *testing.T) {
@@ -286,6 +288,71 @@ func TestFailureCooldown(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("failureCooldown(%q)=%s want %s", tc.err, got, tc.want)
 		}
+	}
+}
+
+func TestChatOptionsFromAccountUsesProcessProduct(t *testing.T) {
+	svc := New(config.Config{Site: "global", Product: "workbuddy"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	opts := svc.chatOptionsFromAccount(accounts.Account{
+		Site:        "global",
+		BaseURL:     "https://www.codebuddy.ai",
+		APIEndpoint: "https://www.codebuddy.ai/v2/chat/completions",
+		BearerToken: "tok",
+	}, CompleteOptions{Model: "auto"})
+	if opts.Product != "workbuddy" {
+		t.Fatalf("product=%q", opts.Product)
+	}
+	if got := provider.ResolveProtocolDirectEndpoint(opts); got != "https://www.workbuddy.ai/v2/chat/completions" {
+		t.Fatalf("endpoint=%s", got)
+	}
+}
+
+func TestSetPoolProductPersistsAndSwitchesUpstream(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), ".env")
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", envFile)
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	svc := New(config.Config{
+		Site:         "global",
+		Product:      "codebuddy",
+		BaseURL:      "https://www.codebuddy.ai",
+		AccountsPath: path,
+	}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+
+	payload, err := svc.SetPoolProduct("workbuddy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.Config().Product != "workbuddy" {
+		t.Fatalf("product=%q", svc.Config().Product)
+	}
+	if svc.Config().BaseURL != "https://www.workbuddy.ai" {
+		t.Fatalf("baseURL=%q", svc.Config().BaseURL)
+	}
+	if payload["product"] != "workbuddy" && payload["poolProduct"] != "workbuddy" {
+		t.Fatalf("payload=%v", payload)
+	}
+	raw, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "CODEBUDDY_PRODUCT=workbuddy") {
+		t.Fatalf("env file missing product: %s", text)
+	}
+	if !strings.Contains(text, "CODEBUDDY_BASE_URL=https://www.workbuddy.ai") {
+		t.Fatalf("env file missing workbuddy base: %s", text)
+	}
+
+	if _, err := svc.SetPoolSite("domestic"); err != nil {
+		t.Fatal(err)
+	}
+	if svc.Config().Product != "workbuddy" {
+		t.Fatalf("switching site must keep product, got %q", svc.Config().Product)
+	}
+	if svc.Config().BaseURL != "https://www.workbuddy.cn" {
+		t.Fatalf("domestic workbuddy base=%q", svc.Config().BaseURL)
 	}
 }
 

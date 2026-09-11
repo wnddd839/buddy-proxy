@@ -93,9 +93,10 @@ func FetchAccountUsage(ctx context.Context, client *provider.Client, account acc
 	billingBase := BillingBaseURL(site)
 	protocolBase := provider.ResolveProtocolDirectBaseURL(provider.ChatOptions{
 		Site:                site,
+		Product:             config.NormalizeProduct(cfg.Product),
 		InternetEnvironment: strutil.First(account.InternetEnvironment, cfg.InternetEnvironment),
 		BaseURL:             strutil.First(account.BaseURL, cfg.BaseURL),
-		APIEndpoint:         strutil.First(account.APIEndpoint, cfg.APIEndpoint),
+		APIEndpoint:         provider.AlignAPIEndpoint(config.NormalizeProduct(cfg.Product), strutil.First(account.APIEndpoint, cfg.APIEndpoint)),
 	})
 
 	bearer := strings.TrimSpace(account.BearerToken)
@@ -145,9 +146,10 @@ func FetchAccountUsage(ctx context.Context, client *provider.Client, account acc
 	notifyEndpoint := strings.TrimRight(protocolBase, "/") + "/v2/billing/meter/get-dosage-notify"
 	notifyHeaders := client.BuildProtocolDirectHeaders(provider.ChatOptions{
 		Site:                site,
+		Product:             config.NormalizeProduct(cfg.Product),
 		InternetEnvironment: strutil.First(account.InternetEnvironment, cfg.InternetEnvironment),
 		BaseURL:             strutil.First(account.BaseURL, cfg.BaseURL),
-		APIEndpoint:         strutil.First(account.APIEndpoint, cfg.APIEndpoint),
+		APIEndpoint:         provider.AlignAPIEndpoint(config.NormalizeProduct(cfg.Product), strutil.First(account.APIEndpoint, cfg.APIEndpoint)),
 		BearerToken:         bearer,
 		UserID:              strutil.First(account.AuthStatus.UserID, "anonymous"),
 		EnterpriseID:        account.EnterpriseID,

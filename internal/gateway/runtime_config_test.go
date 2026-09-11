@@ -22,6 +22,7 @@ func TestRaceRuntimeConfigAPIKeyAndSite(t *testing.T) {
 		APIKey:        "old-key",
 		RequireAPIKey: true,
 		Site:          "domestic",
+		Product:       "codebuddy",
 		BaseURL:       "https://www.codebuddy.cn",
 	}
 	svc := New(cfg, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
@@ -40,6 +41,8 @@ func TestRaceRuntimeConfigAPIKeyAndSite(t *testing.T) {
 					svc.SetAPIKey(fmt.Sprintf("key-%d", i))
 					_, _ = svc.SetPoolSite("global")
 					_, _ = svc.SetPoolSite("domestic")
+					_, _ = svc.SetPoolProduct("workbuddy")
+					_, _ = svc.SetPoolProduct("codebuddy")
 				}
 			}
 		})

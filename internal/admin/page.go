@@ -298,6 +298,7 @@ pre{
       <span class="pill"><span class="dot" id="healthDot"></span><span id="healthText">检查中</span></span>
       <span class="pill">transport · <span class="mono" id="pillTransport">—</span></span>
       <span class="pill">site · <span class="mono" id="pillSite">—</span></span>
+      <span class="pill">product · <span class="mono" id="pillProduct">—</span></span>
     </div>
   </header>
 
@@ -364,12 +365,16 @@ pre{
         <div class="section-head">
           <div>
             <h2>账号池集群</h2>
-            <p>一键切换国内 / 国际号池；请求只会使用当前区域账号。</p>
+            <p>一键切换国内 / 国际号池，以及 CodeBuddy / WorkBuddy 上游；token 共用，请求跟随当前选择。</p>
           </div>
           <div class="actions">
             <div class="seg" id="poolSiteSeg" role="group" aria-label="号池区域">
               <button type="button" data-site="domestic" id="btnPoolDomestic">国内</button>
               <button type="button" data-site="global" id="btnPoolGlobal">国际</button>
+            </div>
+            <div class="seg" id="poolProductSeg" role="group" aria-label="上游产品">
+              <button type="button" data-product="codebuddy" id="btnProductCodeBuddy">CodeBuddy</button>
+              <button type="button" data-product="workbuddy" id="btnProductWorkBuddy">WorkBuddy</button>
             </div>
           </div>
         </div>
@@ -688,26 +693,41 @@ function normalizeSite(site){
 function siteLabel(site){
   return normalizeSite(site) === 'domestic' ? '国内' : '国际';
 }
+function normalizeProduct(product){
+  product = String(product||'').toLowerCase().trim();
+  if (product === 'workbuddy' || product === 'wb' || product === 'ide') return 'workbuddy';
+  return 'codebuddy';
+}
+function productLabel(product){
+  return normalizeProduct(product) === 'workbuddy' ? 'WorkBuddy' : 'CodeBuddy';
+}
 // 签到按钮跟随当前激活号池；paintPoolSite 每次刷新状态时同步。
 // 空字符串表示尚未从 /status 拿到号池，按钮保持 disabled，避免首屏误打国际站。
 let activeCheckinSite = '';
+let activeProduct = 'codebuddy';
+let lastPoolAccounts = null;
 let checkinBusy = false;
+
+function paintPoolHint(site, product, accounts){
+  const domestic = accounts && accounts.domesticCount != null ? accounts.domesticCount : '—';
+  const global = accounts && accounts.globalCount != null ? accounts.globalCount : '—';
+  const activeEnabled = accounts && accounts.activeEnabledCount != null ? accounts.activeEnabledCount : '—';
+  if ($('poolSiteHint')) {
+    $('poolSiteHint').textContent = '当前号池：' + siteLabel(site) + ' · 上游：' + productLabel(product) + ' · 可用启用账号 ' + activeEnabled + ' · 国内账号 ' + domestic + ' / 国际账号 ' + global + '（仅当前区域会参与请求）';
+  }
+}
 
 function paintPoolSite(site, accounts){
   site = normalizeSite(site);
   activeCheckinSite = site;
+  if (accounts) lastPoolAccounts = accounts;
   const checkinBtn = $('btnCheckin');
   if (checkinBtn && !checkinBusy) checkinBtn.disabled = false;
   const domesticBtn = $('btnPoolDomestic');
   const globalBtn = $('btnPoolGlobal');
   if (domesticBtn) domesticBtn.className = site === 'domestic' ? 'active' : '';
   if (globalBtn) globalBtn.className = site === 'global' ? 'active' : '';
-  const domestic = accounts && accounts.domesticCount != null ? accounts.domesticCount : '—';
-  const global = accounts && accounts.globalCount != null ? accounts.globalCount : '—';
-  const activeEnabled = accounts && accounts.activeEnabledCount != null ? accounts.activeEnabledCount : '—';
-  if ($('poolSiteHint')) {
-    $('poolSiteHint').textContent = '当前号池：' + siteLabel(site) + ' · 可用启用账号 ' + activeEnabled + ' · 国内账号 ' + domestic + ' / 国际账号 ' + global + '（仅当前区域会参与请求）';
-  }
+  paintPoolHint(site, activeProduct, lastPoolAccounts || accounts);
   // 切号池 / 刷新状态时清掉上一次的签明细，避免与新号池并存造成误导。
   // 签到进行中不清理：runPoolCheckin 会在 refreshStatus 之后重新写入。
   const checkinRaw = $('checkinRaw');
@@ -731,6 +751,26 @@ async function switchPoolSite(site){
   return data;
 }
 
+async function switchPoolProduct(product){
+  product = normalizeProduct(product);
+  const data = await api('/direct-admin/api/pool-product', {method:'POST', body: JSON.stringify({product: product})});
+  paintStatus(data);
+  if (data.note) showToast(data.note);
+  refreshModels().catch(function(){});
+  return data;
+}
+
+function paintPoolProduct(product){
+  product = normalizeProduct(product);
+  activeProduct = product;
+  const cbBtn = $('btnProductCodeBuddy');
+  const wbBtn = $('btnProductWorkBuddy');
+  if (cbBtn) cbBtn.className = product === 'codebuddy' ? 'active' : '';
+  if (wbBtn) wbBtn.className = product === 'workbuddy' ? 'active' : '';
+  if ($('pillProduct')) $('pillProduct').textContent = productLabel(product);
+  paintPoolHint(activeCheckinSite || 'global', product, lastPoolAccounts);
+}
+
 function paintStatus(data){
   const stats = data.stats || {};
   const accounts = data.accounts || {};
@@ -750,14 +790,16 @@ function paintStatus(data){
     : '未登录';
   $('pillTransport').textContent = data.transport || 'protocol_direct';
   const poolSite = normalizeSite(data.poolSite || cfg.poolSite || cfg.site || 'global');
+  const poolProduct = normalizeProduct(data.poolProduct || data.product || cfg.poolProduct || cfg.product || 'codebuddy');
   $('pillSite').textContent = siteLabel(poolSite);
   paintPoolSite(poolSite, accounts);
+  paintPoolProduct(poolProduct);
   if ($('site') && !$('site').dataset.userTouched) {
     $('site').value = poolSite === 'domestic' ? 'domestic' : 'global';
   }
   const activeEnabled = accounts.activeEnabledCount != null ? accounts.activeEnabledCount : enabledCount;
   $('mEnabled').textContent = String(activeEnabled);
-  setHealth(!!data.ok, data.ok ? (loggedIn ? ('服务正常 · ' + siteLabel(poolSite) + '号池') : ('服务正常 · ' + siteLabel(poolSite) + '号池未登录')) : '状态异常');
+  setHealth(!!data.ok, data.ok ? (loggedIn ? ('服务正常 · ' + siteLabel(poolSite) + '号池 · ' + productLabel(poolProduct)) : ('服务正常 · ' + siteLabel(poolSite) + '号池未登录')) : '状态异常');
   if (primary && primary.id && primary.hasCredentials && !usageByAccount[primary.id] && !paintStatus._usageKick) {
     paintStatus._usageKick = true;
     fetchAccountUsage(primary.id, true).catch(function(){});
@@ -970,6 +1012,8 @@ async function onAccountAction(ev){
 
 if ($('btnPoolDomestic')) $('btnPoolDomestic').onclick = function(){ switchPoolSite('domestic').catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('btnPoolGlobal')) $('btnPoolGlobal').onclick = function(){ switchPoolSite('global').catch(function(e){ showToast(e.message, 'error'); }); };
+if ($('btnProductCodeBuddy')) $('btnProductCodeBuddy').onclick = function(){ switchPoolProduct('codebuddy').catch(function(e){ showToast(e.message, 'error'); }); };
+if ($('btnProductWorkBuddy')) $('btnProductWorkBuddy').onclick = function(){ switchPoolProduct('workbuddy').catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('site')) $('site').addEventListener('change', function(){ $('site').dataset.userTouched = '1'; });
 $('btnRefresh').onclick = function(){ refreshStatus().catch(function(e){ $('statusRaw').textContent = e.message; setHealth(false, '刷新失败'); }); };
 if ($('btnCheckin')) $('btnCheckin').onclick = function(){ runPoolCheckin().catch(function(e){ showToast(e.message, 'error'); }); };

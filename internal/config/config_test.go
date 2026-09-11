@@ -49,3 +49,39 @@ func TestNormalizeSite(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeProduct(t *testing.T) {
+	cases := map[string]string{
+		"":          "codebuddy",
+		"codebuddy": "codebuddy",
+		"CodeBuddy": "codebuddy",
+		"cli":       "codebuddy",
+		"workbuddy": "workbuddy",
+		"WorkBuddy": "workbuddy",
+		"wb":        "workbuddy",
+		"ide":       "workbuddy",
+	}
+	for in, want := range cases {
+		if got := config.NormalizeProduct(in); got != want {
+			t.Fatalf("NormalizeProduct(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestProductPortalBaseURL(t *testing.T) {
+	cases := []struct {
+		site, product, want string
+	}{
+		{"domestic", "codebuddy", "https://www.codebuddy.cn"},
+		{"global", "codebuddy", "https://www.codebuddy.ai"},
+		{"domestic", "workbuddy", "https://www.workbuddy.cn"},
+		{"global", "workbuddy", "https://www.workbuddy.ai"},
+		{"cn", "wb", "https://www.workbuddy.cn"},
+	}
+	for _, tc := range cases {
+		got := config.ProductPortalBaseURL(tc.site, tc.product)
+		if got != tc.want {
+			t.Fatalf("ProductPortalBaseURL(%q,%q)=%q want %q", tc.site, tc.product, got, tc.want)
+		}
+	}
+}

@@ -510,6 +510,18 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		}
 		httputil.WriteJSON(w, http.StatusOK, payload)
 		return
+	case path == "/direct-admin/api/pool-product" && (r.Method == http.MethodPost || r.Method == http.MethodPut):
+		var body struct {
+			Product string `json:"product"`
+		}
+		_ = httputil.ReadJSON(r, &body)
+		payload, err := s.Svc.SetPoolProduct(body.Product)
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		httputil.WriteJSON(w, http.StatusOK, payload)
+		return
 	case path == "/direct-admin/api/client-config" && r.Method == http.MethodGet:
 		httputil.WriteJSON(w, http.StatusOK, s.clientConfigPayload(publicOrigin))
 		return
@@ -838,6 +850,8 @@ func (s *Server) clientConfigPayload(publicOrigin string) map[string]any {
 		"transport":          cfg.Transport,
 		"site":               s.Svc.ActivePoolSite(),
 		"poolSite":           s.Svc.ActivePoolSite(),
+		"product":            s.Svc.ActiveProduct(),
+		"poolProduct":        s.Svc.ActiveProduct(),
 	}
 }
 

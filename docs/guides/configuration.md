@@ -48,18 +48,21 @@
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `CODEBUDDY_SITE` | `global` | `domestic` / `cn` / `china` / `internal` → 国内；其余（含空）→ 国际 |
+| `CODEBUDDY_PRODUCT` | `codebuddy` | `workbuddy` / `wb` / `ide` → WorkBuddy IDE 头与域名；其余 → CodeBuddy CLI。国内国际共用，管理台可一键切换 |
 | `CODEBUDDY_INTERNET_ENVIRONMENT` | 空 | `internal` / `ioa` → `copilot.tencent.com`；`domestic` / `cn` / `china` → `www.codebuddy.cn` |
-| `CODEBUDDY_BASE_URL` | 按 site 推导 | 显式覆盖上游基址 |
+| `CODEBUDDY_BASE_URL` | 按 site + product 推导 | 显式覆盖上游基址。切产品时管理台会改写为对应门户 |
 
 `CODEBUDDY_BASE_URL` 推导逻辑：
 
 | 条件 | 结果 |
 |------|------|
+| `PRODUCT=workbuddy` 且国内 | `https://www.workbuddy.cn` |
+| `PRODUCT=workbuddy` 且国际 | `https://www.workbuddy.ai` |
 | `INTERNET_ENVIRONMENT` 为 `internal` / `ioa` | `https://copilot.tencent.com` |
 | `SITE` 或 `INTERNET_ENVIRONMENT` 为 `domestic` / `cn` / `china` | `https://www.codebuddy.cn` |
 | 其他 | `https://www.codebuddy.ai` |
 
-> **请求选端点以账号自身的 `site` 为准**，不看反代机器 IP，也不被进程级 `CODEBUDDY_BASE_URL` 带跑偏——避免国内账号打到海外（或反之）。
+> **区域**以账号自身的 `site` 为准，不看反代机器 IP。**产品**（CodeBuddy / WorkBuddy）是进程级选择，国内国际账号共用同一套头和域名。切号池不会改产品，切产品也不会改号池。
 
 典型组合：
 
@@ -130,7 +133,7 @@ Go 版会一并读取以下旧名（新名优先）：
 | `CODEBUDDY_CHAT_COMPLETIONS_PATH` | `CURSOR_DIRECT_CODEBUDDY_CHAT_COMPLETIONS_PATH` |
 | `CODEBUDDY_REFRESH_WINDOW_MS` | `CURSOR_DIRECT_CODEBUDDY_REFRESH_WINDOW_MS` |
 
-`CODEBUDDY_PROXY_ENV_FILE`、`CODEBUDDY_IDE_VERSION`、`CODEBUDDY_BILLING_BASE_URL` 无旧名对应。
+`CODEBUDDY_PROXY_ENV_FILE`、`CODEBUDDY_IDE_VERSION`、`CODEBUDDY_BILLING_BASE_URL`、`CODEBUDDY_PRODUCT` 无旧名对应。
 
 ---
 

@@ -298,10 +298,11 @@ func checkinRequest(client *provider.Client, account accounts.Account, cfg confi
 
 	chatOpts := provider.ChatOptions{
 		Site:                site,
+		Product:             config.NormalizeProduct(cfg.Product),
 		InternetEnvironment: strutil.First(account.InternetEnvironment, cfg.InternetEnvironment),
 		BaseURL:             strutil.First(account.BaseURL, cfg.BaseURL),
 		// Account-level only: process cfg.APIEndpoint may target the wrong region (see gateway).
-		APIEndpoint:        strings.TrimSpace(account.APIEndpoint),
+		APIEndpoint:        provider.AlignAPIEndpoint(config.NormalizeProduct(cfg.Product), account.APIEndpoint),
 		BearerToken:        bearer,
 		UserID:             userID,
 		EnterpriseID:       account.EnterpriseID,

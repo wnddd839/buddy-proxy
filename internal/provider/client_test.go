@@ -2,8 +2,10 @@ package provider_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 )
 
@@ -70,6 +72,60 @@ func TestAccountSiteBeatsProxyBaseURL(t *testing.T) {
 	}
 	if got := provider.ResolveProtocolDirectEndpoint(global); got != "https://www.codebuddy.ai/v2/chat/completions" {
 		t.Fatalf("global endpoint=%s", got)
+	}
+}
+
+func TestResolveProtocolDirectWorkBuddy(t *testing.T) {
+	domestic := provider.ChatOptions{Site: "domestic", Product: "workbuddy"}
+	if got := provider.ResolveProtocolDirectEndpoint(domestic); got != "https://www.workbuddy.cn/v2/chat/completions" {
+		t.Fatalf("domestic workbuddy endpoint=%s", got)
+	}
+	if got := provider.ResolveProtocolDirectDomain(domestic); got != "www.workbuddy.cn" {
+		t.Fatalf("domestic workbuddy domain=%s", got)
+	}
+
+	global := provider.ChatOptions{Site: "global", Product: "workbuddy", BaseURL: "https://www.codebuddy.ai"}
+	if got := provider.ResolveProtocolDirectEndpoint(global); got != "https://www.workbuddy.ai/v2/chat/completions" {
+		t.Fatalf("global workbuddy endpoint=%s", got)
+	}
+	if got := provider.ResolveProtocolDirectDomain(global); got != "www.workbuddy.ai" {
+		t.Fatalf("global workbuddy domain=%s", got)
+	}
+
+	if got := provider.AlignAPIEndpoint("workbuddy", "https://www.codebuddy.ai/v2/chat/completions"); got != "" {
+		t.Fatalf("codebuddy endpoint must not follow workbuddy product: %s", got)
+	}
+	if got := provider.AlignAPIEndpoint("workbuddy", "https://www.workbuddy.ai/v2/chat/completions"); got != "https://www.workbuddy.ai/v2/chat/completions" {
+		t.Fatalf("workbuddy endpoint kept=%s", got)
+	}
+}
+
+func TestBuildProtocolDirectHeadersProduct(t *testing.T) {
+	client := provider.NewClient(config.Config{})
+	cli := client.BuildProtocolDirectHeaders(provider.ChatOptions{
+		Site: "global", Product: "codebuddy", BearerToken: "tok", UserID: "u1",
+	})
+	if cli.Get("X-IDE-Type") != "CLI" {
+		t.Fatalf("codebuddy ide type=%s", cli.Get("X-IDE-Type"))
+	}
+	if !strings.Contains(cli.Get("User-Agent"), "CLI/") || !strings.Contains(cli.Get("User-Agent"), "CodeBuddy/") {
+		t.Fatalf("codebuddy ua=%s", cli.Get("User-Agent"))
+	}
+
+	wb := client.BuildProtocolDirectHeaders(provider.ChatOptions{
+		Site: "global", Product: "workbuddy", BearerToken: "tok", UserID: "u1",
+	})
+	if wb.Get("X-IDE-Type") != "VSCode" || wb.Get("X-IDE-Name") != "VSCode" {
+		t.Fatalf("workbuddy ide=%s/%s", wb.Get("X-IDE-Type"), wb.Get("X-IDE-Name"))
+	}
+	if wb.Get("User-Agent") != "VSCode/1.119.0 WorkBuddy/4.9.29177644" {
+		t.Fatalf("workbuddy ua=%s", wb.Get("User-Agent"))
+	}
+	if wb.Get("X-Product-Version") != "4.9.29177644" || wb.Get("X-Env-ID") != "production" {
+		t.Fatalf("workbuddy product headers version=%s env=%s", wb.Get("X-Product-Version"), wb.Get("X-Env-ID"))
+	}
+	if wb.Get("X-Domain") != "www.workbuddy.ai" {
+		t.Fatalf("workbuddy domain=%s", wb.Get("X-Domain"))
 	}
 }
 

@@ -38,6 +38,21 @@ func TestV3ConfigCandidateBasesGlobalMergesCopilot(t *testing.T) {
 	}
 }
 
+func TestV3ConfigCandidateBasesWorkBuddyDoesNotMergeCopilot(t *testing.T) {
+	global := v3ConfigCandidateBases(provider.ChatOptions{
+		Site:    "global",
+		Product: "workbuddy",
+		BaseURL: "https://www.workbuddy.ai",
+	})
+	if len(global) != 1 || global[0] != "https://www.workbuddy.ai" {
+		t.Fatalf("workbuddy global bases=%v", global)
+	}
+	domestic := v3ConfigCandidateBases(provider.ChatOptions{Site: "domestic", Product: "workbuddy"})
+	if len(domestic) != 1 || domestic[0] != "https://www.workbuddy.cn" {
+		t.Fatalf("workbuddy domestic bases=%v", domestic)
+	}
+}
+
 func TestToAdminModelsPreservesContextLimits(t *testing.T) {
 	out := ToAdminModels([]map[string]any{
 		{

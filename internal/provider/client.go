@@ -74,6 +74,7 @@ type ChatOptions struct {
 	UserID              string
 	BaseURL             string
 	Site                string
+	Product             string
 	InternetEnvironment string
 	APIEndpoint         string
 	ChatCompletionsPath string
@@ -171,7 +172,7 @@ func IsDomestic(site, internetEnvironment, baseURL string) bool {
 	env := strings.ToLower(strings.TrimSpace(internetEnvironment))
 	host := strings.ToLower(baseURL)
 	return site == "domestic" || env == "domestic" || env == "cn" || env == "china" || env == "internal" ||
-		strings.Contains(host, "codebuddy.cn") || strings.Contains(host, "copilot.tencent.com")
+		strings.Contains(host, "codebuddy.cn") || strings.Contains(host, "workbuddy.cn") || strings.Contains(host, "copilot.tencent.com")
 }
 
 // RegionOf 返回 protocol_direct 路由用的 "domestic" 或 "global"。
@@ -191,7 +192,13 @@ func RegionOf(opts ChatOptions) string {
 
 func ResolveProtocolDirectBaseURL(opts ChatOptions) string {
 	if RegionOf(opts) == "domestic" {
+		if config.NormalizeProduct(opts.Product) == "workbuddy" {
+			return "https://www.workbuddy.cn"
+		}
 		return "https://copilot.tencent.com"
+	}
+	if config.NormalizeProduct(opts.Product) == "workbuddy" {
+		return "https://www.workbuddy.ai"
 	}
 	configured := NormalizeBaseURL(opts.BaseURL)
 	if configured != "" && !IsDomestic("", "", configured) {
@@ -200,9 +207,27 @@ func ResolveProtocolDirectBaseURL(opts ChatOptions) string {
 	return "https://www.codebuddy.ai"
 }
 
+func AlignAPIEndpoint(product, endpoint string) string {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if endpoint == "" {
+		return ""
+	}
+	lower := strings.ToLower(endpoint)
+	if config.NormalizeProduct(product) == "workbuddy" {
+		if strings.Contains(lower, "workbuddy") {
+			return endpoint
+		}
+		return ""
+	}
+	if strings.Contains(lower, "workbuddy") {
+		return ""
+	}
+	return endpoint
+}
+
 func endpointMatchesRegion(endpoint, region string) bool {
 	lower := strings.ToLower(endpoint)
-	domestic := strings.Contains(lower, "copilot.tencent.com") || strings.Contains(lower, "codebuddy.cn")
+	domestic := strings.Contains(lower, "copilot.tencent.com") || strings.Contains(lower, "codebuddy.cn") || strings.Contains(lower, "workbuddy.cn")
 	if region == "domestic" {
 		return domestic
 	}
@@ -288,7 +313,8 @@ func authorityHost(endpoint string) string {
 func isPortalDomain(domain string) bool {
 	host := strings.ToLower(strings.TrimSpace(domain))
 	switch host {
-	case "www.codebuddy.cn", "codebuddy.cn", "www.codebuddy.ai", "codebuddy.ai":
+	case "www.codebuddy.cn", "codebuddy.cn", "www.codebuddy.ai", "codebuddy.ai",
+		"www.workbuddy.cn", "workbuddy.cn", "www.workbuddy.ai", "workbuddy.ai":
 		return true
 	default:
 		return false
@@ -369,6 +395,14 @@ func (c *Client) BuildProtocolDirectHeaders(opts ChatOptions) http.Header {
 	headers.Set("X-Conversation-Request-ID", requestID)
 	headers.Set("X-Conversation-Message-ID", messageID)
 	headers.Set("X-Request-ID", messageID)
+	if config.NormalizeProduct(opts.Product) == "workbuddy" {
+		headers.Set("X-IDE-Type", "VSCode")
+		headers.Set("X-IDE-Name", "VSCode")
+		headers.Set("X-IDE-Version", config.DefaultWorkBuddyIDEVersion)
+		headers.Set("X-Product-Version", config.DefaultWorkBuddyProductVer)
+		headers.Set("X-Env-ID", "production")
+		headers.Set("User-Agent", fmt.Sprintf("VSCode/%s WorkBuddy/%s", config.DefaultWorkBuddyIDEVersion, config.DefaultWorkBuddyProductVer))
+	}
 	if opts.EnterpriseID != "" {
 		headers.Set("X-Enterprise-Id", opts.EnterpriseID)
 		headers.Set("X-Tenant-Id", strutil.First(opts.TenantID, opts.EnterpriseID))

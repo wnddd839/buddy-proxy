@@ -5,6 +5,29 @@
 
 ---
 
+## v4.5 · 2026-09-11 · 管理台可切换 CodeBuddy / WorkBuddy 上游
+
+### 解决了什么
+
+国际站聊天一直走 CodeBuddy CLI 头和 `www.codebuddy.ai`。WorkBuddy 没有 CLI 产品，真正的 IDE 指纹是 `User-Agent: VSCode/… WorkBuddy/…`，目录也不同（国际含 `hy4-preview` / `deepseek-v4.1-flash` / `gpt-6-astra`）。国内国际账号 token 共用，但之前没法在反代里一键切到 WorkBuddy。
+
+### 改了什么
+
+- 管理台号池旁增加 **CodeBuddy / WorkBuddy** 分段开关，交互与国内 / 国际号池相同。
+- 进程级 `CODEBUDDY_PRODUCT`（默认 `codebuddy`），国内国际账号共用；切号池不会改产品。
+- WorkBuddy：国际打 `www.workbuddy.ai`，国内打 `www.workbuddy.cn`，请求头为 VSCode + WorkBuddy UA。
+- CodeBuddy：保持原来的 CLI 头与原域名。
+- OAuth 仍走 CodeBuddy 门户，不用重新登录。
+- Admin API：`POST /direct-admin/api/pool-product`，body `{"product":"workbuddy"}`。
+
+### 升级注意
+
+用新二进制覆盖后重启。默认仍是 CodeBuddy；要切 WorkBuddy 请打开管理台开关，或在 `.env` 里设 `CODEBUDDY_PRODUCT=workbuddy`。切完请刷新模型列表。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v4.5
+
+---
+
 ## v4.4 · 2026-09-11 · 换号重试不再提前放弃剩余账号
 
 ### 感谢

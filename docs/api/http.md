@@ -217,6 +217,7 @@ usage chunk 形如：
 | GET | `/direct-admin/api/client-config` | 前端配置（baseUrl / apiKey / site / requireApiKey） |
 | POST | `/direct-admin/api/client-config/generate-key` | 生成 `cbp_...` Key，写入 `.env` 并立即生效 |
 | POST · PUT | `/direct-admin/api/pool-site` | 切换号池区域 `domestic` / `global`，回写 `.env` |
+| POST · PUT | `/direct-admin/api/pool-product` | 切换上游产品 `codebuddy` / `workbuddy`，回写 `.env`；国内国际账号共用同一选择 |
 
 `generate-key` 会同步置 `CODEBUDDY_PROXY_REQUIRE_API_KEY=true`。**旧 Key 立即失效**，客户端必须同步更换。
 

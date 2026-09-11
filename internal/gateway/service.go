@@ -209,14 +209,11 @@ type CompleteOptions struct {
 // 反代进程所在位置 / 全局 CODEBUDDY_BASE_URL 不得把国内账号打到海外（反之亦然）。
 func (s *Service) chatOptionsFromAccount(account accounts.Account, opts CompleteOptions) provider.ChatOptions {
 	site := config.NormalizeSite(strutil.First(account.Site, s.Config().Site))
+	product := config.NormalizeProduct(s.Config().Product)
 	internet := strutil.First(account.InternetEnvironment, s.Config().InternetEnvironment)
 	baseURL := strings.TrimSpace(account.BaseURL)
-	if baseURL == "" {
-		if site == "domestic" {
-			baseURL = "https://www.codebuddy.cn"
-		} else {
-			baseURL = "https://www.codebuddy.ai"
-		}
+	if product == "workbuddy" || baseURL == "" {
+		baseURL = config.ProductPortalBaseURL(site, product)
 	}
 	return provider.ChatOptions{
 		Model:               opts.Model,
@@ -234,9 +231,11 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		UserID:              account.AuthStatus.UserID,
 		BaseURL:             baseURL,
 		Site:                site,
+		Product:             product,
 		InternetEnvironment: internet,
 		// 仅使用账号级 APIEndpoint，进程级 endpoint 可能指向错误区域。
-		APIEndpoint:         strings.TrimSpace(account.APIEndpoint),
+		// 切到 WorkBuddy 时丢掉 codebuddy/copilot 上的账号级 endpoint，否则请求仍打旧域。
+		APIEndpoint:         provider.AlignAPIEndpoint(product, account.APIEndpoint),
 		ChatCompletionsPath: strutil.First(account.ChatCompletionsPath, s.Config().ChatCompletionsPath),
 		// 不传 Domain：X-Domain 由 chat endpoint 主机名推导。
 		EnterpriseID:       account.EnterpriseID,
@@ -485,16 +484,13 @@ func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult
 		}
 	}
 	site := config.NormalizeSite(strutil.First(account.Site, s.Config().Site))
+	product := config.NormalizeProduct(s.Config().Product)
 	internet := strutil.First(account.InternetEnvironment, s.Config().InternetEnvironment)
 	baseURL := strings.TrimSpace(account.BaseURL)
-	if baseURL == "" {
-		if site == "domestic" {
-			baseURL = "https://www.codebuddy.cn"
-		} else {
-			baseURL = "https://www.codebuddy.ai"
-		}
+	if product == "workbuddy" || baseURL == "" {
+		baseURL = config.ProductPortalBaseURL(site, product)
 	}
-	cacheKey := strings.Join([]string{activeSite, account.ID, site, baseURL, internet}, "|")
+	cacheKey := strings.Join([]string{activeSite, product, account.ID, site, baseURL, internet}, "|")
 	if !fresh {
 		s.modelsCacheMu.Lock()
 		hit := s.modelsCache.key == cacheKey && time.Now().Before(s.modelsCache.expiresAt)
@@ -517,6 +513,7 @@ func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult
 		}
 		out := s.Models.List(ctx, s.Provider, models.ListOptions{
 			Site:                site,
+			Product:             product,
 			BaseURL:             baseURL,
 			InternetEnvironment: internet,
 			BearerToken:         account.BearerToken,
@@ -524,7 +521,7 @@ func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult
 			EnterpriseID:        account.EnterpriseID,
 			TenantID:            account.TenantID,
 			DepartmentFullName:  account.DepartmentFullName,
-			APIEndpoint:         strings.TrimSpace(account.APIEndpoint),
+			APIEndpoint:         provider.AlignAPIEndpoint(product, account.APIEndpoint),
 			ChatCompletionsPath: strutil.First(account.ChatCompletionsPath, s.Config().ChatCompletionsPath),
 		})
 		if out.OK && len(out.Models) > 0 {
@@ -562,41 +559,61 @@ func (s *Service) ActivePoolSite() string {
 	return config.NormalizeSite(s.Config().Site)
 }
 
+func (s *Service) ActiveProduct() string {
+	return config.NormalizeProduct(s.Config().Product)
+}
+
 func (s *Service) SetPoolSite(site string) (map[string]any, error) {
+	return s.persistPoolRouting(site, s.ActiveProduct(), "号池已切换到 "+config.NormalizeSite(site)+"，后续请求只使用该区域账号。")
+}
+
+func (s *Service) SetPoolProduct(product string) (map[string]any, error) {
+	product = config.NormalizeProduct(product)
+	label := "CodeBuddy CLI"
+	if product == "workbuddy" {
+		label = "WorkBuddy IDE"
+	}
+	return s.persistPoolRouting(s.ActivePoolSite(), product, "上游已切换到 "+label+"，国内/国际账号都会按该产品请求。")
+}
+
+func (s *Service) persistPoolRouting(site, product, note string) (map[string]any, error) {
 	site = config.NormalizeSite(site)
-	baseURL := "https://www.codebuddy.ai"
+	product = config.NormalizeProduct(product)
+	baseURL := config.ProductPortalBaseURL(site, product)
 	internet := ""
 	if site == "domestic" {
-		baseURL = "https://www.codebuddy.cn"
 		internet = "internal"
 	}
 
 	envPath := config.ResolveEnvFilePath()
 	values := map[string]string{
 		"CODEBUDDY_SITE":                 site,
+		"CODEBUDDY_PRODUCT":              product,
 		"CODEBUDDY_BASE_URL":             baseURL,
 		"CODEBUDDY_INTERNET_ENVIRONMENT": internet,
 	}
 	if err := config.UpsertEnvFile(envPath, values); err != nil {
-		return nil, fmt.Errorf("persist pool site failed: %w", err)
+		return nil, fmt.Errorf("persist pool routing failed: %w", err)
 	}
 
 	s.updateConfig(func(c *config.Config) {
 		c.Site = site
+		c.Product = product
 		c.BaseURL = baseURL
 		c.InternetEnvironment = internet
 	})
 	s.invalidateModelsCache()
 	_ = os.Setenv("CODEBUDDY_SITE", site)
+	_ = os.Setenv("CODEBUDDY_PRODUCT", product)
 	_ = os.Setenv("CODEBUDDY_BASE_URL", baseURL)
 	_ = os.Setenv("CODEBUDDY_INTERNET_ENVIRONMENT", internet)
 
-	s.Log.Debug("pool site switched", "site", site, "baseUrl", baseURL, "envFile", envPath)
+	s.Log.Debug("pool routing switched", "site", site, "product", product, "baseUrl", baseURL, "envFile", envPath)
 	payload := s.Status()
 	payload["ok"] = true
 	payload["switched"] = true
 	payload["envFile"] = envPath
-	payload["note"] = "号池已切换到 " + site + "，后续请求只使用该区域账号。"
+	payload["note"] = note
 	return payload, nil
 }
 
@@ -606,6 +623,7 @@ func (s *Service) Status() map[string]any {
 	stats := s.stats
 	s.mu.Unlock()
 	site := config.NormalizeSite(cfg.Site)
+	product := config.NormalizeProduct(cfg.Product)
 	baseURL := cfg.BaseURL
 	internet := cfg.InternetEnvironment
 	host := cfg.Host
@@ -617,19 +635,23 @@ func (s *Service) Status() map[string]any {
 	store, _ := s.Pool.Read()
 	summary := accounts.SummarizeStoreForSite(store, s.Pool.Path(), site)
 	return map[string]any{
-		"ok":        true,
-		"provider":  "codebuddy",
-		"transport": transport,
-		"uptimeMs":  time.Since(s.Started).Milliseconds(),
-		"stats":     stats,
-		"accounts":  summary,
-		"poolSite":  site,
+		"ok":          true,
+		"provider":    "codebuddy",
+		"transport":   transport,
+		"uptimeMs":    time.Since(s.Started).Milliseconds(),
+		"stats":       stats,
+		"accounts":    summary,
+		"poolSite":    site,
+		"product":     product,
+		"poolProduct": product,
 		"config": map[string]any{
 			"host":                host,
 			"port":                port,
 			"requireApiKey":       requireKey,
 			"site":                site,
 			"poolSite":            site,
+			"product":             product,
+			"poolProduct":         product,
 			"baseUrl":             baseURL,
 			"internetEnvironment": internet,
 			"accountsPath":        accountsPath,
