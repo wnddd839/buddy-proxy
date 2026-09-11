@@ -45,7 +45,7 @@ Health   http://127.0.0.1:32126/health
 
 1. 打开 `http://127.0.0.1:32126/direct-admin/`
 2. 若设置了 `CODEBUDDY_PROXY_ADMIN_PASSWORD`，用 Basic Auth 登录（用户名 `admin`）
-3. 选择 `domestic` 或 `global`，点「开始 OAuth」
+3. 选择国内 / 国际、CodeBuddy / WorkBuddy，点「开始 OAuth」
 4. 在浏览器完成授权，回到管理台点「检查登录」
 5. 账号写入 `CODEBUDDY_PROXY_ACCOUNTS_PATH`
 

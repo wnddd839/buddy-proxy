@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/logo.svg" width="88" height="88" alt="CodeBuddy Proxy" />
+  <img src="docs/logo.svg" width="88" height="88" alt="Buddy Proxy" />
 </p>
 
-<h1 align="center">CodeBuddy Proxy</h1>
+<h1 align="center">Buddy Proxy</h1>
 
 <p align="center">
-  <strong>把你的 CodeBuddy 账号，变成任何 OpenAI 客户端都能直连的 <code>/v1</code> 渠道。</strong>
+  <strong>把 CodeBuddy / WorkBuddy 账号，变成任何 OpenAI 客户端都能直连的 <code>/v1</code> 渠道。</strong>
 </p>
 
 <p align="center">
@@ -27,18 +27,18 @@
 
 ## 一件事
 
-你有一个 CodeBuddy 账号。你有一堆只认 OpenAI `/v1` 格式的工具——NewAPI、ZCode、Sub2API、各类 SDK 和客户端。
+你有腾讯 CodeBuddy 或 WorkBuddy 账号。你有一堆只认 OpenAI `/v1` 格式的工具——NewAPI、ZCode、Sub2API、各类 SDK 和客户端。
 
-**CodeBuddy Proxy 是中间那一层协议翻译器。**
+**Buddy Proxy 是中间那一层协议翻译器。**
 
-它用你自己的账号（OAuth 登录）直连 CodeBuddy 上游，对外暴露标准 OpenAI 接口。你不需要改客户端，不需要 `codebuddy --serve`，不需要碰任何浏览器插件。
+用你自己的账号（OAuth 登录）直连上游，对外暴露标准 OpenAI 接口。管理台可以切国内 / 国际，也可以切 CodeBuddy / WorkBuddy——同一套 token，产品和站点正交。不需要改客户端，不需要 `codebuddy --serve`，不需要碰任何浏览器插件。
 
 ```text
-你的客户端  ──►  CodeBuddy Proxy  ──►  CodeBuddy 上游
-(OpenAI格式)      (协议翻译/账号池)      (protocol_direct)
+你的客户端  ──►  Buddy Proxy  ──►  CodeBuddy 或 WorkBuddy
+(OpenAI格式)     (协议翻译/账号池)     (protocol_direct)
 ```
 
-一个 Go 写的单文件二进制，跑在你自己的机器上。
+一个 Go 写的单文件二进制，跑在你自己的机器上。二进制名仍是 `codebuddy-proxy`。
 
 ---
 
@@ -51,6 +51,7 @@
 | **多账号轮询** | 账号池按区域分组，失败自动换号；凭据以 `0600` 权限落盘 |
 | **真实余额** | 管理台直读官网 Credits，显示「剩余 / 总额」 |
 | **国内 / 国际** | 一键切换号池；**端点以账号自身区域为准**，不会把国内号打到海外 |
+| **CodeBuddy / WorkBuddy** | 一键切产品：CodeBuddy 走 CLI 头，WorkBuddy 走 IDE 头；模型目录随之切换 |
 | **模型列表** | 走协议 `/v3/config`，60 秒缓存，可强制刷新 |
 | **Token 用量透传** | 流式收尾补 usage chunk，含缓存命中统计（缓存字段兼容多上游别名） |
 | **开箱即用** | 预编译二进制，无运行时依赖；首次启动自动生成 API Key |
@@ -101,7 +102,7 @@ go run ./cmd/codebuddy-proxy
 
 ### 三步跑起来
 
-1. 打开管理台 → 选「国内」或「国际」→ 点「开始 OAuth」，浏览器完成授权
+1. 打开管理台 → 选「国内」或「国际」、选「CodeBuddy」或「WorkBuddy」→ 点「开始 OAuth」，浏览器完成授权
 2. 回管理台点「检查登录」，账号进入账号池
 3. 复制页面上的 **Base URL + API Key**，填进你的客户端
 
@@ -132,16 +133,15 @@ curl http://127.0.0.1:32126/v1/chat/completions \
 
 > 只提供列表接口，**不支持** `GET /v1/models/{id}` 单模型查询（返回 404）。请在客户端侧从列表中匹配。
 
-国内 / 国际切换只需改 `.env`：
+国内 / 国际、CodeBuddy / WorkBuddy 切换只需改 `.env`（或在管理台点切换）：
 
 ```env
-# 国内
-CODEBUDDY_SITE=domestic
-CODEBUDDY_INTERNET_ENVIRONMENT=internal
+# 站点
+CODEBUDDY_SITE=domestic          # 或 global
+CODEBUDDY_INTERNET_ENVIRONMENT=internal   # 国际用 public
 
-# 国际
-CODEBUDDY_SITE=global
-CODEBUDDY_INTERNET_ENVIRONMENT=public
+# 产品（与站点正交；同一套 token）
+CODEBUDDY_PRODUCT=codebuddy      # 或 workbuddy
 ```
 
 完整变量见 [配置参考](docs/guides/configuration.md)。
@@ -180,7 +180,7 @@ make release   # 四平台交叉编译 + SHA256SUMS.txt
 
 ### 这是什么
 
-一个**自行托管、本地运行的协议转换工具**。它不提供任何模型服务，不代理任何第三方 API，不托管任何账号，不中转任何流量到本项目维护者——**你的请求只从你自己的机器发往 CodeBuddy 上游**。
+一个**自行托管、本地运行的协议转换工具**。它不提供任何模型服务，不代理任何第三方 API，不托管任何账号，不中转任何流量到本项目维护者——**你的请求只从你自己的机器发往你所选的上游（CodeBuddy 或 WorkBuddy）**。
 
 ### 你的责任
 
@@ -197,7 +197,7 @@ make release   # 四平台交叉编译 + SHA256SUMS.txt
 
 | 不提供 | 说明 |
 | :--- | :--- |
-| 不提供账号 | 不售卖、不赠送、不代注册任何 CodeBuddy 账号或额度 |
+| 不提供账号 | 不售卖、不赠送、不代注册任何 CodeBuddy / WorkBuddy 账号或额度 |
 | 不提供托管服务 | 没有公共实例，没有官方部署，不接收你的流量 |
 | 不提供担保 | 软件按「原样」提供，不保证可用性、不保证与上游的持续兼容 |
 | 不承担损失 | 对使用造成的任何直接或间接损失（含账号风险、数据损失、业务中断）不承担责任 |
@@ -223,5 +223,5 @@ make release   # 四平台交叉编译 + SHA256SUMS.txt
 ---
 
 <p align="center">
-  <sub>CodeBuddy Proxy 与 CodeBuddy 官方无关联、无隶属、无背书关系。「CodeBuddy」为其各自持有者的商标，此处仅作技术兼容性描述之用。</sub>
+  <sub>Buddy Proxy 与 CodeBuddy、WorkBuddy 官方无关联、无隶属、无背书关系。「CodeBuddy」「WorkBuddy」为其各自持有者的商标，此处仅作技术兼容性描述之用。</sub>
 </p>

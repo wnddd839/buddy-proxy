@@ -1,6 +1,6 @@
 # Documentation Index
 
-Go CodeBuddy Proxy 文档目录。
+Buddy Proxy 文档目录（CodeBuddy / WorkBuddy 协议网关）。
 
 ## 全局
 
@@ -20,7 +20,7 @@ Go CodeBuddy Proxy 文档目录。
 
 | 文档 | 说明 |
 |------|------|
-| [../../README.md](../../README.md) | 项目主页（特性、接入、国内/国际） |
+| [../../README.md](../../README.md) | 项目主页（特性、接入、国内/国际、CodeBuddy/WorkBuddy） |
 | [../../CHANGELOG.md](../../CHANGELOG.md) | 更新日记 |
 | [../../SECURITY.md](../../SECURITY.md) | 漏洞报告说明 |
 | [../releases/README.md](../releases/README.md) | 预编译包下载与平台对照 |
