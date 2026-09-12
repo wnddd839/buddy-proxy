@@ -22,6 +22,8 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 	"github.com/wnddd839/codebuddy-proxy/internal/sessionpin"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
+	"github.com/wnddd839/codebuddy-proxy/internal/usagejournal"
+	"github.com/wnddd839/codebuddy-proxy/internal/version"
 )
 
 const (
@@ -106,6 +108,7 @@ type Service struct {
 	}
 	modelsFlight modelsFlight
 	Pins         *sessionpin.Table
+	Journal      *usagejournal.Journal
 }
 
 func New(cfg config.Config, logger *slog.Logger) *Service {
@@ -114,6 +117,13 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 	}
 	p := provider.NewClient(cfg)
 	p.Log = logger
+	journal, journalErr := usagejournal.Open(cfg.UsagePath, 0)
+	if journalErr != nil {
+		logger.Warn("usage journal load failed; running without persistence", "path", cfg.UsagePath, "error", journalErr.Error())
+		journal = usagejournal.New(0)
+	} else if journal != nil && cfg.UsagePath != "" {
+		logger.Info("usage journal persistence enabled", "path", cfg.UsagePath)
+	}
 	svc := &Service{
 		Pool:     accounts.NewPool(cfg.AccountsPath),
 		Provider: p,
@@ -123,16 +133,26 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 		Started:  time.Now(),
 		oauth:    &OAuthSession{Status: "idle"},
 		Pins:     sessionpin.New(0),
+		Journal:  journal,
 	}
 	svc.storeConfig(cfg)
 	return svc
 }
 
 func (s *Service) Close() error {
-	if s == nil || s.Pool == nil {
+	if s == nil {
 		return nil
 	}
-	return s.Pool.Close()
+	var err error
+	if s.Journal != nil {
+		err = s.Journal.Close()
+	}
+	if s.Pool != nil {
+		if poolErr := s.Pool.Close(); poolErr != nil && err == nil {
+			err = poolErr
+		}
+	}
+	return err
 }
 
 // Config 返回运行时配置快照，并发读安全。
@@ -194,6 +214,7 @@ func ResolveProviderModel(model string) ProviderModel {
 type CompleteOptions struct {
 	AccountID           string
 	SessionKey          string
+	SessionLabel        string
 	Model               string
 	Messages            []map[string]any
 	Stream              bool
@@ -773,6 +794,8 @@ func (s *Service) Status() map[string]any {
 		"ok":          true,
 		"provider":    "codebuddy",
 		"transport":   transport,
+		"version":     version.Version,
+		"build":       version.Info(),
 		"uptimeMs":    time.Since(s.Started).Milliseconds(),
 		"stats":       stats,
 		"accounts":    summary,
@@ -790,6 +813,7 @@ func (s *Service) Status() map[string]any {
 			"baseUrl":             baseURL,
 			"internetEnvironment": internet,
 			"accountsPath":        accountsPath,
+			"usagePath":           s.Config().UsagePath,
 			"chatCompletionsPath": chatPath,
 		},
 	}

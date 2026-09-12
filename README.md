@@ -28,7 +28,7 @@
 感谢这些同学用 issue 把真实问题送上门，按编号：
 
 - [@dyed-fanxing](https://github.com/dyed-fanxing) · [#2](https://github.com/wnddd839/buddy-proxy/issues/2) ZCode 把 git status 写进上下文触发 11128 · [#4](https://github.com/wnddd839/buddy-proxy/issues/4) DeepSeek Flash 1M 上下文卡在约 70%
-- [@carter003](https://github.com/carter003) · [#6](https://github.com/wnddd839/buddy-proxy/issues/6) 换号重试按剩余账号缩小上限、提前终止 · [#8](https://github.com/wnddd839/buddy-proxy/issues/8) 同会话应钉在一个账号，新会话再按额度选号
+- [@carter003](https://github.com/carter003) · [#6](https://github.com/wnddd839/buddy-proxy/issues/6) 换号重试按剩余账号缩小上限、提前终止 · [#8](https://github.com/wnddd839/buddy-proxy/issues/8) 同会话应钉在一个账号，新会话再按额度选号 · [#9](https://github.com/wnddd839/buddy-proxy/issues/9) 管理台版本号与请求 / token / credit 用量明细
 - [@tearslee](https://github.com/tearslee) · [#7](https://github.com/wnddd839/buddy-proxy/issues/7) 经代理走 DSH/Codex 时缓存读取一直是 0
 
 ---

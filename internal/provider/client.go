@@ -136,6 +136,8 @@ type Usage struct {
 	CacheCreationInputTokens int                      `json:"cache_creation_input_tokens,omitempty"`
 	PromptCacheHitTokens     int                      `json:"prompt_cache_hit_tokens,omitempty"`
 	PromptCacheMissTokens    int                      `json:"prompt_cache_miss_tokens,omitempty"`
+	// Credit 为上游 usage 单次扣费（Credits），缺失时不估算。
+	Credit *float64 `json:"credit,omitempty"`
 	// Source 区分上游真实值与本地估算：upstream | estimated。
 	Source string `json:"usage_source,omitempty"`
 }
@@ -153,6 +155,13 @@ func (u Usage) CachedTokens() int {
 	return 0
 }
 
+// RequestTrace mirrors upstream protocol_direct header ids for admin diagnostics.
+type RequestTrace struct {
+	ConversationID        string `json:"conversationId,omitempty"`
+	ConversationRequestID string `json:"conversationRequestId,omitempty"`
+	MessageID             string `json:"messageId,omitempty"`
+}
+
 type Result struct {
 	Turn       Turn
 	DurationMs int64
@@ -161,6 +170,7 @@ type Result struct {
 	DeltaCount int
 	Status     int
 	Model      string
+	Trace      RequestTrace
 }
 
 func NormalizeBaseURL(value string) string {
@@ -372,9 +382,15 @@ func randomUUID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }
 
-func (c *Client) BuildProtocolDirectHeaders(opts ChatOptions) http.Header {
+func (c *Client) BuildProtocolDirectHeaders(opts ChatOptions) (http.Header, RequestTrace) {
 	requestID := strutil.RandomHex(16)
 	messageID := strutil.RandomHex(16)
+	conversationID := randomUUID()
+	trace := RequestTrace{
+		ConversationID:        conversationID,
+		ConversationRequestID: requestID,
+		MessageID:             messageID,
+	}
 	ideVersion := strutil.First(c.IDEVersion, config.DefaultIDEVersion)
 	headers := http.Header{}
 	headers.Set("Accept", "text/event-stream, application/json")
@@ -391,7 +407,7 @@ func (c *Client) BuildProtocolDirectHeaders(opts ChatOptions) http.Header {
 	headers.Set("X-Product", "SaaS")
 	headers.Set("X-User-Id", strutil.First(opts.UserID, "anonymous"))
 	// 官方 CLI 会话 ID 使用大写 UUID。
-	headers.Set("X-Conversation-ID", randomUUID())
+	headers.Set("X-Conversation-ID", conversationID)
 	headers.Set("X-Conversation-Request-ID", requestID)
 	headers.Set("X-Conversation-Message-ID", messageID)
 	headers.Set("X-Request-ID", messageID)
@@ -419,7 +435,7 @@ func (c *Client) BuildProtocolDirectHeaders(opts ChatOptions) http.Header {
 		}
 		headers.Set(k, v)
 	}
-	return headers
+	return headers, trace
 }
 
 func NormalizeMessageRole(role string) string {
@@ -564,7 +580,8 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	if err != nil {
 		return Result{}, err
 	}
-	req.Header = c.BuildProtocolDirectHeaders(opts)
+	headers, trace := c.BuildProtocolDirectHeaders(opts)
+	req.Header = headers
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -590,6 +607,7 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	result.DurationMs = time.Since(started).Milliseconds()
 	result.Status = resp.StatusCode
 	result.Model = model
+	result.Trace = trace
 	return result, nil
 }
 
@@ -1208,6 +1226,9 @@ func ParseUsage(raw map[string]any) Usage {
 	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
+	if credit, ok := floatFrom(raw["credit"], raw["credits"], raw["cost"]); ok {
+		usage.Credit = &credit
+	}
 	return usage
 }
 
@@ -1514,6 +1535,32 @@ func intFrom(values ...any) int {
 		}
 	}
 	return 0
+}
+
+func floatFrom(values ...any) (float64, bool) {
+	for _, value := range values {
+		switch v := value.(type) {
+		case float64:
+			return v, true
+		case float32:
+			return float64(v), true
+		case int:
+			return float64(v), true
+		case int64:
+			return float64(v), true
+		case json.Number:
+			n, err := v.Float64()
+			if err == nil {
+				return n, true
+			}
+		case string:
+			n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err == nil {
+				return n, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func truthy(value any) bool {

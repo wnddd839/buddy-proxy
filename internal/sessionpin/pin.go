@@ -13,6 +13,31 @@ import (
 const defaultTTL = 45 * time.Minute
 const maxEntries = 4096
 
+// SessionLabel 用首条 user 消息做可读会话名（管理台展示）。
+func SessionLabel(messages []map[string]any) string {
+	for _, msg := range messages {
+		role, _ := msg["role"].(string)
+		if strings.ToLower(strings.TrimSpace(role)) != "user" {
+			continue
+		}
+		text := messageText(msg["content"])
+		if text == "" {
+			continue
+		}
+		text = strings.Join(strings.Fields(text), " ")
+		if len(text) > 48 {
+			return text[:48] + "…"
+		}
+		return text
+	}
+	prefix := conversationPrefix(messages)
+	if prefix == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(prefix))
+	return "会话 · " + hex.EncodeToString(sum[:4])
+}
+
 // Key 从客户端头或对话前缀得到稳定 session id。
 // 有头/prompt_cache_key 时用客户端值；否则用 system+首条 user，后续工具轮次不会换 key。
 func Key(header http.Header, promptCacheKey string, messages []map[string]any) string {

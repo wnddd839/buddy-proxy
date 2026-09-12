@@ -26,8 +26,10 @@ Authorization: Bearer <CODEBUDDY_PROXY_API_KEY>
 无需鉴权。
 
 ```json
-{"ok":true,"provider":"codebuddy","transport":"protocol_direct"}
+{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v4.7"}
 ```
+
+`version` 为构建时注入的发布号；本地 `go build` 未带 `-ldflags` 时多为 `dev`。
 
 ### `GET /v1/models`
 
@@ -213,7 +215,8 @@ usage chunk 形如：
 
 | Method | Path | 说明 |
 |--------|------|------|
-| GET | `/direct-admin/api/status` | 运行状态 + 账号摘要 + 配置快照 |
+| GET | `/direct-admin/api/status` | 运行状态 + 账号摘要 + 配置快照；含 `version`、`build`（`version` / 可选 `commit` / `builtAt`）、进程级 `stats` |
+| GET | `/direct-admin/api/usage` | 用量汇总 + 分页明细 + 趋势 `series`；默认落盘 `proxy-usage.json`（约 400 条环形缓冲 + 90 日汇总） |
 | GET | `/direct-admin/api/client-config` | 前端配置（baseUrl / apiKey / site / requireApiKey） |
 | POST | `/direct-admin/api/client-config/generate-key` | 生成 `cbp_...` Key，写入 `.env` 并立即生效 |
 | POST · PUT | `/direct-admin/api/pool-site` | 切换号池区域 `domestic` / `global`，回写 `.env` |
@@ -289,6 +292,73 @@ usage chunk 形如：
 `start` 的 `reuseExisting=true` 且会话仍在 15 分钟 TTL 内时，复用现有 `waiting` 会话而不重新发起。
 
 launch / callback 均设 Cookie `cursor_codebuddy_oauth=<token>`（`HttpOnly`、`SameSite=Lax`、`Max-Age=900`）。
+
+### 用量与明细
+
+`GET /direct-admin/api/usage`
+
+Query：
+
+| 参数 | 说明 |
+|------|------|
+| `range` | `day`（默认）· `week` · `month`（不足 30 天历史时与 `week` 同窗口） |
+| `limit` | 每页条数，默认 `20`，最大 `100` |
+| `offset` | 跳过条数（与 `page` 二选一，默认 `0`） |
+| `page` | 页码，从 `1` 起；等价 `offset = (page-1)*limit` |
+
+明细按时间**新→旧**；响应含 `requestsTotal`、`limit`、`offset`。
+
+响应：
+
+```json
+{
+  "ok": true,
+  "summary": {
+    "range": "day",
+    "from": 1757606400000,
+    "to": 1757692800000,
+    "requests": 12,
+    "failed": 1,
+    "promptTokens": 48000,
+    "completionTokens": 3200,
+    "totalTokens": 51200,
+    "cachedTokens": 12000,
+    "cacheHitRate": 25.0,
+    "credits": 0.84,
+    "creditRows": 10
+  },
+  "series": [
+    {"at": 1757691000000, "label": "14:00", "totalTokens": 12000, "cacheHitRate": 30.5}
+  ],
+  "requests": [
+    {
+      "at": 1757691000000,
+      "proxyRequestId": "a1b2c3…",
+      "upstreamConversationRequestId": "…",
+      "upstreamConversationId": "…",
+      "upstreamMessageId": "…",
+      "sessionLabel": "修复登录 bug",
+      "model": "auto",
+      "stream": true,
+      "ok": true,
+      "promptTokens": 1200,
+      "completionTokens": 80,
+      "cachedTokens": 900,
+      "totalTokens": 1280,
+      "credit": 0.07,
+      "durationMs": 2340,
+      "accountId": "…",
+      "accountLabel": "CodeBuddy OAuth"
+    }
+  ]
+}
+```
+
+- 默认落盘 `proxy-usage.json`（与 `proxy-accounts.json` 同目录，可用 `CODEBUDDY_PROXY_USAGE_PATH` 覆盖）：最多约 **400** 条明细环形缓冲 + **90 日**按日汇总；正常退出与防抖写入（约 250ms）会刷盘，`SIGKILL` 可能丢最近未落盘的几条。
+- `credit` 仅在上游 chat `usage` 返回 `credit` 时写入；无字段时不估算。与套餐 `/billing/meter/get-user-resource` 的余额无关。
+- 客户端主动断开（`context canceled`）时与全局统计一致：记为 `ok: true`、token 常为 0，不算 `failed` 计数。
+
+管理台 Tab **05 / 用量与明细** 与 `#usage` 锚点调用本接口。
 
 ---
 

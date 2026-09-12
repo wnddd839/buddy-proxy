@@ -311,7 +311,7 @@ func checkinRequest(client *provider.Client, account accounts.Account, cfg confi
 		Domain:             account.Domain,
 	}
 	endpoint := provider.ResolveProtocolDirectBillingEndpoint(chatOpts, path)
-	headers := client.BuildProtocolDirectHeaders(chatOpts)
+	headers, _ := client.BuildProtocolDirectHeaders(chatOpts)
 	return endpoint, headers, nil
 }
 

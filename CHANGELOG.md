@@ -5,6 +5,30 @@
 
 ---
 
+## v4.7 · 2026-09-12 · 管理台用量明细与版本号
+
+### 感谢
+
+- 社区 [#9](https://github.com/wnddd839/buddy-proxy/issues/9)：管理台展示版本号、请求明细与 token / credit 统计。
+
+### 改了什么
+
+- **版本号**：顶栏与 `/health`、`/direct-admin/api/status` 展示构建版本（`make build VERSION=v4.7` 注入）。
+- **Tab 05 · 用量与明细**：今日 / 7 日 / 30 日（历史不足 30 天时与 7 日同窗口）；表格含代理 request id、上游 `X-Conversation-Request-ID`、会话摘要、token / cache、上游 `usage.credit`、耗时与账号。
+- **用量持久化**：`proxy-usage.json`（与账号池同目录，可 `CODEBUDDY_PROXY_USAGE_PATH`）；环形明细约 400 条 + 90 日按日汇总，重启保留。
+- **Admin API**：`GET /direct-admin/api/usage`（分页、趋势 `series`、缓存命中率）。
+- **上游追踪**：`RequestTrace` 从 protocol_direct 请求头回填；`ParseUsage` 解析单次 `credit`。
+
+### 说明
+
+- 客户端取消连接仍记为成功行（与原有 `stats` 一致），失败计数只含上游/网关错误。
+- 本地 `go build` 未带 `VERSION=` 时显示 `dev`。
+- **Breaking（仅 API）**：`GET /direct-admin/api/usage?range=process` 已移除；旧客户端若仍传 `process` 会按 `day` 处理（数据已落盘，不再提供「进程内全量」语义）。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v4.7
+
+---
+
 ## v4.6 · 2026-09-12 · 同会话钉号，换号按额度拿最大
 
 ### 感谢

@@ -280,6 +280,50 @@ pre{
   font-size:12.5px;color:var(--fg-60);line-height:1.6;margin:0;
 }
 
+.log-table-wrap{margin-top:16px;border:1px solid var(--fg-10)}
+.log-table-window{max-height:min(340px,42vh);overflow:auto}
+.log-table{width:100%;border-collapse:collapse;font-size:12px;min-width:880px}
+.log-pager{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  padding:10px 12px;border-top:1px solid var(--fg-10);font-size:12px;color:var(--fg-60);
+}
+.log-pager .actions button{padding:6px 12px;font-size:11px}
+.log-table th,.log-table td{padding:10px 12px;border-bottom:1px solid var(--fg-10);text-align:left;vertical-align:top}
+.log-table th{
+  font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--fg-40);font-weight:500;
+  position:sticky;top:0;background:var(--bg);
+}
+.log-table td.mono{font-family:var(--mono);font-size:11px}
+.log-table tr:hover td{background:rgba(28,28,28,.02)}
+.log-table .idbtn{
+  border:none;background:transparent;padding:0;font-family:var(--mono);font-size:11px;
+  color:var(--fg);cursor:pointer;text-decoration:underline;text-underline-offset:3px;
+}
+.log-table .idbtn:hover{font-style:italic}
+
+.usage-chart{
+  margin-top:20px;padding:16px 12px 8px;border:1px solid var(--fg-10);
+}
+.usage-chart-head{
+  display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--fg-10);
+}
+.usage-chart-head h3{
+  margin:0;font-family:var(--display);font-size:16px;font-weight:400;color:var(--fg);
+}
+.usage-chart-legend{
+  display:flex;gap:16px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-60);
+}
+.usage-chart-legend span{display:inline-flex;align-items:center;gap:6px}
+.usage-chart-legend .swatch{width:18px;height:0;border-top:2px solid var(--fg)}
+.usage-chart-legend .swatch.dash{border-top-style:dashed}
+.chart-empty{padding:32px 12px;text-align:center;color:var(--fg-40);font-size:13px}
+.usage-chart svg{display:block;width:100%;height:auto;max-height:200px}
+.usage-chart .axis{stroke:var(--fg-10);stroke-width:1}
+.usage-chart .line-tokens{fill:none;stroke:var(--fg);stroke-width:1.5}
+.usage-chart .line-rate{fill:none;stroke:var(--fg-60);stroke-width:1.5;stroke-dasharray:5 4}
+.usage-chart .lbl{fill:var(--fg-40);font-family:var(--sans);font-size:10px}
+
 #statusBox,#oauthBox,#modelsBox{display:none}
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation:none !important;transition:none !important}
@@ -299,6 +343,7 @@ pre{
       <span class="pill">transport · <span class="mono" id="pillTransport">—</span></span>
       <span class="pill">site · <span class="mono" id="pillSite">—</span></span>
       <span class="pill">product · <span class="mono" id="pillProduct">—</span></span>
+      <span class="pill">version · <span class="mono" id="pillVersion">—</span></span>
     </div>
   </header>
 
@@ -315,6 +360,9 @@ pre{
     </button>
     <button type="button" class="tab-link" data-tab="tab-models">
       <span class="tab-idx">04 /</span> 模型与快照
+    </button>
+    <button type="button" class="tab-link" data-tab="tab-usage">
+      <span class="tab-idx">05 /</span> 用量与明细
     </button>
   </nav>
 
@@ -507,6 +555,78 @@ pre{
       </div>
     </section>
   </div>
+
+  <!-- ========================================================
+       TAB 05: 用量与明细
+       ======================================================== -->
+  <div class="tab-panel" id="tab-usage">
+    <section class="panel">
+      <div class="panel-inner">
+        <div class="eyebrow">Usage · Request Log</div>
+        <h1>Token 与缓存统计</h1>
+        <p class="lede">汇总 Token 总量与 prompt 缓存命中率；明细保留请求追踪与 Credits。数据默认写入与账号池同目录的 <code>proxy-usage.json</code>（最近约 400 条明细 + 90 日按日汇总），重启后保留。</p>
+        <div class="section-head" style="margin-top:20px;border:none;padding:0">
+          <div class="seg" id="usageRangeSeg" role="group" aria-label="统计周期">
+            <button type="button" data-range="day" class="active">今日</button>
+            <button type="button" data-range="week">7 日</button>
+            <button type="button" data-range="month">30 日</button>
+          </div>
+          <div class="actions">
+            <button class="ghost" id="btnRefreshUsage" type="button">刷新明细</button>
+          </div>
+        </div>
+        <div class="metrics">
+          <div class="metric"><div class="k">请求数</div><div class="v" id="uRequests">0</div></div>
+          <div class="metric"><div class="k">失败</div><div class="v" id="uFailed">0</div></div>
+          <div class="metric"><div class="k">Token 总量</div><div class="v" id="uTotalTokens">0</div></div>
+          <div class="metric"><div class="k">缓存命中率</div><div class="v sm" id="uCacheHit">—</div></div>
+          <div class="metric"><div class="k">Credits Σ</div><div class="v sm" id="uCredits">—</div></div>
+        </div>
+        <div class="usage-chart" id="usageChartBox" aria-hidden="false">
+          <div class="usage-chart-head">
+            <h3>趋势</h3>
+            <div class="usage-chart-legend">
+              <span><i class="swatch"></i> Token 总量</span>
+              <span><i class="swatch dash"></i> 缓存命中率 %</span>
+            </div>
+          </div>
+          <div id="usageChart"><div class="chart-empty">加载中…</div></div>
+        </div>
+        <p class="checkin-hint" id="usageCreditHint">命中率 = 缓存 token ÷ prompt token。Credits 仅在上游 usage 返回 <code>credit</code> 时累加。</p>
+        <div class="log-table-wrap">
+          <div class="log-table-window">
+            <table class="log-table" aria-label="请求明细">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>请求 ID</th>
+                  <th>上游 Request</th>
+                  <th>会话</th>
+                  <th>模型</th>
+                  <th>Token 总量</th>
+                  <th>缓存命中</th>
+                  <th>Credit</th>
+                  <th>耗时</th>
+                  <th>账号</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="usageRows">
+                <tr><td colspan="11" class="empty" style="border:none">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="log-pager">
+            <span id="usagePagerMeta">—</span>
+            <div class="actions">
+              <button type="button" class="ghost" id="btnUsagePrev" disabled>上一页</button>
+              <button type="button" class="ghost" id="btnUsageNext" disabled>下一页</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -530,17 +650,22 @@ function switchTab(tabId){
 }
 document.querySelectorAll('.tab-link').forEach(function(btn){
   btn.addEventListener('click', function(){
-    switchTab(btn.getAttribute('data-tab'));
+    const tab = btn.getAttribute('data-tab');
+    switchTab(tab);
+    if (tab === 'tab-usage') refreshUsage().catch(function(e){ showToast(e.message, 'error'); });
   });
 });
 if (window.location.hash === '#codebuddy') {
   switchTab('tab-pool');
 } else if (window.location.hash === '#client-config') {
   switchTab('tab-client');
+} else if (window.location.hash === '#usage') {
+  switchTab('tab-usage');
 }
 window.addEventListener('hashchange', function(){
   if (window.location.hash === '#codebuddy') switchTab('tab-pool');
   if (window.location.hash === '#client-config') switchTab('tab-client');
+  if (window.location.hash === '#usage') switchTab('tab-usage');
 });
 
 async function api(path, opts={}) {
@@ -707,6 +832,163 @@ let activeCheckinSite = '';
 let activeProduct = 'codebuddy';
 let lastPoolAccounts = null;
 let checkinBusy = false;
+let usageRange = 'day';
+let usagePage = 1;
+const usagePageSize = 20;
+
+function formatTime(ms){
+  if (!ms) return '—';
+  try { return new Date(ms).toLocaleString(); } catch(e) { return String(ms); }
+}
+function shortId(id){
+  id = String(id||'');
+  if (id.length <= 10) return id || '—';
+  return id.slice(0, 8) + '…';
+}
+function formatHitRate(rate){
+  if (rate == null || rate < 0) return '—';
+  return rate.toFixed(1) + '%';
+}
+function rowTotalTokens(row){
+  const p = row.promptTokens || 0;
+  const c = row.completionTokens || 0;
+  return row.totalTokens || (p + c);
+}
+function rowHitRate(row){
+  const p = row.promptTokens || 0;
+  if (p <= 0) return -1;
+  return (row.cachedTokens || 0) / p * 100;
+}
+function paintUsageChart(series, summary){
+  const host = $('usageChart');
+  if (!host) return;
+  const pts = series || [];
+  const hasTokens = pts.some(function(p){ return (p.totalTokens||0) > 0; });
+  const hasRate = pts.some(function(p){ return p.cacheHitRate != null && p.cacheHitRate >= 0; });
+  const hasRequests = summary && (summary.requests || 0) > 0;
+  if (!pts.length) {
+    host.innerHTML = '<div class="chart-empty">暂无趋势数据</div>';
+    return;
+  }
+  if (!hasTokens && !hasRate && !hasRequests) {
+    host.innerHTML = '<div class="chart-empty">暂无趋势数据</div>';
+    return;
+  }
+  const W = 720, H = 168, pad = {l: 44, r: 44, t: 14, b: 30};
+  const innerW = W - pad.l - pad.r;
+  const innerH = H - pad.t - pad.b;
+  const maxTok = Math.max(1, pts.reduce(function(m, p){ return Math.max(m, p.totalTokens||0); }, 0));
+  const n = pts.length;
+  function xAt(i){ return pad.l + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW); }
+  function yTok(v){ return pad.t + innerH - (v / maxTok) * innerH; }
+  function yRate(r){ if (r < 0) r = 0; return pad.t + innerH - (r / 100) * innerH; }
+  let pathTok = '';
+  let pathRate = '';
+  pts.forEach(function(p, i){
+    const x = xAt(i);
+    const yt = yTok(p.totalTokens || 0);
+    const yr = yRate(p.cacheHitRate != null ? p.cacheHitRate : -1);
+    pathTok += (i ? ' L' : 'M') + x + ' ' + yt;
+    if (p.cacheHitRate != null && p.cacheHitRate >= 0) {
+      pathRate += (pathRate ? ' L' : 'M') + x + ' ' + yr;
+    }
+  });
+  const labelStep = n <= 8 ? 1 : Math.max(1, Math.ceil(n / 8));
+  const labels = pts.map(function(p, i){
+    if (i % labelStep !== 0 && i !== n - 1) return '';
+    const x = xAt(i);
+    const anchor = i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle');
+    return '<text class="lbl" x="' + x + '" y="' + (H - 8) + '" text-anchor="' + anchor + '">' + escapeHtml(p.label || '') + '</text>';
+  }).join('');
+  host.innerHTML =
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Token 与缓存命中率趋势">' +
+    '<line class="axis" x1="' + pad.l + '" y1="' + (pad.t + innerH) + '" x2="' + (W - pad.r) + '" y2="' + (pad.t + innerH) + '"/>' +
+    '<path class="line-tokens" d="' + pathTok + '"/>' +
+    (pathRate ? '<path class="line-rate" d="' + pathRate + '"/>' : '') +
+    labels +
+    '</svg>';
+}
+function paintUsage(data){
+  const sum = data.summary || {};
+  $('uRequests').textContent = String(sum.requests || 0);
+  $('uFailed').textContent = String(sum.failed || 0);
+  $('uTotalTokens').textContent = String(sum.totalTokens || 0);
+  $('uCacheHit').textContent = formatHitRate(sum.cacheHitRate);
+  if (sum.creditRows > 0) {
+    $('uCredits').textContent = (sum.credits || 0).toFixed(4) + ' · ' + sum.creditRows + ' 条';
+  } else {
+    $('uCredits').textContent = '—';
+  }
+  paintUsageChart(data.series || [], data.summary || {});
+  const rows = data.requests || [];
+  const tbody = $('usageRows');
+  if (!tbody) return;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="11" style="color:var(--fg-40);padding:24px;text-align:center">暂无记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(function(row){
+    const proxyId = row.proxyRequestId || '';
+    const upReq = row.upstreamConversationRequestId || '';
+    const credit = row.credit != null ? String(row.credit) : '—';
+    const account = row.accountLabel || shortId(row.accountId);
+    const status = row.ok
+      ? '<span class="badge on">OK</span>'
+      : '<span class="badge off" title="' + escapeHtml(row.error||'') + '">FAIL</span>';
+    const session = escapeHtml(row.sessionLabel || shortId(row.sessionKey));
+    const totalTok = rowTotalTokens(row);
+    const hit = formatHitRate(rowHitRate(row));
+    return '<tr>' +
+      '<td class="mono">' + escapeHtml(formatTime(row.at)) + '</td>' +
+      '<td class="mono"><button type="button" class="idbtn" data-copy="' + escapeHtml(proxyId) + '">' + escapeHtml(shortId(proxyId)) + '</button></td>' +
+      '<td class="mono">' + (upReq ? '<button type="button" class="idbtn" data-copy="' + escapeHtml(upReq) + '">' + escapeHtml(shortId(upReq)) + '</button>' : '—') + '</td>' +
+      '<td>' + session + '</td>' +
+      '<td class="mono">' + escapeHtml(row.model || '—') + '</td>' +
+      '<td class="mono">' + String(totalTok) + '</td>' +
+      '<td class="mono">' + escapeHtml(hit) + '</td>' +
+      '<td class="mono">' + escapeHtml(credit) + '</td>' +
+      '<td class="mono">' + (row.durationMs != null ? (row.durationMs + 'ms') : '—') + '</td>' +
+      '<td>' + escapeHtml(account || '—') + '</td>' +
+      '<td>' + status + '</td>' +
+      '</tr>';
+  }).join('');
+  tbody.querySelectorAll('[data-copy]').forEach(function(btn){
+    btn.addEventListener('click', function(){ copyText(btn.getAttribute('data-copy'), 'ID', btn); });
+  });
+}
+function paintUsagePager(data){
+  const total = data.requestsTotal != null ? data.requestsTotal : (data.requests || []).length;
+  const limit = data.limit || usagePageSize;
+  const offset = data.offset != null ? data.offset : (usagePage - 1) * limit;
+  const pages = Math.max(1, Math.ceil(total / limit) || 1);
+  usagePage = Math.floor(offset / limit) + 1;
+  if ($('usagePagerMeta')) {
+    $('usagePagerMeta').textContent = total
+      ? ('第 ' + usagePage + ' / ' + pages + ' 页 · 本页 ' + (data.requests || []).length + ' 条 · 共 ' + total + ' 条')
+      : '暂无明细';
+  }
+  const prev = $('btnUsagePrev');
+  const next = $('btnUsageNext');
+  if (prev) prev.disabled = usagePage <= 1;
+  if (next) next.disabled = usagePage >= pages || total === 0;
+}
+async function refreshUsage(){
+  const offset = (usagePage - 1) * usagePageSize;
+  const data = await api('/direct-admin/api/usage?range=' + encodeURIComponent(usageRange) +
+    '&limit=' + usagePageSize + '&offset=' + offset);
+  paintUsage(data);
+  paintUsagePager(data);
+  return data;
+}
+function paintUsageRange(range){
+  usageRange = range || 'day';
+  usagePage = 1;
+  const seg = $('usageRangeSeg');
+  if (!seg) return;
+  seg.querySelectorAll('button[data-range]').forEach(function(btn){
+    btn.className = btn.getAttribute('data-range') === usageRange ? 'active' : '';
+  });
+}
 
 function paintPoolHint(site, product, accounts){
   const domestic = accounts && accounts.domesticCount != null ? accounts.domesticCount : '—';
@@ -789,6 +1071,7 @@ function paintStatus(data){
     ? ('已登录' + (primary && (primary.userNickname || primary.userName || primary.userId) ? (' · ' + (primary.userNickname || primary.userName || primary.userId)) : ''))
     : '未登录';
   $('pillTransport').textContent = data.transport || 'protocol_direct';
+  if ($('pillVersion')) $('pillVersion').textContent = data.version || (data.build && data.build.version) || 'dev';
   const poolSite = normalizeSite(data.poolSite || cfg.poolSite || cfg.site || 'global');
   const poolProduct = normalizeProduct(data.poolProduct || data.product || cfg.poolProduct || cfg.product || 'codebuddy');
   $('pillSite').textContent = siteLabel(poolSite);
@@ -1016,6 +1299,22 @@ if ($('btnProductCodeBuddy')) $('btnProductCodeBuddy').onclick = function(){ swi
 if ($('btnProductWorkBuddy')) $('btnProductWorkBuddy').onclick = function(){ switchPoolProduct('workbuddy').catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('site')) $('site').addEventListener('change', function(){ $('site').dataset.userTouched = '1'; });
 $('btnRefresh').onclick = function(){ refreshStatus().catch(function(e){ $('statusRaw').textContent = e.message; setHealth(false, '刷新失败'); }); };
+if ($('btnRefreshUsage')) $('btnRefreshUsage').onclick = function(){ refreshUsage().catch(function(e){ showToast(e.message, 'error'); }); };
+if ($('usageRangeSeg')) $('usageRangeSeg').querySelectorAll('button[data-range]').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    paintUsageRange(btn.getAttribute('data-range'));
+    refreshUsage().catch(function(e){ showToast(e.message, 'error'); });
+  });
+});
+if ($('btnUsagePrev')) $('btnUsagePrev').onclick = function(){
+  if (usagePage <= 1) return;
+  usagePage--;
+  refreshUsage().catch(function(e){ showToast(e.message, 'error'); });
+};
+if ($('btnUsageNext')) $('btnUsageNext').onclick = function(){
+  usagePage++;
+  refreshUsage().catch(function(e){ showToast(e.message, 'error'); });
+};
 if ($('btnCheckin')) $('btnCheckin').onclick = function(){ runPoolCheckin().catch(function(e){ showToast(e.message, 'error'); }); };
 $('btnModels').onclick = function(){ refreshModels().catch(function(e){ $('modelsRaw').textContent = e.message; $('modelChips').innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>'; }); };
 $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };

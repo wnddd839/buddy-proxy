@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 	"github.com/wnddd839/codebuddy-proxy/internal/sessionpin"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
+	"github.com/wnddd839/codebuddy-proxy/internal/version"
 )
 
 type Server struct {
@@ -89,7 +91,12 @@ func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "provider": "codebuddy", "transport": s.Svc.Config().Transport})
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"provider":  "codebuddy",
+		"transport": s.Svc.Config().Transport,
+		"version":   version.Version,
+	})
 }
 
 func (s *Server) handleModelsAuth(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +267,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	providerModel := gateway.ResolveProviderModel(body.Model)
 	promptChars := estimatePromptChars(body.Messages)
+	chatStarted := time.Now()
+	proxyRequestID := s.newProxyRequestID()
 	finish := s.Svc.BeginRequest(providerModel.PublicModel, promptChars, body.Stream)
 	maxTokens := 0
 	if body.MaxCompletionTokens != nil && *body.MaxCompletionTokens > 0 {
@@ -280,10 +289,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Reasoning:           body.Reasoning,
 		Thinking:            body.Thinking,
 		SessionKey:          sessionpin.Key(r.Header, body.PromptCacheKey, body.Messages),
+		SessionLabel:        sessionpin.SessionLabel(body.Messages),
 	}
 
 	if body.Stream {
-		s.streamChat(w, r, providerModel, completeOpts, finish)
+		s.streamChat(w, r, providerModel, completeOpts, chatStarted, proxyRequestID, finish)
 		return
 	}
 
@@ -292,14 +302,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if openai.IsClientCanceled(err) {
 			// 客户端在非流式聚合前/中主动断开，不算网关故障。
+			s.recordChatJournal(chatStarted, proxyRequestID, completeOpts, providerModel.PublicModel, false, true, "", provider.Usage{}, nil)
 			finish(true, 0, 0, 0, 0, "", provider.Usage{})
 			return
 		}
+		s.recordChatJournal(chatStarted, proxyRequestID, completeOpts, providerModel.PublicModel, false, false, err.Error(), provider.Usage{}, nil)
 		finish(false, 0, 0, 0, 0, err.Error(), provider.Usage{})
 		typ, code := openai.ClassifyUpstream(err)
 		httputil.WriteJSON(w, http.StatusBadGateway, openai.NewErrorWithCode(err.Error(), typ, code))
 		return
 	}
+	s.recordChatJournal(chatStarted, proxyRequestID, completeOpts, providerModel.PublicModel, false, true, "", result.Turn.Usage, &result)
 	finish(true, len(result.Turn.Text), result.Bytes, int64(result.EventCount), int64(result.DeltaCount), "", result.Turn.Usage)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	httputil.WriteJSON(w, http.StatusOK, openai.FromTurn(result.Turn, "", providerModel.PublicModel))
@@ -310,6 +323,8 @@ func (s *Server) streamChat(
 	r *http.Request,
 	providerModel gateway.ProviderModel,
 	opts gateway.CompleteOptions,
+	chatStarted time.Time,
+	proxyRequestID string,
 	finish func(bool, int, int64, int64, int64, string, provider.Usage),
 ) {
 	sse, ok := httputil.NewSSEStream(w, 16<<10)
@@ -429,10 +444,12 @@ func (s *Server) streamChat(
 		if openai.IsClientCanceled(err) {
 			// ZCode/浏览器常因慢模型（hy4-preview）中止并重试——
 			// 表现为 context canceled，而非上游宕机。
+			s.recordChatJournal(chatStarted, proxyRequestID, opts, providerModel.PublicModel, true, true, "", provider.Usage{}, nil)
 			finish(true, streamedChars, 0, 0, 0, "", provider.Usage{})
 			writeLocked(func() { done = true })
 			return
 		}
+		s.recordChatJournal(chatStarted, proxyRequestID, opts, providerModel.PublicModel, true, false, err.Error(), provider.Usage{}, nil)
 		finish(false, streamedChars, 0, 0, 0, err.Error(), provider.Usage{})
 		typ, code := openai.ClassifyUpstream(err)
 		writeLocked(func() {
@@ -451,6 +468,7 @@ func (s *Server) streamChat(
 		})
 		return
 	}
+	s.recordChatJournal(chatStarted, proxyRequestID, opts, providerModel.PublicModel, true, true, "", result.Turn.Usage, &result)
 	finish(true, len(result.Turn.Text), result.Bytes, int64(result.EventCount), int64(result.DeltaCount), "", result.Turn.Usage)
 	writeLocked(func() {
 		startStream()
@@ -500,6 +518,37 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 	switch {
 	case path == "/direct-admin/api/status" && r.Method == http.MethodGet:
 		httputil.WriteJSON(w, http.StatusOK, s.Svc.Status())
+		return
+	case path == "/direct-admin/api/usage" && r.Method == http.MethodGet:
+		rangeName := strings.TrimSpace(r.URL.Query().Get("range"))
+		// Page size default 20; usagejournal.normalizePageSize caps at 100.
+		limit := 20
+		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		offset := 0
+		if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+		if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
+			if page, err := strconv.Atoi(raw); err == nil && page > 1 {
+				offset = (page - 1) * limit
+			}
+		}
+		view := s.Svc.UsageView(rangeName, limit, offset)
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok":            true,
+			"summary":       view.Summary,
+			"series":        view.Series,
+			"requests":      view.Requests,
+			"requestsTotal": view.RequestsTotal,
+			"limit":         view.Limit,
+			"offset":        view.Offset,
+		})
 		return
 	case path == "/direct-admin/api/pool-site" && (r.Method == http.MethodPost || r.Method == http.MethodPut):
 		var body struct {

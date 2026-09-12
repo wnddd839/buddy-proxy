@@ -26,10 +26,12 @@ server ──► gateway ──► accounts pool + oauth refresh
 | `config` | 环境变量 / `.env` 解析，默认值与归一化 | 业务逻辑 |
 | `accounts` | 账号池（内存权威 + 异步刷盘）、按额度选号、统计 | HTTP |
 | `sessionpin` | 同会话钉在一个账号（进程内 TTL 表） | 号池轮询 |
+| `usagejournal` | 用量明细环形缓冲、按日汇总、可选 `proxy-usage.json` 落盘 | HTTP / 管理台 HTML |
+| `version` | 构建时 `-ldflags` 注入的发布号（`Makefile VERSION=`） | 业务逻辑 |
 | `oauth` | OAuth 发起 / 轮询 / refresh / JWT 解析 | 路由 |
 | `provider` | 上游请求头、SSE 解析、事件累积、Usage 归一化 | 账号选择策略 |
 | `models` | 模型发现与 public id 规范化 | 流式聊天 |
-| `gateway` | 选号、额度快照探活、失败换号、会话粘滞调度、stats、OAuth session、运行时配置（`atomic.Pointer`） | HTML |
+| `gateway` | 选号、额度快照探活、失败换号、会话粘滞调度、stats、用量 journal 记录、OAuth session、运行时配置（`atomic.Pointer`） | HTML |
 | `server` | 路由、鉴权、流式写回 | 上游协议细节 |
 | `admin` | 管理台页面字符串 | 业务状态机 |
 | `billing` | Credits 查询（剩余 / 总额）与通知码解析 | 账号写入 |
@@ -42,7 +44,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 1. **单传输**：只维护 `protocol_direct`，不恢复 Node 时代多传输路径
 2. **零第三方运行时依赖**（标准库优先，`go.mod` 无 require）
 3. **上下文可取消**：上游请求绑定 `context.Context`，客户端断开即取消
-4. **账号写盘**：内存为权威 + 250ms 合并异步刷盘；凭据变更同步刷盘；原子 temp + rename
+4. **账号与用量写盘**：内存为权威 + 250ms 合并异步刷盘；账号凭据变更同步刷盘；`proxy-accounts.json` / `proxy-usage.json` 均为原子 temp + rename、文件 `0600`
 5. **现代 Go**：遵循 JetBrains `use-modern-go`（Go 1.26）
 
 ## 请求生命周期（chat）
@@ -53,7 +55,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 4. 必要时 refresh token（默认提前 10 分钟窗口，鉴权失败可强制刷新）
 5. 组装 protocol_direct headers + body（**端点以账号 site 为准**）
 6. 非流式：聚合为 JSON；流式：立即开 SSE + keep-alive + 增量 chunk
-7. 收尾写 usage chunk，回写账号统计与全局 stats
+7. 收尾写 usage chunk，回写账号统计、全局 stats，并追加 `usagejournal` 明细（可选落盘）
 
 **失败处理**：
 

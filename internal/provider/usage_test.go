@@ -191,6 +191,9 @@ func TestParseUsageWorkBuddyLiveCacheHit(t *testing.T) {
 	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.CachedTokens != 1536 {
 		t.Fatalf("details=%+v", usage.PromptTokensDetails)
 	}
+	if usage.Credit == nil || *usage.Credit != 0.07 {
+		t.Fatalf("credit=%+v", usage.Credit)
+	}
 }
 
 func TestUsageEventFromPayload(t *testing.T) {

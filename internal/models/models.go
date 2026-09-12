@@ -184,7 +184,7 @@ func (c *Lister) List(ctx context.Context, client *provider.Client, opts ListOpt
 	}
 
 	base := provider.ResolveProtocolDirectBaseURL(chatOpts)
-	headers := client.BuildProtocolDirectHeaders(chatOpts)
+	headers, _ := client.BuildProtocolDirectHeaders(chatOpts)
 	headers.Set("Accept", "application/json")
 	for _, path := range fallbackPaths {
 		rows, err := c.fetchJSONModels(ctx, client.HTTP, base+path, headers)
@@ -262,7 +262,7 @@ func modelRowID(row map[string]any) string {
 
 func (c *Lister) fetchV3(ctx context.Context, client *provider.Client, opts provider.ChatOptions) (fetchResult, error) {
 	candidates := v3ConfigCandidateBases(opts)
-	headers := client.BuildProtocolDirectHeaders(opts)
+	headers, _ := client.BuildProtocolDirectHeaders(opts)
 	headers.Set("Accept", "application/json")
 	var (
 		batches [][]map[string]any
@@ -319,7 +319,7 @@ func (c *Lister) fetchIDECatalog(ctx context.Context, client *provider.Client, o
 	ideOpts.ExtraHeaders["X-Env-ID"] = "production"
 	ideOpts.ExtraHeaders["User-Agent"] = "VSCode/1.119.0 CodeBuddy/4.9.29177644"
 	ideOpts.ExtraHeaders["X-Domain"] = domain
-	headers := client.BuildProtocolDirectHeaders(ideOpts)
+	headers, _ := client.BuildProtocolDirectHeaders(ideOpts)
 	headers.Set("Accept", "application/json")
 	rows, err := c.fetchJSONModels(ctx, client.HTTP, provider.NormalizeBaseURL(bases[0])+upstreamConfigPath, headers)
 	if err != nil || len(rows) == 0 {

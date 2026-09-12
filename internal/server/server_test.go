@@ -221,6 +221,26 @@ func TestAdminRejectsPasswordQueryParam(t *testing.T) {
 	}
 }
 
+func TestAdminUsageAPI(t *testing.T) {
+	srv := testServer(t, false, "", "")
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/direct-admin/api/usage?range=day&limit=5", nil)
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["ok"] != true {
+		t.Fatalf("payload=%v", payload)
+	}
+	if _, ok := payload["summary"]; !ok {
+		t.Fatalf("missing summary: %v", payload)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	srv := testServer(t, false, "", "")
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/health", nil)

@@ -28,8 +28,10 @@ CI（`.github/workflows/ci.yml`）在 push / PR 到 `main` 时执行 `gofmt` 检
 
 ```bash
 curl -fsS http://127.0.0.1:32126/health
-# {"ok":true,"provider":"codebuddy","transport":"protocol_direct"}
+# {"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v4.7"}
 ```
+
+管理台 **05 / 用量与明细**（`#usage`）展示请求日志；默认持久化到 `CODEBUDDY_PROXY_USAGE_PATH`（缺省与账号池同目录的 `proxy-usage.json`）。`GET /direct-admin/api/usage` 见 `docs/api/http.md`。
 
 ## 日志
 

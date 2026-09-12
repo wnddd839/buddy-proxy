@@ -2,6 +2,7 @@ package sessionpin_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,19 @@ func TestKeyUsesPromptCacheKey(t *testing.T) {
 	got := sessionpin.Key(nil, "pc-1", []map[string]any{{"role": "user", "content": "hello"}})
 	if got != "hdr:pc-1" {
 		t.Fatalf("key=%q", got)
+	}
+}
+
+func TestSessionLabelFromFirstUser(t *testing.T) {
+	got := sessionpin.SessionLabel([]map[string]any{
+		{"role": "system", "content": "bot"},
+		{"role": "user", "content": "  fix the   login bug  "},
+	})
+	if got != "fix the login bug" {
+		t.Fatalf("label=%q", got)
+	}
+	if sessionpin.SessionLabel([]map[string]any{{"role": "user", "content": strings.Repeat("x", 60)}}) == strings.Repeat("x", 60) {
+		t.Fatal("expected truncated session label")
 	}
 }
 

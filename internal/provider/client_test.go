@@ -102,7 +102,7 @@ func TestResolveProtocolDirectWorkBuddy(t *testing.T) {
 
 func TestBuildProtocolDirectHeadersProduct(t *testing.T) {
 	client := provider.NewClient(config.Config{})
-	cli := client.BuildProtocolDirectHeaders(provider.ChatOptions{
+	cli, _ := client.BuildProtocolDirectHeaders(provider.ChatOptions{
 		Site: "global", Product: "codebuddy", BearerToken: "tok", UserID: "u1",
 	})
 	if cli.Get("X-IDE-Type") != "CLI" {
@@ -112,9 +112,12 @@ func TestBuildProtocolDirectHeadersProduct(t *testing.T) {
 		t.Fatalf("codebuddy ua=%s", cli.Get("User-Agent"))
 	}
 
-	wb := client.BuildProtocolDirectHeaders(provider.ChatOptions{
+	wb, wbTrace := client.BuildProtocolDirectHeaders(provider.ChatOptions{
 		Site: "global", Product: "workbuddy", BearerToken: "tok", UserID: "u1",
 	})
+	if wbTrace.ConversationRequestID == "" || wbTrace.ConversationID == "" {
+		t.Fatalf("trace=%+v", wbTrace)
+	}
 	if wb.Get("X-IDE-Type") != "VSCode" || wb.Get("X-IDE-Name") != "VSCode" {
 		t.Fatalf("workbuddy ide=%s/%s", wb.Get("X-IDE-Type"), wb.Get("X-IDE-Name"))
 	}

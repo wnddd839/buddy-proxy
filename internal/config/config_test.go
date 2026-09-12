@@ -2,10 +2,28 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 )
+
+func TestLoadUsagePathDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	accounts := filepath.Join(dir, "proxy-accounts.json")
+	t.Setenv("CODEBUDDY_PROXY_ACCOUNTS_PATH", accounts)
+	t.Setenv("CODEBUDDY_PROXY_USAGE_PATH", "")
+
+	cfg := config.Load()
+	want := filepath.Join(dir, "proxy-usage.json")
+	if cfg.UsagePath != want {
+		t.Fatalf("UsagePath=%q want %q", cfg.UsagePath, want)
+	}
+	if cfg.UsagePath == cfg.AccountsPath {
+		t.Fatal("usage path must not equal accounts path")
+	}
+}
 
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("CODEBUDDY_PROXY_HOST", "")
@@ -30,6 +48,14 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ChatCompletionsPath != "/v2/chat/completions" {
 		t.Fatalf("path=%q", cfg.ChatCompletionsPath)
+	}
+}
+
+func TestDefaultUsagePath(t *testing.T) {
+	accounts := filepath.Join("/data", "pool", "proxy-accounts.json")
+	want := filepath.Join("/data", "pool", "proxy-usage.json")
+	if got := config.DefaultUsagePath(accounts); got != want {
+		t.Fatalf("DefaultUsagePath=%q want %q", got, want)
 	}
 }
 

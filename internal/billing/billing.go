@@ -154,7 +154,7 @@ func fetchAccountUsage(ctx context.Context, client *provider.Client, account acc
 			APIEndpoint:         provider.AlignAPIEndpoint(config.NormalizeProduct(cfg.Product), strutil.First(account.APIEndpoint, cfg.APIEndpoint)),
 		})
 		notifyEndpoint := strings.TrimRight(protocolBase, "/") + "/v2/billing/meter/get-dosage-notify"
-		notifyHeaders := client.BuildProtocolDirectHeaders(provider.ChatOptions{
+		notifyHeaders, _ := client.BuildProtocolDirectHeaders(provider.ChatOptions{
 			Site:                site,
 			Product:             config.NormalizeProduct(cfg.Product),
 			InternetEnvironment: strutil.First(account.InternetEnvironment, cfg.InternetEnvironment),

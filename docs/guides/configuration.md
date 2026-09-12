@@ -39,6 +39,7 @@
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `CODEBUDDY_PROXY_ACCOUNTS_PATH` | `~/.codebuddy/proxy-accounts.json` | 账号池 JSON 路径，支持 `~` 与 `~/...` 展开 |
+| `CODEBUDDY_PROXY_USAGE_PATH` | 与账号池同目录的 `proxy-usage.json` | 管理台用量明细与按日汇总；未设时取 `dirname(ACCOUNTS_PATH)/proxy-usage.json` |
 | `CODEBUDDY_PROXY_ENV_FILE` | 自动探测 | 强制指定 `.env` 写入位置 |
 
 账号文件以 `0600` 权限写入。备份与迁移只需复制这个 JSON。
@@ -133,7 +134,7 @@ Go 版会一并读取以下旧名（新名优先）：
 | `CODEBUDDY_CHAT_COMPLETIONS_PATH` | `CURSOR_DIRECT_CODEBUDDY_CHAT_COMPLETIONS_PATH` |
 | `CODEBUDDY_REFRESH_WINDOW_MS` | `CURSOR_DIRECT_CODEBUDDY_REFRESH_WINDOW_MS` |
 
-`CODEBUDDY_PROXY_ENV_FILE`、`CODEBUDDY_IDE_VERSION`、`CODEBUDDY_BILLING_BASE_URL`、`CODEBUDDY_PRODUCT` 无旧名对应。
+`CODEBUDDY_PROXY_ENV_FILE`、`CODEBUDDY_PROXY_USAGE_PATH`、`CODEBUDDY_IDE_VERSION`、`CODEBUDDY_BILLING_BASE_URL`、`CODEBUDDY_PRODUCT` 无旧名对应。
 
 ---
 

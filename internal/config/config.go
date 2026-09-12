@@ -33,6 +33,7 @@ type Config struct {
 	RequireAPIKey       bool
 	PublicBaseURL       string
 	AccountsPath        string
+	UsagePath           string
 	BaseURL             string
 	Site                string
 	Product             string
@@ -82,6 +83,11 @@ func Load() Config {
 	// 管理台密码为空则开放管理页（本地友好）。
 	// /v1 API Key 门禁仍由 CODEBUDDY_PROXY_REQUIRE_API_KEY 独立控制。
 	cfg.RequireAPIKey = envBool("CODEBUDDY_PROXY_REQUIRE_API_KEY", "CURSOR_DIRECT_REQUIRE_API_KEY", cfg.APIKey != "")
+	if usageEnv := strings.TrimSpace(firstEnv("CODEBUDDY_PROXY_USAGE_PATH")); usageEnv != "" {
+		cfg.UsagePath = expandHome(usageEnv)
+	} else {
+		cfg.UsagePath = DefaultUsagePath(cfg.AccountsPath)
+	}
 	cfg.Site = NormalizeSite(cfg.Site)
 	cfg.Product = NormalizeProduct(cfg.Product)
 	cfg.BaseURL = envOr("CODEBUDDY_BASE_URL", "CURSOR_DIRECT_CODEBUDDY_BASE_URL", resolveDefaultBaseURL(cfg.Site, cfg.InternetEnvironment, cfg.Product))
@@ -122,6 +128,15 @@ func defaultAccountsPath() string {
 		return filepath.Join(".", "proxy-accounts.json")
 	}
 	return filepath.Join(home, ".codebuddy", "proxy-accounts.json")
+}
+
+// DefaultUsagePath 与账号池同目录，默认 proxy-usage.json。
+func DefaultUsagePath(accountsPath string) string {
+	accountsPath = strings.TrimSpace(accountsPath)
+	if accountsPath == "" {
+		accountsPath = defaultAccountsPath()
+	}
+	return filepath.Join(filepath.Dir(accountsPath), "proxy-usage.json")
 }
 
 func expandHome(path string) string {

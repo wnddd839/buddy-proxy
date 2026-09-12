@@ -1,7 +1,7 @@
 .PHONY: build test test-race fmt vet check run tidy clean release release-checksums
 
 VERSION ?= dev
-LDFLAGS := -s -w
+LDFLAGS := -s -w -X github.com/wnddd839/codebuddy-proxy/internal/version.Version=$(VERSION)
 
 build:
 	go build -trimpath -ldflags="$(LDFLAGS)" -o bin/codebuddy-proxy ./cmd/codebuddy-proxy
