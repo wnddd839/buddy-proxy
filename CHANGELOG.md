@@ -5,6 +5,34 @@
 
 ---
 
+## v4.6 · 2026-09-12 · 同会话钉号，换号按额度拿最大
+
+### 感谢
+
+本版由社区 issue 推动。感谢：
+
+- [@carter003](https://github.com/carter003) 提出 [#8](https://github.com/wnddd839/buddy-proxy/issues/8)：同一会话应钉在一个账号上，新会话再按剩余额度选号，才能吃到 prompt cache。
+- [@tearslee](https://github.com/tearslee) 提出 [#7](https://github.com/wnddd839/buddy-proxy/issues/7)：经代理走 DSH/Codex 时缓存读取一直是 0。
+
+### 解决了什么
+
+多账号号池以前按轮询换号。同一段对话的工具轮、续写会打到不同账号，上游 prompt cache 对不齐，客户端看到的 `cache_read_input_tokens` 也经常是 0。WorkBuddy 真实命中写在 `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens` 上，顶层 `cache_read_input_tokens` 和 `cached_tokens` 即使命中也是 0。
+
+### 改了什么
+
+- **会话粘滞**：同一会话钉在第一次成功的账号；该号 429 / 额度耗尽时松钉再换。
+- **新会话选号**：用缓存的剩余额度选最大者（没有额度数据则回落轮询）。首请求不打 billing。
+- **换号前探活**：对未冷却候选并行刷新额度（只打套餐接口，整批最多 2.5s，失败保留缓存），再拿剩余最大的号。
+- **WorkBuddy usage**：按实测字段解析缓存命中，出站补齐 `prompt_tokens_details.cached_tokens`、`prompt_cache_hit_tokens`、`cache_read_input_tokens`。
+
+### 升级注意
+
+用新二进制覆盖后重启即可。配置与账号池格式不变。客户端无需改请求头；有 `X-Session-Id` / `prompt_cache_key` 时优先用，否则用 system + 首条 user 的哈希。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v4.6
+
+---
+
 ## v4.5 · 2026-09-11 · 管理台可切换 CodeBuddy / WorkBuddy 上游
 
 ### 解决了什么

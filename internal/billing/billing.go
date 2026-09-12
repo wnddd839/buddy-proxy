@@ -89,15 +89,17 @@ func BillingBaseURL(site string) string {
 }
 
 func FetchAccountUsage(ctx context.Context, client *provider.Client, account accounts.Account, cfg config.Config) (UsageResult, error) {
+	return fetchAccountUsage(ctx, client, account, cfg, true)
+}
+
+// FetchAccountCredits 只打套餐额度接口，跳过 notify。换号选最大时用，避免多一次上游往返。
+func FetchAccountCredits(ctx context.Context, client *provider.Client, account accounts.Account, cfg config.Config) (UsageResult, error) {
+	return fetchAccountUsage(ctx, client, account, cfg, false)
+}
+
+func fetchAccountUsage(ctx context.Context, client *provider.Client, account accounts.Account, cfg config.Config, includeNotify bool) (UsageResult, error) {
 	site := strutil.First(account.Site, cfg.Site, "domestic")
 	billingBase := BillingBaseURL(site)
-	protocolBase := provider.ResolveProtocolDirectBaseURL(provider.ChatOptions{
-		Site:                site,
-		Product:             config.NormalizeProduct(cfg.Product),
-		InternetEnvironment: strutil.First(account.InternetEnvironment, cfg.InternetEnvironment),
-		BaseURL:             strutil.First(account.BaseURL, cfg.BaseURL),
-		APIEndpoint:         provider.AlignAPIEndpoint(config.NormalizeProduct(cfg.Product), strutil.First(account.APIEndpoint, cfg.APIEndpoint)),
-	})
 
 	bearer := strings.TrimSpace(account.BearerToken)
 	if bearer == "" {
@@ -143,28 +145,37 @@ func FetchAccountUsage(ctx context.Context, client *provider.Client, account acc
 	credits := summarizeResourceAccounts(accountsRaw)
 
 	var notify *Notify
-	notifyEndpoint := strings.TrimRight(protocolBase, "/") + "/v2/billing/meter/get-dosage-notify"
-	notifyHeaders := client.BuildProtocolDirectHeaders(provider.ChatOptions{
-		Site:                site,
-		Product:             config.NormalizeProduct(cfg.Product),
-		InternetEnvironment: strutil.First(account.InternetEnvironment, cfg.InternetEnvironment),
-		BaseURL:             strutil.First(account.BaseURL, cfg.BaseURL),
-		APIEndpoint:         provider.AlignAPIEndpoint(config.NormalizeProduct(cfg.Product), strutil.First(account.APIEndpoint, cfg.APIEndpoint)),
-		BearerToken:         bearer,
-		UserID:              strutil.First(account.AuthStatus.UserID, "anonymous"),
-		EnterpriseID:        account.EnterpriseID,
-		TenantID:            account.TenantID,
-		DepartmentFullName:  account.DepartmentFullName,
-		Domain:              account.Domain,
-	})
-	if notifyPayload, notifyErr := postJSON(ctx, client.HTTP, notifyEndpoint, notifyHeaders, map[string]any{}); notifyErr == nil {
-		if code, ok := asNumber(notifyPayload["code"]); !ok || code == 0 {
-			data, _ := notifyPayload["data"].(map[string]any)
-			if data == nil {
-				data = notifyPayload
+	if includeNotify && client != nil {
+		protocolBase := provider.ResolveProtocolDirectBaseURL(provider.ChatOptions{
+			Site:                site,
+			Product:             config.NormalizeProduct(cfg.Product),
+			InternetEnvironment: strutil.First(account.InternetEnvironment, cfg.InternetEnvironment),
+			BaseURL:             strutil.First(account.BaseURL, cfg.BaseURL),
+			APIEndpoint:         provider.AlignAPIEndpoint(config.NormalizeProduct(cfg.Product), strutil.First(account.APIEndpoint, cfg.APIEndpoint)),
+		})
+		notifyEndpoint := strings.TrimRight(protocolBase, "/") + "/v2/billing/meter/get-dosage-notify"
+		notifyHeaders := client.BuildProtocolDirectHeaders(provider.ChatOptions{
+			Site:                site,
+			Product:             config.NormalizeProduct(cfg.Product),
+			InternetEnvironment: strutil.First(account.InternetEnvironment, cfg.InternetEnvironment),
+			BaseURL:             strutil.First(account.BaseURL, cfg.BaseURL),
+			APIEndpoint:         provider.AlignAPIEndpoint(config.NormalizeProduct(cfg.Product), strutil.First(account.APIEndpoint, cfg.APIEndpoint)),
+			BearerToken:         bearer,
+			UserID:              strutil.First(account.AuthStatus.UserID, "anonymous"),
+			EnterpriseID:        account.EnterpriseID,
+			TenantID:            account.TenantID,
+			DepartmentFullName:  account.DepartmentFullName,
+			Domain:              account.Domain,
+		})
+		if notifyPayload, notifyErr := postJSON(ctx, client.HTTP, notifyEndpoint, notifyHeaders, map[string]any{}); notifyErr == nil {
+			if code, ok := asNumber(notifyPayload["code"]); !ok || code == 0 {
+				data, _ := notifyPayload["data"].(map[string]any)
+				if data == nil {
+					data = notifyPayload
+				}
+				n := mapDosageNotify(data)
+				notify = &n
 			}
-			n := mapDosageNotify(data)
-			notify = &n
 		}
 	}
 

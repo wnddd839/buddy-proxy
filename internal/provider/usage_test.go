@@ -104,10 +104,10 @@ func TestParseUsageDeepSeekAliases(t *testing.T) {
 
 func TestParseUsageWorkBuddyCamelCase(t *testing.T) {
 	usage := ParseUsage(map[string]any{
-		"prompt_tokens":          float64(1200),
-		"completion_tokens":      float64(40),
-		"cacheReadInputTokens":   float64(900),
-		"promptCacheHitTokens":   float64(900),
+		"prompt_tokens":        float64(1200),
+		"completion_tokens":    float64(40),
+		"cacheReadInputTokens": float64(900),
+		"promptCacheHitTokens": float64(900),
 		"promptTokensDetails": map[string]any{
 			"cachedTokens": float64(900),
 		},
@@ -148,6 +148,48 @@ func TestParseUsageTopLevelAndInputDetails(t *testing.T) {
 	})
 	if u2.CachedTokens() != 55 {
 		t.Fatalf("input_tokens_details cached=%d", u2.CachedTokens())
+	}
+}
+
+// Live WorkBuddy (www.workbuddy.cn / .ai, glm-5.x) cache hit, captured 2026-09-11.
+// cache_read_input_tokens and top-level cached_tokens stay 0; the hit is
+// prompt_tokens_details.cached_tokens + prompt_cache_hit_tokens.
+func TestParseUsageWorkBuddyLiveCacheHit(t *testing.T) {
+	usage := ParseUsage(map[string]any{
+		"prompt_tokens":     float64(1582),
+		"completion_tokens": float64(3),
+		"total_tokens":      float64(1585),
+		"completion_tokens_details": map[string]any{
+			"accepted_prediction_tokens": float64(0),
+			"audio_tokens":               float64(0),
+			"reasoning_tokens":           float64(0),
+			"rejected_prediction_tokens": float64(0),
+			"cached_tokens":              float64(0),
+		},
+		"prompt_tokens_details": map[string]any{
+			"accepted_prediction_tokens": float64(0),
+			"audio_tokens":               float64(0),
+			"reasoning_tokens":           float64(0),
+			"rejected_prediction_tokens": float64(0),
+			"cached_tokens":              float64(1536),
+		},
+		"prompt_cache_hit_tokens":     float64(1536),
+		"prompt_cache_miss_tokens":    float64(46),
+		"cache_read_input_tokens":     float64(0),
+		"cache_creation_input_tokens": float64(0),
+		"prompt_cache_write_tokens":   float64(0),
+		"completion_thinking_tokens":  float64(0),
+		"credit":                      0.07,
+		"cached_tokens":               float64(0),
+	})
+	if usage.PromptTokens != 1582 || usage.PromptCacheMissTokens != 46 {
+		t.Fatalf("base %+v", usage)
+	}
+	if usage.CachedTokens() != 1536 {
+		t.Fatalf("cached=%d want 1536 (must not follow cache_read_input_tokens=0 or top-level cached_tokens=0)", usage.CachedTokens())
+	}
+	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.CachedTokens != 1536 {
+		t.Fatalf("details=%+v", usage.PromptTokensDetails)
 	}
 }
 

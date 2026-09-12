@@ -54,6 +54,29 @@ func TestUsageFromProviderFillsAliasesFromHitOnly(t *testing.T) {
 	}
 }
 
+func TestUsageFromProviderWorkBuddyLiveBackfill(t *testing.T) {
+	parsed := provider.ParseUsage(map[string]any{
+		"prompt_tokens":            float64(1576),
+		"completion_tokens":        float64(1),
+		"total_tokens":             float64(1577),
+		"prompt_tokens_details":    map[string]any{"cached_tokens": float64(1536)},
+		"prompt_cache_hit_tokens":  float64(1536),
+		"prompt_cache_miss_tokens": float64(40),
+		"cache_read_input_tokens":  float64(0),
+		"cached_tokens":            float64(0),
+	})
+	u := UsageFromProvider(parsed)
+	if u.PromptTokensDetails == nil || u.PromptTokensDetails.CachedTokens != 1536 {
+		t.Fatalf("details %+v", u.PromptTokensDetails)
+	}
+	if u.PromptCacheHitTokens != 1536 || u.CacheReadInputTokens != 1536 {
+		t.Fatalf("hit=%d read=%d want 1536 (downstream often only looks at cache_read)", u.PromptCacheHitTokens, u.CacheReadInputTokens)
+	}
+	if u.PromptCacheMissTokens != 40 {
+		t.Fatalf("miss=%d", u.PromptCacheMissTokens)
+	}
+}
+
 func TestStreamUsageChunk(t *testing.T) {
 	chunk := StreamUsageChunk("id1", "auto", Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3})
 	if chunk.Usage == nil || chunk.Usage.TotalTokens != 3 {

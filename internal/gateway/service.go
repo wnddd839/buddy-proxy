@@ -28,6 +28,8 @@ const (
 	modelsCacheTTL = 60 * time.Second
 	// defaultMaxAccountRetries 单请求最多尝试的账号数（含换号重试），防止无限递归。
 	defaultMaxAccountRetries = 16
+	// quotaRefreshTimeout 换号前并行拉候选额度的上限，避免 billing 拖垮这次 chat。
+	quotaRefreshTimeout = 2500 * time.Millisecond
 )
 
 var (
@@ -302,6 +304,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			}
 			cooldown := s.resolveFailureCooldown(ctx, account, err)
 			_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
+			s.refreshCandidateQuotas(ctx, append(append([]string{}, opts.ExcludeIDs...), account.ID))
 			s.Log.Warn("retrying codebuddy request with next account", "accountId", account.ID, "error", err.Error())
 			next := append(append([]string{}, opts.ExcludeIDs...), account.ID)
 			opts.ExcludeIDs = next
@@ -400,7 +403,7 @@ func (s *Service) shouldRefreshAfterFailure(err error, selection accounts.Select
 }
 
 func (s *Service) shouldRetryNextAccount(err error, selection accounts.Selection, opts CompleteOptions) bool {
-	if opts.AccountID != "" || selection.Account.ID == "" {
+	if selection.Account.ID == "" {
 		return false
 	}
 	if slices.Contains(opts.ExcludeIDs, selection.Account.ID) {
@@ -478,6 +481,74 @@ func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.A
 		return quotaCooldown
 	}
 	return base
+}
+
+// refreshCandidateQuotas 换号前并行刷新还活着的候选额度，随后 Select PreferQuota 拿最大。
+// 失败或超时保留缓存值，不阻断这次 chat。
+func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string) {
+	if s == nil || s.Pool == nil || s.Provider == nil {
+		return
+	}
+	store, err := s.Pool.Read()
+	if err != nil {
+		return
+	}
+	site := s.ActivePoolSite()
+	now := time.Now().UnixMilli()
+	skip := map[string]struct{}{}
+	for _, id := range exclude {
+		if id != "" {
+			skip[id] = struct{}{}
+		}
+	}
+	candidates := make([]accounts.Account, 0, len(store.Accounts))
+	for _, account := range store.Accounts {
+		if !account.Enabled || !accounts.HasCredentials(account) {
+			continue
+		}
+		if site != "" && config.NormalizeSite(account.Site) != site {
+			continue
+		}
+		if _, ok := skip[account.ID]; ok {
+			continue
+		}
+		if accounts.InCooldown(account, now) || accounts.QuotaBlocked(account, now) {
+			continue
+		}
+		candidates = append(candidates, account)
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, quotaRefreshTimeout)
+	defer cancel()
+	started := time.Now()
+	var wg sync.WaitGroup
+	var refreshed atomic.Int32
+	for _, account := range candidates {
+		wg.Go(func() {
+			usage, probeErr := billing.FetchAccountCredits(ctx, s.Provider, account, s.Config())
+			if probeErr != nil {
+				s.Log.Debug("candidate quota refresh skipped", "accountId", account.ID, "error", probeErr.Error())
+				return
+			}
+			if !usage.Credits.Unlimited && len(usage.Credits.Packages) == 0 {
+				return
+			}
+			state := billing.QuotaStateFromUsage(usage, time.Now())
+			if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
+				s.Log.Debug("candidate quota apply failed", "accountId", account.ID, "error", applyErr.Error())
+				return
+			}
+			refreshed.Add(1)
+		})
+	}
+	wg.Wait()
+	s.Log.Info("refreshed candidate quotas before account switch",
+		"candidates", len(candidates),
+		"updated", refreshed.Load(),
+		"elapsed", time.Since(started).String(),
+	)
 }
 
 func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult, error) {
