@@ -28,8 +28,10 @@ const (
 	modelsCacheTTL = 60 * time.Second
 	// defaultMaxAccountRetries 单请求最多尝试的账号数（含换号重试），防止无限递归。
 	defaultMaxAccountRetries = 16
-	// quotaRefreshTimeout 换号前并行拉候选额度的上限，避免 billing 拖垮这次 chat。
+	// quotaRefreshTimeout 换号/补快照时并行拉候选额度的上限，避免 billing 拖垮这次 chat。
 	quotaRefreshTimeout = 2500 * time.Millisecond
+	// quotaSnapshotTTL 新会话只刷新过期或缺失的额度快照；同会话钉住后不打 billing。
+	quotaSnapshotTTL = 5 * time.Minute
 )
 
 var (
@@ -273,6 +275,9 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			s.Pins.Forget(opts.SessionKey)
 		}
 	}
+	if opts.AccountID == "" && opts.RetryDepth == 0 && s.needsQuotaRefresh(opts.ExcludeIDs) {
+		s.refreshCandidateQuotas(ctx, opts.ExcludeIDs, true)
+	}
 	selection, err := s.Pool.Select(accounts.SelectOptions{
 		AccountID:   opts.AccountID,
 		Site:        s.ActivePoolSite(),
@@ -304,7 +309,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			}
 			cooldown := s.resolveFailureCooldown(ctx, account, err)
 			_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
-			s.refreshCandidateQuotas(ctx, append(append([]string{}, opts.ExcludeIDs...), account.ID))
+			s.refreshCandidateQuotas(ctx, append(append([]string{}, opts.ExcludeIDs...), account.ID), false)
 			s.Log.Warn("retrying codebuddy request with next account", "accountId", account.ID, "error", err.Error())
 			next := append(append([]string{}, opts.ExcludeIDs...), account.ID)
 			opts.ExcludeIDs = next
@@ -483,15 +488,23 @@ func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.A
 	return base
 }
 
-// refreshCandidateQuotas 换号前并行刷新还活着的候选额度，随后 Select PreferQuota 拿最大。
-// 失败或超时保留缓存值，不阻断这次 chat。
-func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string) {
-	if s == nil || s.Pool == nil || s.Provider == nil {
-		return
+func quotaSnapshotFresh(account accounts.Account, nowMillis int64) bool {
+	if account.QuotaUnlimited {
+		return true
+	}
+	if account.QuotaRemaining == nil || account.QuotaCheckedAt <= 0 {
+		return false
+	}
+	return nowMillis-account.QuotaCheckedAt < quotaSnapshotTTL.Milliseconds()
+}
+
+func (s *Service) listSelectableAccounts(exclude []string) []accounts.Account {
+	if s == nil || s.Pool == nil {
+		return nil
 	}
 	store, err := s.Pool.Read()
 	if err != nil {
-		return
+		return nil
 	}
 	site := s.ActivePoolSite()
 	now := time.Now().UnixMilli()
@@ -501,7 +514,7 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string) 
 			skip[id] = struct{}{}
 		}
 	}
-	candidates := make([]accounts.Account, 0, len(store.Accounts))
+	out := make([]accounts.Account, 0, len(store.Accounts))
 	for _, account := range store.Accounts {
 		if !account.Enabled || !accounts.HasCredentials(account) {
 			continue
@@ -515,7 +528,37 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string) 
 		if accounts.InCooldown(account, now) || accounts.QuotaBlocked(account, now) {
 			continue
 		}
-		candidates = append(candidates, account)
+		out = append(out, account)
+	}
+	return out
+}
+
+// needsQuotaRefresh 任一可选账号缺快照或超过 TTL，新会话就要补探，避免只查过部分号时 PreferQuota 看不见更厚的号。
+func (s *Service) needsQuotaRefresh(exclude []string) bool {
+	now := time.Now().UnixMilli()
+	for _, account := range s.listSelectableAccounts(exclude) {
+		if !quotaSnapshotFresh(account, now) {
+			return true
+		}
+	}
+	return false
+}
+
+// refreshCandidateQuotas 并行刷新候选额度。staleOnly 时只打缺失/过期的号（新会话）；换号时刷全部活号。
+func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, staleOnly bool) {
+	if s == nil || s.Pool == nil || s.Provider == nil {
+		return
+	}
+	now := time.Now().UnixMilli()
+	candidates := s.listSelectableAccounts(exclude)
+	if staleOnly {
+		filtered := candidates[:0]
+		for _, account := range candidates {
+			if !quotaSnapshotFresh(account, now) {
+				filtered = append(filtered, account)
+			}
+		}
+		candidates = filtered
 	}
 	if len(candidates) == 0 {
 		return
@@ -544,9 +587,10 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string) 
 		})
 	}
 	wg.Wait()
-	s.Log.Info("refreshed candidate quotas before account switch",
+	s.Log.Info("refreshed candidate quotas",
 		"candidates", len(candidates),
 		"updated", refreshed.Load(),
+		"staleOnly", staleOnly,
 		"elapsed", time.Since(started).String(),
 	)
 }

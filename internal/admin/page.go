@@ -347,7 +347,7 @@ pre{
     <div class="overview-notes">
       <div class="note-item">
         <h3>429 限频隔离与自动熔断</h3>
-        <p>同一会话钉在一个账号上。纯 429 / rate limit 短冷却 2 分钟，松钉后并行刷新候选额度并选剩余最大者；配额类错误会查询官方余额并对齐至 CycleEnd / SlicePeriod 结束。111xx 策略码仍为 5 分钟，部分 5xx 为 30 秒。</p>
+        <p>同一会话钉在一个账号上。新会话只补缺失或超过 5 分钟的额度快照，再按剩余最大选号。纯 429 / rate limit 短冷却 2 分钟，松钉后并行刷新候选额度并选剩余最大者；配额类错误会查询官方余额并对齐至 CycleEnd / SlicePeriod 结束。111xx 策略码仍为 5 分钟，部分 5xx 为 30 秒。</p>
       </div>
       <div class="note-item">
         <h3>Reasoning 思考链透传</h3>

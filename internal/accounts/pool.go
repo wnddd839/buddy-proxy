@@ -672,7 +672,10 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 			p.mem.Accounts[i].SuccessRequests++
 			p.mem.Accounts[i].LastError = ""
 			p.mem.Accounts[i].CooldownUntil = 0
-			clearQuotaCache(&p.mem.Accounts[i])
+			// 全冷却降级打成功，说明「耗尽」快照已经过期；正常成功不能清额度，否则 PreferQuota 立刻失效。
+			if selection.BypassedCooldown {
+				clearQuotaCache(&p.mem.Accounts[i])
+			}
 		} else {
 			p.mem.Accounts[i].FailedRequests++
 			p.mem.Accounts[i].LastError = strutil.Truncate(errMsg, 600)

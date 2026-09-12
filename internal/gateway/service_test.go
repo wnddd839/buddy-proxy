@@ -325,13 +325,14 @@ func TestCompleteFromPoolNewSessionDoesNotProbeQuota(t *testing.T) {
 	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 	t.Cleanup(func() { _ = svc.Close() })
 	high, mid := 80.0, 20.0
+	checked := time.Now().UnixMilli()
 	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
-		Label: "high", Site: "domestic", BearerToken: "token-high", Enabled: true, QuotaRemaining: &high,
+		Label: "high", Site: "domestic", BearerToken: "token-high", Enabled: true, QuotaRemaining: &high, QuotaCheckedAt: checked,
 	})); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
-		Label: "mid", Site: "domestic", BearerToken: "token-mid", Enabled: true, QuotaRemaining: &mid,
+		Label: "mid", Site: "domestic", BearerToken: "token-mid", Enabled: true, QuotaRemaining: &mid, QuotaCheckedAt: checked,
 	})); err != nil {
 		t.Fatal(err)
 	}
@@ -351,6 +352,145 @@ func TestCompleteFromPoolNewSessionDoesNotProbeQuota(t *testing.T) {
 	_, billing := transport.snapshot()
 	if len(billing) != 0 {
 		t.Fatalf("new session must not hit billing, got %v", billing)
+	}
+}
+
+func TestCompleteFromPoolColdPoolProbesQuotaOnce(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "low", Site: "domestic", BearerToken: "token-low", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	high, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "high", Site: "domestic", BearerToken: "token-high", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &scriptedChatTransport{creditsByAuth: map[string]float64{"token-low": 10, "token-high": 90}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	first, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "sess-1",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AccountID != high.ID {
+		t.Fatalf("cold pool should probe then pick high, got %s want %s", first.Account.Label, high.Label)
+	}
+	_, billing1 := transport.snapshot()
+	if len(billing1) == 0 {
+		t.Fatal("cold pool must probe credits once")
+	}
+
+	second, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "sess-2",
+		Messages: []map[string]any{{"role": "user", "content": "other"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.AccountID != high.ID {
+		t.Fatalf("cached quota should keep picking high, got %s", second.Account.Label)
+	}
+	_, billing2 := transport.snapshot()
+	if len(billing2) != len(billing1) {
+		t.Fatalf("second new session must not probe again: first=%v second=%v", billing1, billing2)
+	}
+}
+
+func TestCompleteFromPoolPartialSnapshotProbesMissingAccount(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	cached := 10.0
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "known", Site: "domestic", BearerToken: "token-known", Enabled: true,
+		QuotaRemaining: &cached, QuotaCheckedAt: time.Now().UnixMilli(),
+	})); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "fresh", Site: "domestic", BearerToken: "token-fresh", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &scriptedChatTransport{creditsByAuth: map[string]float64{"token-known": 10, "token-fresh": 90}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model:    "auto",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AccountID != fresh.ID {
+		t.Fatalf("missing snapshot should be probed, got %s want fresh", result.Account.Label)
+	}
+	_, billing := transport.snapshot()
+	if len(billing) != 1 || billing[0] != "token-fresh" {
+		t.Fatalf("should only probe the account without snapshot, got %v", billing)
+	}
+}
+
+func TestCompleteFromPoolStaleSnapshotRefreshesBeforeSelect(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	staleHigh, freshLow := 100.0, 20.0
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "stale", Site: "domestic", BearerToken: "token-stale", Enabled: true,
+		QuotaRemaining: &staleHigh, QuotaCheckedAt: time.Now().Add(-10 * time.Minute).UnixMilli(),
+	})); err != nil {
+		t.Fatal(err)
+	}
+	thin, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "thin", Site: "domestic", BearerToken: "token-thin", Enabled: true,
+		QuotaRemaining: &freshLow, QuotaCheckedAt: time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &scriptedChatTransport{creditsByAuth: map[string]float64{"token-stale": 5, "token-thin": 20}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model:    "auto",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AccountID != thin.ID {
+		t.Fatalf("stale high snapshot should refresh then lose to thin, got %s", result.Account.Label)
+	}
+	_, billing := transport.snapshot()
+	if len(billing) != 1 || billing[0] != "token-stale" {
+		t.Fatalf("should only refresh the stale account, got %v", billing)
+	}
+}
+
+func TestQuotaSnapshotFresh(t *testing.T) {
+	now := time.Now().UnixMilli()
+	rem := 10.0
+	if quotaSnapshotFresh(accounts.Account{QuotaUnlimited: true}, now) != true {
+		t.Fatal("unlimited should be fresh")
+	}
+	if quotaSnapshotFresh(accounts.Account{QuotaRemaining: &rem}, now) {
+		t.Fatal("remaining without checkedAt is stale")
+	}
+	if quotaSnapshotFresh(accounts.Account{QuotaRemaining: &rem, QuotaCheckedAt: now}, now) != true {
+		t.Fatal("fresh snapshot")
+	}
+	if quotaSnapshotFresh(accounts.Account{QuotaRemaining: &rem, QuotaCheckedAt: now - quotaSnapshotTTL.Milliseconds() - 1}, now) {
+		t.Fatal("expired snapshot")
 	}
 }
 

@@ -25,6 +25,14 @@
 
 ---
 
+感谢这些同学用 issue 把真实问题送上门，按编号：
+
+- [@dyed-fanxing](https://github.com/dyed-fanxing) · [#2](https://github.com/wnddd839/buddy-proxy/issues/2) ZCode 把 git status 写进上下文触发 11128 · [#4](https://github.com/wnddd839/buddy-proxy/issues/4) DeepSeek Flash 1M 上下文卡在约 70%
+- [@carter003](https://github.com/carter003) · [#6](https://github.com/wnddd839/buddy-proxy/issues/6) 换号重试按剩余账号缩小上限、提前终止 · [#8](https://github.com/wnddd839/buddy-proxy/issues/8) 同会话应钉在一个账号，新会话再按额度选号
+- [@tearslee](https://github.com/tearslee) · [#7](https://github.com/wnddd839/buddy-proxy/issues/7) 经代理走 DSH/Codex 时缓存读取一直是 0
+
+---
+
 ## 一件事
 
 你有腾讯 CodeBuddy 或 WorkBuddy 账号。你有一堆只认 OpenAI `/v1` 格式的工具——NewAPI、ZCode、Sub2API、各类 SDK 和客户端。
@@ -48,7 +56,7 @@
 | :--- | :--- |
 | **协议直连** | OAuth 登录后直连上游，不依赖 `codebuddy --serve` 等本地中间进程 |
 | **标准 OpenAI 形状** | `GET /v1/models` · `POST /v1/chat/completions`，流式与非流式都支持 |
-| **多账号调度** | 同会话钉在同一账号；新会话按缓存额度选剩余最大者；失败换号前并行探活额度再拿最大；凭据以 `0600` 权限落盘 |
+| **多账号调度** | 同会话钉在同一账号；新会话按额度快照选最大（缺快照或超过 5 分钟才探活）；失败换号前再探活拿最大；凭据以 `0600` 权限落盘 |
 | **真实余额** | 管理台直读官网 Credits，显示「剩余 / 总额」 |
 | **国内 / 国际** | 一键切换号池；**端点以账号自身区域为准**，不会把国内号打到海外 |
 | **CodeBuddy / WorkBuddy** | 一键切产品：CodeBuddy 走 CLI 头，WorkBuddy 走 IDE 头；模型目录随之切换 |
