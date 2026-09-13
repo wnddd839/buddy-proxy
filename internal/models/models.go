@@ -15,6 +15,10 @@ import (
 
 const upstreamConfigPath = "/v3/config"
 
+// consoleModelsPath (LOCAL patch): the requestable chat catalog, as opposed to the
+// IDE-plugin catalog served by /v3/config.
+const consoleModelsPath = "/console/enterprises/personal/models"
+
 var fallbackPaths = []string{
 	"/v2/models",
 	"/v2/plugin/models",
@@ -172,6 +176,22 @@ func (c *Lister) List(ctx context.Context, client *provider.Client, opts ListOpt
 		DepartmentFullName:  opts.DepartmentFullName,
 	}
 
+	// LOCAL patch: prefer the console catalog. /v3/config is the IDE-plugin catalog and
+	// mixes in completion/aux models (codewise-*, completion-gf, *-taco-completion) that
+	// reject chat with 11102, while omitting actually-chat-able models (hy4-preview,
+	// glm-5.3, kimi-k3-1...). The console catalog is the requestable set and carries
+	// `credits`. Fall back to the original path on any failure.
+	if result, err := c.fetchConsole(ctx, client, chatOpts); err == nil && len(result.Models) > 0 {
+		return ListResult{
+			OK:               true,
+			Site:             site,
+			Models:           ToAdminModels(result.Models, "console"),
+			ModelsSource:     "console",
+			UpstreamEndpoint: consoleModelsPath,
+			Message:          fmt.Sprintf("Loaded %d model(s) from %s.", len(result.Models), consoleModelsPath),
+		}
+	}
+
 	if result, err := c.fetchV3(ctx, client, chatOpts); err == nil && len(result.Models) > 0 {
 		return ListResult{
 			OK:               true,
@@ -292,6 +312,99 @@ func (c *Lister) fetchV3(ctx context.Context, client *provider.Client, opts prov
 	}
 	ideRows := c.fetchIDECatalog(ctx, client, opts, candidates)
 	return fetchResult{Models: enrichModelsWithIDEReasoning(merged, ideRows)}, nil
+}
+
+// fetchConsole (LOCAL patch) loads the console catalog: the set of models that
+// actually accept /v2/chat/completions, with credits metadata.
+func (c *Lister) fetchConsole(ctx context.Context, client *provider.Client, opts provider.ChatOptions) (fetchResult, error) {
+	bases := v3ConfigCandidateBases(opts)
+	hosts := make([]string, 0, len(bases)+1)
+	seen := make(map[string]struct{}, len(bases)+1)
+	add := func(raw string) {
+		base := provider.NormalizeBaseURL(raw)
+		if base == "" {
+			return
+		}
+		if _, ok := seen[base]; ok {
+			return
+		}
+		seen[base] = struct{}{}
+		hosts = append(hosts, base)
+	}
+	for _, base := range bases {
+		add(base)
+	}
+	// The console route is served by the API host; workbuddy.cn may not expose it.
+	add("https://copilot.tencent.com")
+
+	ideOpts := opts
+	if ideOpts.ExtraHeaders == nil {
+		ideOpts.ExtraHeaders = map[string]string{}
+	} else {
+		cloned := make(map[string]string, len(opts.ExtraHeaders)+4)
+		for k, v := range opts.ExtraHeaders {
+			cloned[k] = v
+		}
+		ideOpts.ExtraHeaders = cloned
+	}
+	// The console endpoint rejects the WorkBuddy VSCode identity (400); use the CLI one.
+	ideOpts.ExtraHeaders["X-IDE-Type"] = "CLI"
+	ideOpts.ExtraHeaders["X-IDE-Name"] = "CLI"
+	ideOpts.ExtraHeaders["X-IDE-Version"] = config.DefaultIDEVersion
+	ideOpts.ExtraHeaders["User-Agent"] = fmt.Sprintf("CLI/%s CodeBuddy/%s", config.DefaultIDEVersion, config.DefaultIDEVersion)
+	delete(ideOpts.ExtraHeaders, "X-Product-Version")
+	delete(ideOpts.ExtraHeaders, "X-Env-ID")
+
+	headers, _ := client.BuildProtocolDirectHeaders(ideOpts)
+	headers.Set("Accept", "application/json")
+
+	var lastErr error
+	for _, base := range hosts {
+		rows, err := c.fetchJSONModels(ctx, client.HTTP, base+consoleModelsPath, headers)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(rows) == 0 {
+			lastErr = fmt.Errorf("empty models")
+			continue
+		}
+		return fetchResult{Models: dedupeByPublicID(enrichConsoleReasoning(rows))}, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("console catalog unavailable")
+	}
+	return fetchResult{}, lastErr
+}
+
+// dedupeByPublicID drops rows whose public ID already appeared. The console catalog
+// contains both "auto" and "default"; PublicModelID maps "default" to "auto", which
+// would otherwise surface two "auto" entries. First row wins.
+func dedupeByPublicID(rows []map[string]any) []map[string]any {
+	seen := make(map[string]struct{}, len(rows))
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		id := PublicModelID(modelRowID(row))
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, row)
+	}
+	return out
+}
+
+// enrichConsoleReasoning fills canDisableThinking when absent, matching
+// enrichModelsWithIDEReasoning so clients do not reserve thinking budget
+// unnecessarily.
+func enrichConsoleReasoning(rows []map[string]any) []map[string]any {
+	for _, row := range rows {
+		ensureCanDisableThinking(row)
+	}
+	return rows
 }
 
 func (c *Lister) fetchIDECatalog(ctx context.Context, client *provider.Client, opts provider.ChatOptions, bases []string) []map[string]any {
