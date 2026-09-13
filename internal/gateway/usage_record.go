@@ -34,12 +34,15 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 	if duration < 0 {
 		duration = 0
 	}
-	label := strings.TrimSpace(input.Account.Label)
+	label := strings.TrimSpace(input.Account.UserName)
+	if label == "" {
+		label = strings.TrimSpace(input.Account.Label)
+	}
 	if label == "" {
 		label = strings.TrimSpace(input.Account.UserNickname)
 	}
-	if label == "" {
-		label = strings.TrimSpace(input.Account.UserName)
+	if custom := strings.TrimSpace(input.Account.Label); custom != "" && label != "" && custom != label {
+		label = custom + " · " + label
 	}
 	s.Journal.Record(usagejournal.Entry{
 		At:                            input.Started.UnixMilli(),
@@ -65,13 +68,19 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 
 // UsageView returns admin usage summary and a page of request rows.
 func (s *Service) UsageView(rangeName string, limit, offset int) usagejournal.View {
+	return s.UsageQuery(usagejournal.Query{Range: rangeName, Limit: limit, Offset: offset})
+}
+
+// UsageQuery returns usage with optional account / model filters.
+func (s *Service) UsageQuery(q usagejournal.Query) usagejournal.View {
 	if s == nil || s.Journal == nil {
-		return usagejournal.View{Summary: usagejournal.Summary{Range: rangeName}, Limit: limit, Offset: offset}
+		return usagejournal.View{Summary: usagejournal.Summary{Range: q.Range}, Limit: q.Limit, Offset: q.Offset}
 	}
-	switch strings.ToLower(strings.TrimSpace(rangeName)) {
+	switch strings.ToLower(strings.TrimSpace(q.Range)) {
 	case "week", "month":
-		return s.Journal.View(rangeName, limit, offset)
+		return s.Journal.Query(q)
 	default:
-		return s.Journal.View("day", limit, offset)
+		q.Range = "day"
+		return s.Journal.Query(q)
 	}
 }

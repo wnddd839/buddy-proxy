@@ -8,16 +8,17 @@ import (
 	"strings"
 )
 
-// LoadDotEnv 从就近 .env 加载 KEY=VALUE 到进程环境。
-// 已存在的环境变量不会被覆盖。
+// LoadDotEnv 从就近 env 文件加载 KEY=VALUE 到进程环境。
+// 已存在且非空的环境变量不会被覆盖；空值视为未设置，允许文件回填。
 //
 // 搜索顺序：
 //  1. CODEBUDDY_PROXY_ENV_FILE（若设置）
 //  2. ./.env（当前工作目录）
-//  3. <可执行文件目录>/.env
-//  4. ../.env（从 go-codebuddy/ 运行时即仓库根目录）
+//  3. ../.env（从子目录运行时即仓库根目录）
+//  4. <可执行文件目录>/.env
+//  5. ~/.codebuddy/proxy.env（与账号池同目录，双击/换目录启动仍固定）
 func LoadDotEnv() (loaded []string, err error) {
-	candidates := make([]string, 0, 4)
+	candidates := make([]string, 0, 5)
 	if custom := strings.TrimSpace(os.Getenv("CODEBUDDY_PROXY_ENV_FILE")); custom != "" {
 		candidates = append(candidates, expandHome(custom))
 	}
@@ -28,6 +29,7 @@ func LoadDotEnv() (loaded []string, err error) {
 	if exe, exeErr := os.Executable(); exeErr == nil {
 		candidates = append(candidates, filepath.Join(filepath.Dir(exe), ".env"))
 	}
+	candidates = append(candidates, DefaultEnvFilePath())
 
 	seen := map[string]struct{}{}
 	for _, path := range candidates {
@@ -81,8 +83,11 @@ func loadDotEnvFile(path string) error {
 		}
 		value = strings.TrimSpace(value)
 		value = unquoteEnvValue(value)
-		// 不覆盖已有进程环境变量。
-		if _, exists := os.LookupEnv(key); exists {
+		if value == "" {
+			continue
+		}
+		// 不覆盖已有非空进程环境变量；空字符串视为未设置。
+		if cur, exists := os.LookupEnv(key); exists && strings.TrimSpace(cur) != "" {
 			continue
 		}
 		if err := os.Setenv(key, value); err != nil {
@@ -106,34 +111,38 @@ func unquoteEnvValue(value string) string {
 	return value
 }
 
-// ResolveEnvFilePath 决定生成配置写入哪个 .env 文件。
+// DefaultEnvFilePath 与账号池同目录，默认 ~/.codebuddy/proxy.env。
+func DefaultEnvFilePath() string {
+	return filepath.Join(filepath.Dir(defaultAccountsPath()), "proxy.env")
+}
+
+// ResolveEnvFilePath 决定生成配置写入哪个 env 文件。
+// 已有 .env / proxy.env 则原地更新；都不存在时写入 DefaultEnvFilePath，避免换启动目录就换一把 Key。
 func ResolveEnvFilePath() string {
 	if custom := strings.TrimSpace(os.Getenv("CODEBUDDY_PROXY_ENV_FILE")); custom != "" {
 		return expandHome(custom)
 	}
+	for _, path := range envFileCandidates() {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return DefaultEnvFilePath()
+}
+
+func envFileCandidates() []string {
+	out := make([]string, 0, 4)
 	if cwd, err := os.Getwd(); err == nil {
-		cwdEnv := filepath.Join(cwd, ".env")
-		if _, err := os.Stat(cwdEnv); err == nil {
-			return cwdEnv
+		out = append(out, filepath.Join(cwd, ".env"))
+		if abs, absErr := filepath.Abs(filepath.Join(cwd, "..", ".env")); absErr == nil {
+			out = append(out, abs)
 		}
-		parentEnv := filepath.Join(cwd, "..", ".env")
-		if abs, absErr := filepath.Abs(parentEnv); absErr == nil {
-			if _, err := os.Stat(abs); err == nil {
-				return abs
-			}
-		}
-		if exe, exeErr := os.Executable(); exeErr == nil {
-			exeEnv := filepath.Join(filepath.Dir(exe), ".env")
-			if _, err := os.Stat(exeEnv); err == nil {
-				return exeEnv
-			}
-		}
-		return cwdEnv
 	}
 	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), ".env")
+		out = append(out, filepath.Join(filepath.Dir(exe), ".env"))
 	}
-	return ".env"
+	out = append(out, DefaultEnvFilePath())
+	return out
 }
 
 // UpsertEnvFile 写入/更新 .env 键值（不存在则创建），保留其它行与注释。

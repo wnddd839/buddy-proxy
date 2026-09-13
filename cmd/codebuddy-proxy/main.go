@@ -113,7 +113,7 @@ CodeBuddy Proxy 已启动
 
 `, admin)
 	if generatedKey {
-		fmt.Fprintf(os.Stdout, "  首次启动已生成网关 API Key 并写入 .env，请在管理台「OpenAI 兼容接入」中查看/复制。\n\n")
+		fmt.Fprintf(os.Stdout, "  首次启动已生成网关 API Key 并写入 ~/.codebuddy/proxy.env，请在管理台「OpenAI 兼容接入」中查看/复制。\n\n")
 	} else {
 		fmt.Fprintf(os.Stdout, "  请在管理台完成 OAuth 后，在「OpenAI 兼容接入」复制 Base URL 与 API Key 给客户端。\n\n")
 	}

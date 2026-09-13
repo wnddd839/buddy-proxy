@@ -8,7 +8,7 @@
 ## 方式 A：预编译二进制（推荐）
 
 从 [GitHub Releases](https://github.com/wnddd839/buddy-proxy/releases/latest) 下载对应平台文件，直接运行。
-程序会自动读取（必要时创建）同目录 `.env`。
+程序会读取当前目录 `.env`（若有），否则使用 `~/.codebuddy/proxy.env`。
 
 ```powershell
 # Windows
@@ -21,7 +21,7 @@ chmod +x ./codebuddy-proxy-linux-amd64
 ./codebuddy-proxy-linux-amd64
 ```
 
-首次启动若没有 API Key，会生成 `cbp_...` 并写入 `.env`，日志里会打印。
+首次启动若没有 API Key，会生成 `cbp_...` 并写入 `~/.codebuddy/proxy.env`（当前目录已有 `.env` 则写到该文件）。
 
 ## 方式 B：从源码
 

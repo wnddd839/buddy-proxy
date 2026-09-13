@@ -28,7 +28,7 @@
 感谢这些同学用 issue 把真实问题送上门，按编号：
 
 - [@dyed-fanxing](https://github.com/dyed-fanxing) · [#2](https://github.com/wnddd839/buddy-proxy/issues/2) ZCode 把 git status 写进上下文触发 11128 · [#4](https://github.com/wnddd839/buddy-proxy/issues/4) DeepSeek Flash 1M 上下文卡在约 70%
-- [@carter003](https://github.com/carter003) · [#6](https://github.com/wnddd839/buddy-proxy/issues/6) 换号重试按剩余账号缩小上限、提前终止 · [#8](https://github.com/wnddd839/buddy-proxy/issues/8) 同会话应钉在一个账号，新会话再按额度选号 · [#9](https://github.com/wnddd839/buddy-proxy/issues/9) 管理台版本号与请求 / token / credit 用量明细
+- [@carter003](https://github.com/carter003) · [#6](https://github.com/wnddd839/buddy-proxy/issues/6) 换号重试按剩余账号缩小上限、提前终止 · [#8](https://github.com/wnddd839/buddy-proxy/issues/8) 同会话应钉在一个账号，新会话再按额度选号 · [#9](https://github.com/wnddd839/buddy-proxy/issues/9) 管理台版本号与请求 / token / credit 用量明细 · [#10](https://github.com/wnddd839/buddy-proxy/issues/10) 用量表账号字段与账号/模型筛选 · [#11](https://github.com/wnddd839/buddy-proxy/issues/11) hy3 缓存命中率接近 0（按模型对照，非统计算错）
 - [@tearslee](https://github.com/tearslee) · [#7](https://github.com/wnddd839/buddy-proxy/issues/7) 经代理走 DSH/Codex 时缓存读取一直是 0
 
 ---
@@ -62,7 +62,7 @@
 | **CodeBuddy / WorkBuddy** | 一键切产品：CodeBuddy 走 CLI 头，WorkBuddy 走 IDE 头；模型目录随之切换 |
 | **模型列表** | 走协议 `/v3/config`，60 秒缓存，可强制刷新 |
 | **Token 用量透传** | 流式收尾补 usage chunk，含缓存命中统计（缓存字段兼容多上游别名） |
-| **开箱即用** | 预编译二进制，无运行时依赖；首次启动自动生成 API Key |
+| **开箱即用** | 预编译二进制，无运行时依赖；首次启动自动生成 API Key，默认写入 `~/.codebuddy/proxy.env` |
 
 ---
 

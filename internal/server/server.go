@@ -26,6 +26,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 	"github.com/wnddd839/codebuddy-proxy/internal/sessionpin"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
+	"github.com/wnddd839/codebuddy-proxy/internal/usagejournal"
 	"github.com/wnddd839/codebuddy-proxy/internal/version"
 )
 
@@ -539,11 +540,20 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 				offset = (page - 1) * limit
 			}
 		}
-		view := s.Svc.UsageView(rangeName, limit, offset)
+		view := s.Svc.UsageQuery(usagejournal.Query{
+			Range:   rangeName,
+			Account: strings.TrimSpace(r.URL.Query().Get("account")),
+			Model:   strings.TrimSpace(r.URL.Query().Get("model")),
+			Limit:   limit,
+			Offset:  offset,
+		})
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"ok":            true,
 			"summary":       view.Summary,
 			"series":        view.Series,
+			"byModel":       view.ByModel,
+			"accounts":      view.Accounts,
+			"models":        view.Models,
 			"requests":      view.Requests,
 			"requestsTotal": view.RequestsTotal,
 			"limit":         view.Limit,

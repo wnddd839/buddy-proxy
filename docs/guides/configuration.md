@@ -28,11 +28,11 @@
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `CODEBUDDY_PROXY_API_KEY` | 空 | 客户端 API Key。**留空时首次启动自动生成 `cbp_...` 并写入 `.env`** |
+| `CODEBUDDY_PROXY_API_KEY` | 空 | 客户端 API Key。**留空时首次启动自动生成 `cbp_...` 并写入 `~/.codebuddy/proxy.env`（与账号池同目录）** |
 | `CODEBUDDY_PROXY_REQUIRE_API_KEY` | 跟随 API Key | `true` 时 `/v1` 强制鉴权。设了 API Key 就默认为 `true` |
 | `CODEBUDDY_PROXY_ADMIN_PASSWORD` | 空 | 管理台密码。**留空 = 管理台免密**（本地推荐），与 API Key 鉴权相互独立 |
 
-管理台「生成 API Key」会覆写 `.env` 中的 `CODEBUDDY_PROXY_API_KEY` 并置 `REQUIRE_API_KEY=true`，立即生效、旧 Key 失效。
+管理台「生成 API Key」会覆写 `proxy.env` / `.env` 中的 `CODEBUDDY_PROXY_API_KEY` 并置 `REQUIRE_API_KEY=true`，立即生效、旧 Key 失效。若当前目录已有 `.env` 则仍写该文件（开发方便）；否则写入 `~/.codebuddy/proxy.env`，避免换启动目录就换 Key。
 
 ## 账号池
 
@@ -40,7 +40,7 @@
 |------|--------|------|
 | `CODEBUDDY_PROXY_ACCOUNTS_PATH` | `~/.codebuddy/proxy-accounts.json` | 账号池 JSON 路径，支持 `~` 与 `~/...` 展开 |
 | `CODEBUDDY_PROXY_USAGE_PATH` | 与账号池同目录的 `proxy-usage.json` | 管理台用量明细与按日汇总；未设时取 `dirname(ACCOUNTS_PATH)/proxy-usage.json` |
-| `CODEBUDDY_PROXY_ENV_FILE` | 自动探测 | 强制指定 `.env` 写入位置 |
+| `CODEBUDDY_PROXY_ENV_FILE` | 自动探测 | 强制指定 env 文件路径。未设时：已有 `.env` 则用它，否则 `~/.codebuddy/proxy.env` |
 
 账号文件以 `0600` 权限写入。备份与迁移只需复制这个 JSON。
 

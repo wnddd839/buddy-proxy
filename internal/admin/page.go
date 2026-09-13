@@ -264,6 +264,15 @@ pre{
 .usage-line .pill.bad{border-color:var(--fg-20);color:var(--fg-40)}
 .account .actions button{padding:4px 10px;font-size:11px;color:var(--fg-60);border-color:var(--fg-10)}
 .account .actions button:hover{color:var(--fg);border-color:var(--fg-40)}
+.usage-filters{display:flex;flex-wrap:wrap;gap:16px 24px;margin:16px 0 0;align-items:end}
+.usage-filters label{display:flex;flex-direction:column;gap:6px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40)}
+.usage-filters select{min-width:180px;font-size:13px;text-transform:none;letter-spacing:0}
+.usage-models{margin-top:16px;overflow:auto;border:1px solid var(--fg-10)}
+.usage-models table{width:100%;border-collapse:collapse;font-size:12px}
+.usage-models th,.usage-models td{padding:8px 12px;border-bottom:1px solid var(--fg-10);text-align:left}
+.usage-models th{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40);font-weight:500}
+.usage-models td.mono{font-family:var(--mono);font-size:11px}
+.usage-models .low{color:var(--fg-40)}
 
 /* 概览下方双栏注释卡片 */
 .overview-notes{
@@ -515,7 +524,7 @@ pre{
             </div>
           </div>
         </div>
-        <div class="secret-hint" id="clientConfigHint">API Key 点击复制时才会读取明文。生成的新 Key 仅当前进程生效，重启需写入 CODEBUDDY_PROXY_API_KEY。</div>
+        <div class="secret-hint" id="clientConfigHint">API Key 点击复制时才会读取明文。Key 默认写入 ~/.codebuddy/proxy.env，与账号池同目录，换文件夹启动也会沿用同一把。</div>
       </div>
     </section>
   </div>
@@ -582,6 +591,19 @@ pre{
           <div class="metric"><div class="k">缓存命中率</div><div class="v sm" id="uCacheHit">—</div></div>
           <div class="metric"><div class="k">Credits Σ</div><div class="v sm" id="uCredits">—</div></div>
         </div>
+        <div class="usage-filters">
+          <label>账号
+            <select id="usageAccountFilter" aria-label="按账号筛选">
+              <option value="">全部账号</option>
+            </select>
+          </label>
+          <label>模型
+            <select id="usageModelFilter" aria-label="按模型筛选">
+              <option value="">全部模型</option>
+            </select>
+          </label>
+        </div>
+        <div class="usage-models" id="usageByModel" hidden></div>
         <div class="usage-chart" id="usageChartBox" aria-hidden="false">
           <div class="usage-chart-head">
             <h3>趋势</h3>
@@ -592,7 +614,7 @@ pre{
           </div>
           <div id="usageChart"><div class="chart-empty">加载中…</div></div>
         </div>
-        <p class="checkin-hint" id="usageCreditHint">命中率 = 缓存 token ÷ prompt token。Credits 仅在上游 usage 返回 <code>credit</code> 时累加。</p>
+        <p class="checkin-hint" id="usageCreditHint">命中率 = 缓存 token ÷ prompt token（所有模型同一公式）。按模型表用来对比 hy3 / DeepSeek 等差异。Credits 仅在上游 usage 返回 <code>credit</code> 时累加。</p>
         <div class="log-table-wrap">
           <div class="log-table-window">
             <table class="log-table" aria-label="请求明细">
@@ -834,6 +856,8 @@ let lastPoolAccounts = null;
 let checkinBusy = false;
 let usageRange = 'day';
 let usagePage = 1;
+let usageAccount = '';
+let usageModel = '';
 const usagePageSize = 20;
 
 function formatTime(ms){
@@ -919,6 +943,9 @@ function paintUsage(data){
   } else {
     $('uCredits').textContent = '—';
   }
+  fillUsageFilter($('usageAccountFilter'), data.accounts || [], usageAccount, '全部账号');
+  fillUsageFilter($('usageModelFilter'), data.models || [], usageModel, '全部模型');
+  paintByModel(data.byModel || []);
   paintUsageChart(data.series || [], data.summary || {});
   const rows = data.requests || [];
   const tbody = $('usageRows');
@@ -974,11 +1001,50 @@ function paintUsagePager(data){
 }
 async function refreshUsage(){
   const offset = (usagePage - 1) * usagePageSize;
-  const data = await api('/direct-admin/api/usage?range=' + encodeURIComponent(usageRange) +
-    '&limit=' + usagePageSize + '&offset=' + offset);
+  let url = '/direct-admin/api/usage?range=' + encodeURIComponent(usageRange) +
+    '&limit=' + usagePageSize + '&offset=' + offset;
+  if (usageAccount) url += '&account=' + encodeURIComponent(usageAccount);
+  if (usageModel) url += '&model=' + encodeURIComponent(usageModel);
+  const data = await api(url);
   paintUsage(data);
   paintUsagePager(data);
   return data;
+}
+function fillUsageFilter(sel, values, current, allLabel){
+  if (!sel) return;
+  const keep = current || '';
+  const opts = ['<option value="">' + allLabel + '</option>'];
+  (values || []).forEach(function(v){
+    const selected = v === keep ? ' selected' : '';
+    opts.push('<option value="' + escapeHtml(v) + '"' + selected + '>' + escapeHtml(v) + '</option>');
+  });
+  if (keep && (values || []).indexOf(keep) < 0) {
+    opts.push('<option value="' + escapeHtml(keep) + '" selected>' + escapeHtml(keep) + '</option>');
+  }
+  sel.innerHTML = opts.join('');
+}
+function paintByModel(rows){
+  const host = $('usageByModel');
+  if (!host) return;
+  if (!rows || !rows.length) {
+    host.hidden = true;
+    host.innerHTML = '';
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = '<table aria-label="按模型缓存命中"><thead><tr>' +
+    '<th>模型</th><th>请求</th><th>Token</th><th>缓存命中</th></tr></thead><tbody>' +
+    rows.map(function(row){
+      const rate = formatHitRate(row.cacheHitRate);
+      const low = (row.cacheHitRate == null || row.cacheHitRate < 5) ? ' class="low"' : '';
+      return '<tr>' +
+        '<td class="mono">' + escapeHtml(row.model || '—') + '</td>' +
+        '<td class="mono">' + String(row.requests || 0) + '</td>' +
+        '<td class="mono">' + String(row.totalTokens || 0) + '</td>' +
+        '<td class="mono"' + low + '>' + escapeHtml(rate) + '</td>' +
+        '</tr>';
+    }).join('') +
+    '</tbody></table>';
 }
 function paintUsageRange(range){
   usageRange = range || 'day';
@@ -1315,6 +1381,14 @@ if ($('btnUsageNext')) $('btnUsageNext').onclick = function(){
   usagePage++;
   refreshUsage().catch(function(e){ showToast(e.message, 'error'); });
 };
+function onUsageFilterChange(){
+  usageAccount = ($('usageAccountFilter') && $('usageAccountFilter').value) || '';
+  usageModel = ($('usageModelFilter') && $('usageModelFilter').value) || '';
+  usagePage = 1;
+  refreshUsage().catch(function(e){ showToast(e.message, 'error'); });
+}
+if ($('usageAccountFilter')) $('usageAccountFilter').onchange = onUsageFilterChange;
+if ($('usageModelFilter')) $('usageModelFilter').onchange = onUsageFilterChange;
 if ($('btnCheckin')) $('btnCheckin').onclick = function(){ runPoolCheckin().catch(function(e){ showToast(e.message, 'error'); }); };
 $('btnModels').onclick = function(){ refreshModels().catch(function(e){ $('modelsRaw').textContent = e.message; $('modelChips').innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>'; }); };
 $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };

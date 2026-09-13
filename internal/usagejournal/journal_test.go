@@ -84,3 +84,44 @@ func TestMonthViewUsesWeekWindowWhenHistoryShort(t *testing.T) {
 		t.Fatalf("month tokens=%d week=%d", month.Summary.TotalTokens, week.Summary.TotalTokens)
 	}
 }
+
+func TestViewByModelAndFilters(t *testing.T) {
+	j := usagejournal.New(20)
+	now := time.Now().UnixMilli()
+	j.Record(usagejournal.Entry{
+		At: now, ProxyRequestID: "hy3-1", Model: "hy3", AccountLabel: "alice",
+		PromptTokens: 1000, CompletionTokens: 10, CachedTokens: 0,
+	})
+	j.Record(usagejournal.Entry{
+		At: now, ProxyRequestID: "ds-1", Model: "deepseek-v4.1-flash", AccountLabel: "alice",
+		PromptTokens: 1000, CompletionTokens: 10, CachedTokens: 800,
+	})
+	j.Record(usagejournal.Entry{
+		At: now, ProxyRequestID: "ds-2", Model: "deepseek-v4.1-flash", AccountLabel: "bob",
+		PromptTokens: 500, CompletionTokens: 5, CachedTokens: 400,
+	})
+
+	view := j.Query(usagejournal.Query{Range: "day", Limit: 20})
+	if len(view.ByModel) != 2 {
+		t.Fatalf("byModel=%d %+v", len(view.ByModel), view.ByModel)
+	}
+	by := map[string]usagejournal.ModelStat{}
+	for _, row := range view.ByModel {
+		by[row.Model] = row
+	}
+	if by["hy3"].CacheHitRate != 0 {
+		t.Fatalf("hy3 rate=%v", by["hy3"].CacheHitRate)
+	}
+	if by["deepseek-v4.1-flash"].CacheHitRate < 79 || by["deepseek-v4.1-flash"].CacheHitRate > 81 {
+		t.Fatalf("ds rate=%v", by["deepseek-v4.1-flash"].CacheHitRate)
+	}
+
+	hy3 := j.Query(usagejournal.Query{Range: "day", Model: "hy3", Limit: 20})
+	if hy3.RequestsTotal != 1 || hy3.Summary.CachedTokens != 0 {
+		t.Fatalf("hy3 filter total=%d cached=%d", hy3.RequestsTotal, hy3.Summary.CachedTokens)
+	}
+	bob := j.Query(usagejournal.Query{Range: "day", Account: "bob", Limit: 20})
+	if bob.RequestsTotal != 1 || bob.Requests[0].AccountLabel != "bob" {
+		t.Fatalf("account filter %+v", bob.Requests)
+	}
+}

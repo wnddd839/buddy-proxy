@@ -4,6 +4,7 @@ package usagejournal
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -69,10 +70,32 @@ type ChartPoint struct {
 	CacheHitRate float64 `json:"cacheHitRate"`
 }
 
+// ModelStat is cache / token totals for one model in the current window.
+type ModelStat struct {
+	Model        string  `json:"model"`
+	Requests     int64   `json:"requests"`
+	PromptTokens int64   `json:"promptTokens"`
+	TotalTokens  int64   `json:"totalTokens"`
+	CachedTokens int64   `json:"cachedTokens"`
+	CacheHitRate float64 `json:"cacheHitRate"`
+}
+
+// Query selects a time range, optional account/model filter, and a request page.
+type Query struct {
+	Range   string
+	Account string
+	Model   string
+	Limit   int
+	Offset  int
+}
+
 // View is the admin API payload.
 type View struct {
 	Summary       Summary      `json:"summary"`
 	Series        []ChartPoint `json:"series"`
+	ByModel       []ModelStat  `json:"byModel"`
+	Accounts      []string     `json:"accounts"`
+	Models        []string     `json:"models"`
 	Requests      []Entry      `json:"requests"`
 	RequestsTotal int          `json:"requestsTotal"`
 	Limit         int          `json:"limit"`
@@ -155,10 +178,22 @@ func (j *Journal) Record(e Entry) {
 
 // View returns summary for range and a page of requests (newest first).
 func (j *Journal) View(rangeName string, limit, offset int) View {
-	if j == nil {
-		return View{Summary: Summary{Range: rangeName}, Limit: normalizePageSize(limit), Offset: max(0, offset)}
+	return j.Query(Query{Range: rangeName, Limit: limit, Offset: offset})
+}
+
+// Query returns summary, per-model stats, and a page of requests.
+func (j *Journal) Query(q Query) View {
+	rangeName := strings.TrimSpace(q.Range)
+	if rangeName == "" {
+		rangeName = "day"
 	}
-	limit = normalizePageSize(limit)
+	account := strings.TrimSpace(q.Account)
+	model := strings.TrimSpace(q.Model)
+	if j == nil {
+		return View{Summary: Summary{Range: rangeName}, Limit: normalizePageSize(q.Limit), Offset: max(0, q.Offset)}
+	}
+	limit := normalizePageSize(q.Limit)
+	offset := q.Offset
 	if offset < 0 {
 		offset = 0
 	}
@@ -172,20 +207,42 @@ func (j *Journal) View(rangeName string, limit, offset int) View {
 		from, to = monthWindowOrWeek(now, j.byDay)
 	}
 
-	sum := aggregateBuckets(j.byDay, from, to)
-	sum.Range = rangeName
-	sum.From = from.UnixMilli()
-	sum.To = to.UnixMilli()
-
-	matched := make([]Entry, 0, len(j.entries))
+	windowed := make([]Entry, 0, len(j.entries))
 	for i := len(j.entries) - 1; i >= 0; i-- {
 		e := j.entries[i]
 		at := time.UnixMilli(e.At)
 		if at.Before(from) || at.After(to) {
 			continue
 		}
-		matched = append(matched, e)
+		windowed = append(windowed, e)
 	}
+
+	accounts, models := distinctFacets(windowed)
+	byModel := buildModelStats(windowed)
+
+	matched := windowed
+	if account != "" || model != "" {
+		matched = matched[:0]
+		for _, e := range windowed {
+			if matchEntry(e, account, model) {
+				matched = append(matched, e)
+			}
+		}
+	}
+
+	var sum Summary
+	var series []ChartPoint
+	if account != "" || model != "" {
+		sum = aggregateEntries(matched)
+		series = buildSeriesFromEntries(rangeName, from, to, matched)
+	} else {
+		sum = aggregateBuckets(j.byDay, from, to)
+		series = buildSeries(rangeName, from, to, j.entries, j.byDay)
+	}
+	sum.Range = rangeName
+	sum.From = from.UnixMilli()
+	sum.To = to.UnixMilli()
+
 	total := len(matched)
 	if offset > total {
 		offset = total
@@ -197,10 +254,12 @@ func (j *Journal) View(rangeName string, limit, offset int) View {
 	page := matched[offset:end]
 
 	finalizeSummary(&sum)
-	series := buildSeries(rangeName, from, to, j.entries, j.byDay)
 	return View{
 		Summary:       sum,
 		Series:        series,
+		ByModel:       byModel,
+		Accounts:      accounts,
+		Models:        models,
 		Requests:      page,
 		RequestsTotal: total,
 		Limit:         limit,
@@ -248,6 +307,112 @@ func buildSeries(rangeName string, from, to time.Time, entries []Entry, byDay ma
 	default:
 		return buildDailySeriesFromBuckets(byDay, from, to, loc)
 	}
+}
+
+func buildSeriesFromEntries(rangeName string, from, to time.Time, entries []Entry) []ChartPoint {
+	if rangeName == "day" {
+		return buildHourlySeries(entries, from, to, from.Location())
+	}
+	byDay := map[string]dayBucket{}
+	loc := from.Location()
+	for _, e := range entries {
+		key := time.UnixMilli(e.At).In(loc).Format("2006-01-02")
+		b := byDay[key]
+		b.PromptTokens += e.PromptTokens
+		b.CompletionTokens += e.CompletionTokens
+		b.CachedTokens += e.CachedTokens
+		byDay[key] = b
+	}
+	return buildDailySeriesFromBuckets(byDay, from, to, loc)
+}
+
+func matchEntry(e Entry, account, model string) bool {
+	if model != "" && !strings.EqualFold(strings.TrimSpace(e.Model), model) {
+		return false
+	}
+	if account == "" {
+		return true
+	}
+	return e.AccountLabel == account || e.AccountID == account
+}
+
+func distinctFacets(entries []Entry) (accounts, models []string) {
+	accSeen := map[string]struct{}{}
+	modelSeen := map[string]struct{}{}
+	for _, e := range entries {
+		if name := strings.TrimSpace(e.AccountLabel); name != "" {
+			if _, ok := accSeen[name]; !ok {
+				accSeen[name] = struct{}{}
+				accounts = append(accounts, name)
+			}
+		}
+		if name := strings.TrimSpace(e.Model); name != "" {
+			if _, ok := modelSeen[name]; !ok {
+				modelSeen[name] = struct{}{}
+				models = append(models, name)
+			}
+		}
+	}
+	slices.Sort(accounts)
+	slices.Sort(models)
+	return accounts, models
+}
+
+func buildModelStats(entries []Entry) []ModelStat {
+	by := map[string]*ModelStat{}
+	order := make([]string, 0, 8)
+	for _, e := range entries {
+		key := strings.TrimSpace(e.Model)
+		if key == "" {
+			key = "unknown"
+		}
+		row, ok := by[key]
+		if !ok {
+			row = &ModelStat{Model: key}
+			by[key] = row
+			order = append(order, key)
+		}
+		row.Requests++
+		row.PromptTokens += e.PromptTokens
+		row.TotalTokens += e.PromptTokens + e.CompletionTokens
+		row.CachedTokens += e.CachedTokens
+	}
+	out := make([]ModelStat, 0, len(order))
+	for _, key := range order {
+		row := *by[key]
+		row.CacheHitRate = cacheHitRate(row.CachedTokens, row.PromptTokens)
+		out = append(out, row)
+	}
+	slices.SortFunc(out, func(a, b ModelStat) int {
+		if a.Requests == b.Requests {
+			return strings.Compare(a.Model, b.Model)
+		}
+		if a.Requests > b.Requests {
+			return -1
+		}
+		return 1
+	})
+	return out
+}
+
+func aggregateEntries(entries []Entry) Summary {
+	var sum Summary
+	for _, e := range entries {
+		sum.Requests++
+		if !e.Ok {
+			sum.Failed++
+		}
+		sum.PromptTokens += e.PromptTokens
+		sum.CompletionTokens += e.CompletionTokens
+		sum.CachedTokens += e.CachedTokens
+		if e.Credit != nil {
+			sum.Credits += *e.Credit
+			sum.CreditRows++
+		}
+	}
+	sum.TotalTokens = sum.PromptTokens + sum.CompletionTokens
+	finalizeSummary(&sum)
+	return sum
 }
 
 func buildHourlySeries(entries []Entry, from, to time.Time, loc *time.Location) []ChartPoint {
@@ -363,4 +528,3 @@ func aggregateBuckets(byDay map[string]dayBucket, from, to time.Time) Summary {
 	finalizeSummary(&sum)
 	return sum
 }
-

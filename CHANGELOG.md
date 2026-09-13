@@ -5,6 +5,32 @@
 
 ---
 
+## v4.8 · 2026-09-13 · API Key 固定路径 · 用量按账号/模型
+
+### 感谢
+
+- [@carter003](https://github.com/carter003) 提出 [#10](https://github.com/wnddd839/buddy-proxy/issues/10)：统计表要能看到账号，并按账号 / 模型筛选。
+- [@carter003](https://github.com/carter003) 提出 [#11](https://github.com/wnddd839/buddy-proxy/issues/11)：hy3 缓存命中率几乎为 0，要分清是模型还是统计。
+
+### 解决了什么
+
+换文件夹启动、从压缩包双击、或进程里有空的 `CODEBUDDY_PROXY_API_KEY=` 时，每次都会生成新网关 Key，客户端仍拿旧 Key 就 401。用量页只有总命中率，hy3 和 DeepSeek 混在一起看不清。
+
+### 改了什么
+
+- **API Key 落盘**：无现成 `.env` 时写入 `~/.codebuddy/proxy.env`（与账号池同目录）。加载时空环境变量不再挡住文件里的 Key。当前目录已有 `.env` 时仍优先用它（开发方便）。
+- **用量筛选**：Tab 05 可按账号、模型过滤明细与汇总；账号列优先显示用户名（有自定义标签则为 `标签 · 用户名`）。
+- **按模型命中率**：同一时间窗按模型列出请求数 / Token / 缓存命中率，用来对比 hy3 与 DeepSeek。公式仍是「缓存 token ÷ prompt token」，代理不会替上游「补」不存在的 cache 字段。
+- 不加 SQLite：明细仍约 400 条 JSON + 90 日按日汇总。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池与 `proxy-usage.json` 不用改。若客户端已配过 Key：把原来的 `CODEBUDDY_PROXY_API_KEY=cbp_...` 写进 `%USERPROFILE%\.codebuddy\proxy.env`（或启动目录已有的 `.env`），即可沿用旧 Key。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v4.8
+
+---
+
 ## v4.7 · 2026-09-12 · 管理台用量明细与版本号
 
 ### 感谢

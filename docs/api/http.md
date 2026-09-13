@@ -26,7 +26,7 @@ Authorization: Bearer <CODEBUDDY_PROXY_API_KEY>
 无需鉴权。
 
 ```json
-{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v4.7"}
+{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v4.8"}
 ```
 
 `version` 为构建时注入的发布号；本地 `go build` 未带 `-ldflags` 时多为 `dev`。
@@ -218,7 +218,7 @@ usage chunk 形如：
 | GET | `/direct-admin/api/status` | 运行状态 + 账号摘要 + 配置快照；含 `version`、`build`（`version` / 可选 `commit` / `builtAt`）、进程级 `stats` |
 | GET | `/direct-admin/api/usage` | 用量汇总 + 分页明细 + 趋势 `series`；默认落盘 `proxy-usage.json`（约 400 条环形缓冲 + 90 日汇总） |
 | GET | `/direct-admin/api/client-config` | 前端配置（baseUrl / apiKey / site / requireApiKey） |
-| POST | `/direct-admin/api/client-config/generate-key` | 生成 `cbp_...` Key，写入 `.env` 并立即生效 |
+| POST | `/direct-admin/api/client-config/generate-key` | 生成 `cbp_...` Key，写入 `~/.codebuddy/proxy.env`（或已有 `.env`）并立即生效 |
 | POST · PUT | `/direct-admin/api/pool-site` | 切换号池区域 `domestic` / `global`，回写 `.env` |
 | POST · PUT | `/direct-admin/api/pool-product` | 切换上游产品 `codebuddy` / `workbuddy`，回写 `.env`；国内国际账号共用同一选择 |
 
@@ -302,11 +302,13 @@ Query：
 | 参数 | 说明 |
 |------|------|
 | `range` | `day`（默认）· `week` · `month`（不足 30 天历史时与 `week` 同窗口） |
+| `account` | 可选，按 `accountLabel` 或 `accountId` 筛明细与汇总 |
+| `model` | 可选，按模型名筛明细与汇总 |
 | `limit` | 每页条数，默认 `20`，最大 `100` |
 | `offset` | 跳过条数（与 `page` 二选一，默认 `0`） |
 | `page` | 页码，从 `1` 起；等价 `offset = (page-1)*limit` |
 
-明细按时间**新→旧**；响应含 `requestsTotal`、`limit`、`offset`。
+明细按时间**新→旧**；响应含 `requestsTotal`、`limit`、`offset`、`byModel`（窗口内按模型命中率，不受 `account`/`model` 筛选影响）、`accounts`、`models`。
 
 响应：
 

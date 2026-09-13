@@ -51,6 +51,54 @@ func TestUpsertAndLoadDotEnv(t *testing.T) {
 	}
 }
 
+func TestResolveEnvFilePathDefaultsToStableHomeFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "launch")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", "")
+	_ = os.Unsetenv("CODEBUDDY_PROXY_ENV_FILE")
+
+	got := config.ResolveEnvFilePath()
+	want := config.DefaultEnvFilePath()
+	if got != want {
+		t.Fatalf("ResolveEnvFilePath=%q want stable %q", got, want)
+	}
+}
+
+func TestLoadDotEnvFillsEmptyProcessAPIKey(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "proxy.env")
+	if err := os.WriteFile(envPath, []byte("CODEBUDDY_PROXY_API_KEY=cbp_persisted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", envPath)
+	t.Setenv("CODEBUDDY_PROXY_API_KEY", "")
+
+	if _, err := config.LoadDotEnv(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("CODEBUDDY_PROXY_API_KEY"); got != "cbp_persisted" {
+		t.Fatalf("api key=%q want cbp_persisted (empty process env must not block .env)", got)
+	}
+}
+
+func TestDefaultEnvFilePathBesideAccounts(t *testing.T) {
+	got := config.DefaultEnvFilePath()
+	if filepath.Base(got) != "proxy.env" {
+		t.Fatalf("base=%q want proxy.env", filepath.Base(got))
+	}
+	if filepath.Base(filepath.Dir(got)) != ".codebuddy" && !stringsHas(filepath.Dir(got), ".codebuddy") {
+		t.Fatalf("dir=%q should be under .codebuddy", filepath.Dir(got))
+	}
+}
+
+func stringsHas(s, sub string) bool {
+	return stringIndex(s, sub) >= 0
+}
+
 func containsAll(text string, parts ...string) bool {
 	for _, p := range parts {
 		if !contains(text, p) {
