@@ -26,7 +26,7 @@ Authorization: Bearer <CODEBUDDY_PROXY_API_KEY>
 无需鉴权。
 
 ```json
-{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v4.8"}
+{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v4.9"}
 ```
 
 `version` 为构建时注入的发布号；本地 `go build` 未带 `-ldflags` 时多为 `dev`。
@@ -41,7 +41,7 @@ Query：
 |------|------|
 | `fresh` | `1` / `true` / `yes` / `on` 强制回源，忽略 60s 缓存 |
 
-返回 OpenAI `list` 形状。模型来源优先级：上游 `/v3/config` → 配置中的 `CODEBUDDY_PROXY_MODELS`（默认 `auto`）。
+返回 OpenAI `list` 形状。模型来源优先级：上游控制台目录 `/console/enterprises/personal/models`（对话可用模型，带 `credits`）→ `/v3/config`（IDE 插件目录，失败时回落）→ 配置中的 `CODEBUDDY_PROXY_MODELS`（默认 `auto`）。
 
 ```json
 {
@@ -120,6 +120,12 @@ OpenCode 配置示例：
 ```
 
 > `/v1/models` 已含 `reasoning` / `variants` 等 OpenCode 字段；discovery 插件仍需本端点做 LiteLLM 形态 enrich。
+
+### `POST /v1/responses`
+
+别名：`POST /responses`
+
+**未实现** OpenAI Responses API。本代理是 Chat Completions 协议（`POST /v1/chat/completions`）。有鉴权的请求打到本路径返回 `400`。
 
 ### `POST /v1/chat/completions`
 

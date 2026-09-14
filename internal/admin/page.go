@@ -508,6 +508,7 @@ pre{
               <input id="openAiChatUrl" readonly placeholder="加载中…"/>
               <button class="ghost" id="copyChatUrl" type="button">复制</button>
             </div>
+            <div class="secret-hint">Chat Completions 协议，不是 Responses API。</div>
           </div>
           <div>
             <label for="openAiApiKey">API Key（网关层）</label>

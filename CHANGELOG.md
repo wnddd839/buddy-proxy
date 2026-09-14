@@ -5,6 +5,34 @@
 
 ---
 
+## v4.9 · 2026-09-14 · 控制台模型目录
+
+### 感谢
+
+- [@240xu](https://github.com/240xu) 提出 [#12](https://github.com/wnddd839/buddy-proxy/pull/12)：`GET /v1/models` 走 IDE 的 `/v3/config` 会列出点了就 11102 的模型，并漏掉 hy4-preview 等可对话模型。问题测对了；本版按仓库规范重写后收进发布（未直接合并该 PR）。
+- [@zeonseoi](https://github.com/zeonseoi) 提出 [#13](https://github.com/wnddd839/buddy-proxy/issues/13)：Qoder CN 接入。本版管理台标明本代理是 Chat Completions 协议。
+
+### 解决了什么
+
+模型列表以前用 IDE 插件目录，和真正能打 `/v2/chat/completions` 的对不上：多出 codewise 一类、少了 hy4-preview / glm 等，也没有 `credits`。
+
+### 改了什么
+
+- **`GET /v1/models`**：优先拉 `/console/enterprises/personal/models`（CLI 头，国际站多 host 合并），CodeBuddy 产品仍用 IDE `/v3/config` 补 `reasoning`；失败回落 `/v3/config`。WorkBuddy 号不会把 token 打到 `copilot.tencent.com`。多 host 部分失败时，`Message` 带上非致命错误。
+- 管理台接入页小字标明本代理是 **Chat Completions** 协议；`POST /v1/responses` 本版仍未实现，有鉴权的请求返回 400。
+
+### 预告
+
+**v5.0** 将支持 OpenAI Responses 协议：下游请求 `/v1/responses` 按 Responses 进出，请求 Chat 仍走 Chat；上游还是 CodeBuddy chat。本版先标明协议，不做适配。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池与 Key 不用改。客户端继续填 Chat Completions Base URL。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v4.9
+
+---
+
 ## v4.8 · 2026-09-13 · API Key 固定路径 · 用量按账号/模型
 
 ### 感谢

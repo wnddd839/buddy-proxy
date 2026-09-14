@@ -32,6 +32,21 @@ func testServer(t *testing.T, requireAPIKey bool, adminPassword, apiKey string) 
 	return New(cfg, svc)
 }
 
+func TestResponsesAPIExplainsChatCompletionsOnly(t *testing.T) {
+	srv := testServer(t, true, "", "secret-key")
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/v1/responses", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer secret-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Chat Completions") || !strings.Contains(rec.Body.String(), "/v1/chat/completions") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 func TestAuthorizeAPIKeyRequired(t *testing.T) {
 	srv := testServer(t, true, "", "secret-key")
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/v1/models", nil)

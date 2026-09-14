@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 )
 
 const upstreamConfigPath = "/v3/config"
+const consoleModelsPath = "/console/enterprises/personal/models"
 
 var fallbackPaths = []string{
 	"/v2/models",
@@ -96,7 +98,7 @@ func PublicModelID(upstreamID string) string {
 
 func ToAdminModels(rows []map[string]any, source string) []Model {
 	out := make([]Model, 0, len(rows))
-	allVerified := source == "upstream" || source == "v3_config" || source == "probe"
+	allVerified := source == "upstream" || source == "v3_config" || source == "console" || source == "probe"
 	for _, row := range rows {
 		upstreamID := strutil.First(fmt.Sprint(row["id"]), fmt.Sprint(row["modelId"]))
 		if upstreamID == "" || upstreamID == "<nil>" {
@@ -172,14 +174,34 @@ func (c *Lister) List(ctx context.Context, client *provider.Client, opts ListOpt
 		DepartmentFullName:  opts.DepartmentFullName,
 	}
 
+	consoleResult, consoleErr := c.fetchConsole(ctx, client, chatOpts)
+	if consoleErr == nil && len(consoleResult.Models) > 0 {
+		msg := fmt.Sprintf("Loaded %d model(s) from %s.", len(consoleResult.Models), consoleModelsPath)
+		if note := strings.TrimSpace(consoleResult.Note); note != "" {
+			msg += " " + note
+		}
+		return ListResult{
+			OK:               true,
+			Site:             site,
+			Models:           ToAdminModels(consoleResult.Models, "console"),
+			ModelsSource:     "console",
+			UpstreamEndpoint: consoleModelsPath,
+			Message:          msg,
+		}
+	}
+
 	if result, err := c.fetchV3(ctx, client, chatOpts); err == nil && len(result.Models) > 0 {
+		msg := fmt.Sprintf("Loaded %d model(s) from %s.", len(result.Models), upstreamConfigPath)
+		if consoleErr != nil {
+			msg += " Console catalog unavailable: " + consoleErr.Error()
+		}
 		return ListResult{
 			OK:               true,
 			Site:             site,
 			Models:           ToAdminModels(result.Models, "v3_config"),
 			ModelsSource:     "v3_config",
 			UpstreamEndpoint: upstreamConfigPath,
-			Message:          fmt.Sprintf("Loaded %d model(s) from %s.", len(result.Models), upstreamConfigPath),
+			Message:          msg,
 		}
 	}
 
@@ -215,6 +237,7 @@ func NewLister() *Lister { return &Lister{} }
 
 type fetchResult struct {
 	Models []map[string]any
+	Note   string
 }
 
 func v3ConfigCandidateBases(opts provider.ChatOptions) []string {
@@ -231,22 +254,47 @@ func v3ConfigCandidateBases(opts provider.ChatOptions) []string {
 }
 
 func mergeModelsByID(batches ...[]map[string]any) []map[string]any {
-	seen := make(map[string]struct{})
+	return mergeModelsByKey(modelRowID, batches...)
+}
+
+func mergeModelsByPublicID(batches ...[]map[string]any) []map[string]any {
+	return mergeModelsByKey(func(row map[string]any) string {
+		return PublicModelID(modelRowID(row))
+	}, batches...)
+}
+
+func mergeModelsByKey(keyFn func(map[string]any) string, batches ...[]map[string]any) []map[string]any {
+	index := make(map[string]int)
 	out := make([]map[string]any, 0)
 	for _, rows := range batches {
 		for _, row := range rows {
-			id := modelRowID(row)
+			id := keyFn(row)
 			if id == "" {
 				continue
 			}
-			if _, ok := seen[id]; ok {
+			if i, ok := index[id]; ok {
+				if catalogRowRank(modelRowID(row)) < catalogRowRank(modelRowID(out[i])) {
+					out[i] = row
+				}
 				continue
 			}
-			seen[id] = struct{}{}
+			index[id] = len(out)
 			out = append(out, row)
 		}
 	}
 	return out
+}
+
+// catalogRowRank 越小越优先。auto 优于 default，避免对外 id 同为 auto 时留下 default 那一行的字段。
+func catalogRowRank(id string) int {
+	switch strings.ToLower(strings.TrimSpace(id)) {
+	case "auto":
+		return 0
+	case "default":
+		return 2
+	default:
+		return 1
+	}
 }
 
 func modelRowID(row map[string]any) string {
@@ -292,6 +340,74 @@ func (c *Lister) fetchV3(ctx context.Context, client *provider.Client, opts prov
 	}
 	ideRows := c.fetchIDECatalog(ctx, client, opts, candidates)
 	return fetchResult{Models: enrichModelsWithIDEReasoning(merged, ideRows)}, nil
+}
+
+// fetchConsole 拉控制台对话目录（可打 /v2/chat/completions 的那一份，带 credits）。
+// 国际站与 fetchV3 一样合并多个 host；CodeBuddy 产品再套 IDE /v3/config 的 reasoning enrich。
+// /v3/config 单独当目录会混进 codewise-*（请求即 11102）并漏掉 hy4-preview 等。
+// 失败则 List 回落到 fetchV3，并在 Message 里带上控制台错误。
+func (c *Lister) fetchConsole(ctx context.Context, client *provider.Client, opts provider.ChatOptions) (fetchResult, error) {
+	candidates := v3ConfigCandidateBases(opts)
+	cliOpts := withCLIIdentity(opts)
+	headers, _ := client.BuildProtocolDirectHeaders(cliOpts)
+	headers.Set("Accept", "application/json")
+
+	var (
+		batches  [][]map[string]any
+		lastErr  error
+		hostErrs []string
+	)
+	for _, base := range candidates {
+		host := provider.NormalizeBaseURL(base)
+		rows, err := c.fetchJSONModels(ctx, client.HTTP, host+consoleModelsPath, headers)
+		if err != nil {
+			lastErr = err
+			hostErrs = append(hostErrs, host+": "+err.Error())
+			continue
+		}
+		if len(rows) == 0 {
+			lastErr = fmt.Errorf("empty models")
+			hostErrs = append(hostErrs, host+": empty models")
+			continue
+		}
+		batches = append(batches, rows)
+	}
+	merged := mergeModelsByPublicID(batches...)
+	if len(merged) == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("console catalog unavailable")
+		}
+		return fetchResult{}, lastErr
+	}
+	for _, row := range merged {
+		ensureCanDisableThinking(row)
+	}
+	note := ""
+	if len(hostErrs) > 0 {
+		note = "Partial console host errors: " + strings.Join(hostErrs, "; ")
+	}
+	if config.NormalizeProduct(opts.Product) == "workbuddy" {
+		return fetchResult{Models: merged, Note: note}, nil
+	}
+	ideRows := c.fetchIDECatalog(ctx, client, opts, candidates)
+	return fetchResult{Models: enrichModelsWithIDEReasoning(merged, ideRows), Note: note}, nil
+}
+
+// withCLIIdentity 复制 ChatOptions 并换成 CLI 头，避免改到调用方 map。
+func withCLIIdentity(opts provider.ChatOptions) provider.ChatOptions {
+	out := opts
+	if opts.ExtraHeaders == nil {
+		out.ExtraHeaders = map[string]string{}
+	} else {
+		out.ExtraHeaders = maps.Clone(opts.ExtraHeaders)
+	}
+	out.ExtraHeaders["X-IDE-Type"] = "CLI"
+	out.ExtraHeaders["X-IDE-Name"] = "CLI"
+	out.ExtraHeaders["X-IDE-Version"] = config.DefaultIDEVersion
+	out.ExtraHeaders["User-Agent"] = fmt.Sprintf("CLI/%s CodeBuddy/%s", config.DefaultIDEVersion, config.DefaultIDEVersion)
+	delete(out.ExtraHeaders, "X-Product-Version")
+	delete(out.ExtraHeaders, "X-Env-ID")
+	return out
 }
 
 func (c *Lister) fetchIDECatalog(ctx context.Context, client *provider.Client, opts provider.ChatOptions, bases []string) []map[string]any {
