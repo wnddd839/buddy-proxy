@@ -286,7 +286,37 @@ func TestDescribeUpstreamBodyMasksPrompt(t *testing.T) {
 	}
 }
 
-func TestEnsureUpstreamMessagesStripsPRsNote(t *testing.T) {
+func TestEnsureUpstreamMessagesFoldsClientSystem(t *testing.T) {
+	fingerprints := []string{
+		"Main branch (you will usually use this for PRs): main",
+		"You are Claude Code, Anthropic's official CLI for Claude.",
+	}
+	for _, fp := range fingerprints {
+		out := provider.EnsureUpstreamMessages([]map[string]any{
+			{"role": "system", "content": fp},
+			{"role": "user", "content": "hello"},
+		})
+		if len(out) != 2 {
+			t.Fatalf("fp=%q len=%d want 2: %+v", fp, len(out), out)
+		}
+		if out[0]["role"] != "system" {
+			t.Fatalf("fp=%q first role=%v", fp, out[0]["role"])
+		}
+		sys, _ := out[0]["content"].(string)
+		if strings.Contains(sys, fp) {
+			t.Fatalf("fingerprint still in system: %q", sys)
+		}
+		if out[1]["role"] != "user" {
+			t.Fatalf("fp=%q second role=%v", fp, out[1]["role"])
+		}
+		user, _ := out[1]["content"].(string)
+		if !strings.Contains(user, fp) || !strings.Contains(user, "hello") {
+			t.Fatalf("folded user missing fingerprint or hello: %q", user)
+		}
+	}
+}
+
+func TestEnsureUpstreamMessagesKeepsAssistantAndUserFingerprints(t *testing.T) {
 	const trigger = "Main branch (you will usually use this for PRs): main"
 	out := provider.EnsureUpstreamMessages([]map[string]any{
 		{"role": "system", "content": trigger},
@@ -294,16 +324,18 @@ func TestEnsureUpstreamMessagesStripsPRsNote(t *testing.T) {
 		{"role": "user", "content": trigger},
 	})
 	if len(out) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(out))
+		t.Fatalf("len=%d want 3: %+v", len(out), out)
 	}
-	if out[0]["content"] != "Main branch: main" {
-		t.Fatalf("system not sanitized: %q", out[0]["content"])
+	if out[1]["role"] != "assistant" || out[1]["content"] != trigger {
+		t.Fatalf("assistant must pass through: %+v", out[1])
 	}
-	if out[1]["content"] != trigger {
-		t.Fatalf("assistant must pass through: %q", out[1]["content"])
+	user, _ := out[2]["content"].(string)
+	if !strings.Contains(user, trigger) {
+		t.Fatalf("user original must stay: %q", user)
 	}
-	if out[2]["content"] != trigger {
-		t.Fatalf("user must pass through: %q", out[2]["content"])
+	sys, _ := out[0]["content"].(string)
+	if strings.Contains(sys, "for PRs") {
+		t.Fatalf("system still has ZCode fingerprint: %q", sys)
 	}
 }
 
@@ -351,7 +383,41 @@ func TestEnsureUpstreamMessagesMapsDeveloper(t *testing.T) {
 		t.Fatalf("expected 2 messages, got %d (%v)", len(out), out)
 	}
 	if out[0]["role"] != "system" {
-		t.Fatalf("developer role=%v want system", out[0]["role"])
+		t.Fatalf("canonical role=%v want system", out[0]["role"])
+	}
+	sys, _ := out[0]["content"].(string)
+	if strings.Contains(sys, "You are a coding agent.") {
+		t.Fatalf("developer text still in system: %q", sys)
+	}
+	user, _ := out[1]["content"].(string)
+	if !strings.Contains(user, "You are a coding agent.") || !strings.Contains(user, "hi") {
+		t.Fatalf("developer text should fold into user: %q", user)
+	}
+}
+
+func TestEnsureUpstreamMessagesNoSystemUnchanged(t *testing.T) {
+	out := provider.EnsureUpstreamMessages([]map[string]any{
+		{"role": "user", "content": "hi"},
+	})
+	if len(out) != 1 || out[0]["role"] != "user" || out[0]["content"] != "hi" {
+		t.Fatalf("got %+v", out)
+	}
+}
+
+func TestEnsureUpstreamMessagesSystemOnlyInsertsUser(t *testing.T) {
+	out := provider.EnsureUpstreamMessages([]map[string]any{
+		{"role": "system", "content": "You are Claude Code, Anthropic's official CLI for Claude."},
+	})
+	if len(out) != 2 {
+		t.Fatalf("len=%d want 2: %+v", len(out), out)
+	}
+	sys, _ := out[0]["content"].(string)
+	if strings.Contains(sys, "Anthropic") {
+		t.Fatalf("system still branded: %q", sys)
+	}
+	user, _ := out[1]["content"].(string)
+	if out[1]["role"] != "user" || !strings.Contains(user, "Anthropic's official CLI for Claude") {
+		t.Fatalf("want folded user, got %+v", out[1])
 	}
 }
 

@@ -26,7 +26,7 @@ Authorization: Bearer <CODEBUDDY_PROXY_API_KEY>
 无需鉴权。
 
 ```json
-{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v4.9"}
+{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.1"}
 ```
 
 `version` 为构建时注入的发布号；本地 `go build` 未带 `-ldflags` 时多为 `dev`。

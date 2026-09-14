@@ -444,16 +444,20 @@ func NormalizeMessageRole(role string) string {
 	case "", "human", "ai":
 		return "user"
 	case "developer":
-		// OpenAI/ZCode 的 "developer" 角色会被 CodeBuddy 上游以 11128 拒绝
-		// ("unapproved channel"). Map to system instructions.
+		// OpenAI/Claude Code/ZCode 的 "developer" 会进 system 再被折叠进 user。
 		return "system"
 	default:
 		return role
 	}
 }
 
+const canonicalUpstreamSystem = "You are a helpful coding assistant."
+
 func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
-	out := make([]map[string]any, 0, len(messages))
+	var (
+		instructions []string
+		rest         []map[string]any
+	)
 	for _, message := range messages {
 		role := NormalizeMessageRole(fmt.Sprint(message["role"]))
 		item := map[string]any{"role": role}
@@ -466,7 +470,7 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 		if name, ok := message["name"]; ok {
 			item["name"] = name
 		}
-		item["content"] = sanitizeUpstreamContent(role, flattenContent(message["content"]))
+		item["content"] = flattenContent(message["content"])
 		hasToolCalls := false
 		if tc, ok := item["tool_calls"].([]any); ok && len(tc) > 0 {
 			hasToolCalls = true
@@ -481,25 +485,46 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 		if contentEmpty && !hasToolCalls && item["tool_call_id"] == nil {
 			continue
 		}
-		out = append(out, item)
+		if role == "system" {
+			if text := strings.TrimSpace(fmt.Sprint(item["content"])); text != "" && text != "<nil>" {
+				instructions = append(instructions, text)
+			}
+			continue
+		}
+		rest = append(rest, item)
 	}
+	if len(instructions) == 0 {
+		return rest
+	}
+	out := make([]map[string]any, 0, len(rest)+2)
+	out = append(out, map[string]any{"role": "system", "content": canonicalUpstreamSystem})
+	out = append(out, foldClientInstructions(rest, strings.Join(instructions, "\n\n"))...)
 	return out
 }
 
-// sanitizeUpstreamContent 改写已知触发上游 11128 的 system 指纹。
-// 上游风控对 "Main branch (you will usually use this for PRs):" 整串敏感
-// （ZCode System Context 注入），缺括号/冒号/值任一件即放行。
-// 改写保留分支名语义，仅去括号注解。仅处理 system：用户原文与工具
-// 结果必须原样透传，避免静默改变用户请求语义。
-func sanitizeUpstreamContent(role string, content any) any {
-	text, ok := content.(string)
-	if !ok || role != "system" {
-		return content
+func wrapClientInstructions(text string) string {
+	return "<client_instructions>\n" + strings.TrimSpace(text) + "\n</client_instructions>"
+}
+
+// foldClientInstructions 把客户端 system/developer 挪到第一条 user 前面。
+// 上游 11128 扫的是 system 里的竞品 CLI 指纹；user 原文必须保留。
+func foldClientInstructions(rest []map[string]any, instructions string) []map[string]any {
+	wrapped := wrapClientInstructions(instructions)
+	for i, m := range rest {
+		if fmt.Sprint(m["role"]) != "user" {
+			continue
+		}
+		if text, ok := m["content"].(string); ok {
+			rest[i]["content"] = wrapped + "\n\n" + text
+			return rest
+		}
+		out := make([]map[string]any, 0, len(rest)+1)
+		out = append(out, rest[:i]...)
+		out = append(out, map[string]any{"role": "user", "content": wrapped})
+		out = append(out, rest[i:]...)
+		return out
 	}
-	if !strings.Contains(text, "Main branch") || !strings.Contains(text, "for PRs") {
-		return content
-	}
-	return strings.ReplaceAll(text, " (you will usually use this for PRs)", "")
+	return append([]map[string]any{{"role": "user", "content": wrapped}}, rest...)
 }
 
 func flattenContent(content any) any {

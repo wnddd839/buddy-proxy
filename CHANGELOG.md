@@ -5,6 +5,30 @@
 
 ---
 
+## v0.4.9.1 · 2026-09-14 · 下游 system 折叠
+
+### 感谢
+
+- [@itaid](https://github.com/itaid) 提出 [#14](https://github.com/wnddd839/buddy-proxy/issues/14)：Claude Code 的 system 指纹触发上游 11128。
+- [@zeonseoi](https://github.com/zeonseoi) 提出 [#13](https://github.com/wnddd839/buddy-proxy/issues/13)：Qoder CN 同类封装。
+
+### 解决了什么
+
+ZCode、Claude Code、Qoder 都是客户端把身份写进 `system`，上游当非法渠道打回 11128。以前按品牌逐句替换，每来一家改一次。
+
+### 改了什么
+
+- 客户端 `system` / `developer` 收成一条短 system，原文折进第一条 user；用户与工具结果原样透传。
+- 不再为 ZCode / Claude Code 单独改字符串。Responses 协议仍未做。
+
+### 升级注意
+
+覆盖旧二进制后重启。客户端不用改配置。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.4.9.1
+
+---
+
 ## v4.9 · 2026-09-14 · 控制台模型目录
 
 ### 感谢

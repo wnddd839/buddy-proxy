@@ -28,7 +28,7 @@ CI（`.github/workflows/ci.yml`）在 push / PR 到 `main` 时执行 `gofmt` 检
 
 ```bash
 curl -fsS http://127.0.0.1:32126/health
-# {"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v4.9"}
+# {"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.1"}
 ```
 
 管理台 **05 / 用量与明细**（`#usage`）展示请求日志；默认持久化到 `CODEBUDDY_PROXY_USAGE_PATH`（缺省与账号池同目录的 `proxy-usage.json`）。`GET /direct-admin/api/usage` 见 `docs/api/http.md`。
@@ -55,7 +55,7 @@ curl -fsS http://127.0.0.1:32126/health
 | 无模型 | 未 OAuth；看 accounts path；点管理台「刷新模型」 |
 | 上游 401/403 | 管理台 refresh-token，或重新 OAuth |
 | 11140 / request illegal | site 与账号不匹配；检查账号 `site` 与 `CODEBUDDY_SITE` |
-| 11128 / unapproved channel | 网关已映射 `role=developer`→`system`。上游非 2xx 时进程 WARN 日志 `codebuddy upstream failure` 会带脱敏 `request` 指纹（role 序列 / tools 名 / thinking / reasoning / 单消息 200 字预览，不含 token 与完整 prompt），直接看是哪字段触发。也检查 `site=domestic` 时 endpoint 是否为 `copilot.tencent.com`（错误信息含 `[region=... endpoint=...]`） |
+| 11128 / unapproved channel | 网关把客户端 `system`/`developer` 折进第一条 user（上游扫的是 system 里的竞品 CLI 指纹，不按 ZCode/Claude Code 逐家替换）。WARN 日志 `codebuddy upstream failure` 带脱敏请求指纹。也检查 `site=domestic` 时 endpoint 是否为 `copilot.tencent.com` |
 | 国内账号却打到海外 / 反过来 | 已按**账号 site** 选端点，不看反代机器 IP，也不被进程级 `CODEBUDDY_BASE_URL` 带跑偏 |
 | 11101 / tool_choice unmarshal | 客户端传了对象型 `tool_choice`；网关归一成 `auto`/`none`/`required`。Sub2API 只发 `"hi"` 探活时网关会自动补 system |
 | 11102 / model service not found | 模型在列表里但上游无服务；换 `auto` 或其它可用模型 |
