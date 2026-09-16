@@ -5,6 +5,32 @@
 
 ---
 
+## v0.4.9.2 · 2026-09-16 · 钉号切站自愈 · 流式 tool_calls index
+
+### 感谢
+
+- [@kouekikin24](https://github.com/kouekikin24) 提出 [#15](https://github.com/wnddd839/buddy-proxy/issues/15)：SITE 切换后旧会话钉号硬失败。
+- [@kkl31415926](https://github.com/kkl31415926) 提出 [#16](https://github.com/wnddd839/buddy-proxy/issues/16)：流式 `tool_calls[].index` 缺失导致 Android Studio / OpenAI Java SDK 报错。
+
+### 解决了什么
+
+1. 长会话钉到某区域账号后，管理台切换 SITE，同一会话会立刻 `site mismatch`，且绕过换号自愈，直到 pin TTL。
+2. 流式工具调用分片里 `index=0` 被 `omitempty` 丢掉，严格客户端解析失败；普通对话不受影响。
+
+### 改了什么
+
+- **钉号 × SITE**：`Select` 遇 `site mismatch` 时 Forget 钉号、清 AccountID 并重选当前区域账号。
+- **流式 tool_calls**：拆出 `ToolCallDelta`，`index` 必填（含 `0`）；非流式 `message.tool_calls` 仍不含 index。
+- **`stream_options.include_usage`**：缺省仍推送 usage 收尾 chunk；显式 `false` 时跳过。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池与 Key 不用改。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.4.9.2
+
+---
+
 ## v0.4.9.1 · 2026-09-14 · 下游 system 折叠
 
 ### 感谢

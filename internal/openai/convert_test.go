@@ -91,6 +91,87 @@ func TestStreamUsageChunk(t *testing.T) {
 	}
 }
 
+func TestToolCallDeltaIndexZeroMustBePresent(t *testing.T) {
+	chunk := StreamChunkOf("id1", "auto", Delta{
+		ToolCalls: []ToolCallDelta{{
+			Index: 0,
+			ID:    "call_1",
+			Type:  "function",
+			Function: ToolFunction{
+				Name:      "read_file",
+				Arguments: `{"path":"a.go"}`,
+			},
+		}},
+	}, nil)
+	raw, err := json.Marshal(chunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !contains(s, `"index":0`) {
+		t.Fatalf("streaming tool_calls must emit index even when 0; json=%s", s)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	choices, _ := parsed["choices"].([]any)
+	if len(choices) == 0 {
+		t.Fatal("missing choices")
+	}
+	choice, _ := choices[0].(map[string]any)
+	delta, _ := choice["delta"].(map[string]any)
+	toolCalls, _ := delta["tool_calls"].([]any)
+	if len(toolCalls) == 0 {
+		t.Fatal("missing tool_calls")
+	}
+	tc, _ := toolCalls[0].(map[string]any)
+	if _, ok := tc["index"]; !ok {
+		t.Fatalf("tool_calls[0].index missing; keys=%v json=%s", keysOf(tc), s)
+	}
+}
+
+func TestFromTurnToolCallsOmitIndex(t *testing.T) {
+	out := FromTurn(provider.Turn{
+		Text: "",
+		ToolUses: []provider.ToolUse{{
+			ID:    "call_1",
+			Name:  "read_file",
+			Input: map[string]any{"path": "a.go"},
+		}},
+	}, "id1", "auto")
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	choices, _ := parsed["choices"].([]any)
+	if len(choices) == 0 {
+		t.Fatal("missing choices")
+	}
+	choice, _ := choices[0].(map[string]any)
+	msg, _ := choice["message"].(map[string]any)
+	toolCalls, _ := msg["tool_calls"].([]any)
+	if len(toolCalls) == 0 {
+		t.Fatal("missing tool_calls")
+	}
+	tc, _ := toolCalls[0].(map[string]any)
+	if _, ok := tc["index"]; ok {
+		t.Fatalf("non-stream message.tool_calls must not emit index; keys=%v json=%s", keysOf(tc), raw)
+	}
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || (len(s) > 0 && (indexOf(s, sub) >= 0)))
 }

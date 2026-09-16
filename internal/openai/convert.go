@@ -92,14 +92,23 @@ type Message struct {
 }
 
 type Delta struct {
-	Role             string     `json:"role,omitempty"`
-	Content          string     `json:"content,omitempty"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	Role             string          `json:"role,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCallDelta `json:"tool_calls,omitempty"`
 }
 
+// ToolCall 用于非流式 message.tool_calls；OpenAI 该路径不含 index。
 type ToolCall struct {
-	Index    int          `json:"index,omitempty"`
+	ID       string       `json:"id,omitempty"`
+	Type     string       `json:"type,omitempty"`
+	Function ToolFunction `json:"function"`
+}
+
+// ToolCallDelta 用于流式 delta.tool_calls。
+// index 为规范必填（含 0），禁止 omitempty/omitzero，否则首个工具调用会被序列化丢弃。
+type ToolCallDelta struct {
+	Index    int          `json:"index"`
 	ID       string       `json:"id,omitempty"`
 	Type     string       `json:"type,omitempty"`
 	Function ToolFunction `json:"function"`

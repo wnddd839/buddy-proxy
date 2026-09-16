@@ -259,6 +259,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Model               string           `json:"model"`
 		Messages            []map[string]any `json:"messages"`
 		Stream              bool             `json:"stream"`
+		StreamOptions       *streamOptions   `json:"stream_options"`
 		Tools               any              `json:"tools"`
 		ToolChoice          any              `json:"tool_choice"`
 		Temperature         *float64         `json:"temperature"`
@@ -307,7 +308,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if body.Stream {
-		s.streamChat(w, r, providerModel, completeOpts, chatStarted, proxyRequestID, finish)
+		s.streamChat(w, r, providerModel, completeOpts, chatStarted, proxyRequestID, resolveIncludeUsage(body.StreamOptions), finish)
 		return
 	}
 
@@ -339,6 +340,7 @@ func (s *Server) streamChat(
 	opts gateway.CompleteOptions,
 	chatStarted time.Time,
 	proxyRequestID string,
+	includeUsage bool,
 	finish func(bool, int, int64, int64, int64, string, provider.Usage),
 ) {
 	sse, ok := httputil.NewSSEStream(w, 16<<10)
@@ -421,7 +423,7 @@ func (s *Server) streamChat(
 			startStream()
 			streamedToolCalls++
 			_ = sse.WriteEvent(openai.StreamChunkOf(id, providerModel.PublicModel, openai.Delta{
-				ToolCalls: []openai.ToolCall{{
+				ToolCalls: []openai.ToolCallDelta{{
 					Index: streamedToolCalls - 1,
 					ID:    strutil.First(event.ID, fmt.Sprintf("call_%d", time.Now().UnixNano())),
 					Type:  "function",
@@ -495,7 +497,7 @@ func (s *Server) streamChat(
 		if len(result.Turn.ToolUses) > 0 && streamedToolCalls == 0 {
 			for i, tool := range result.Turn.ToolUses {
 				_ = sse.WriteEvent(openai.StreamChunkOf(id, providerModel.PublicModel, openai.Delta{
-					ToolCalls: []openai.ToolCall{{
+					ToolCalls: []openai.ToolCallDelta{{
 						Index: i,
 						ID:    strutil.First(tool.ID, fmt.Sprintf("call_%d", time.Now().UnixNano())),
 						Type:  "function",
@@ -512,9 +514,12 @@ func (s *Server) streamChat(
 			finishReason = "tool_calls"
 		}
 		_ = sse.WriteEvent(openai.StreamChunkOf(id, providerModel.PublicModel, openai.Delta{}, &finishReason))
-		// OpenAI stream_options.include_usage 风格：收尾 chunk 带 usage、choices 为空。
-		_ = sse.WriteEvent(openai.StreamUsageChunk(id, providerModel.PublicModel, openai.UsageFromProvider(result.Turn.Usage)))
-		_ = sse.Flush() // 确保 usage 在 [DONE] 前落到客户端，避免下游提前断开丢统计
+		// OpenAI stream_options.include_usage：空 choices + usage。
+		// 显式 false 时跳过，避免严格客户端对 choices[0] 越界。
+		if includeUsage {
+			_ = sse.WriteEvent(openai.StreamUsageChunk(id, providerModel.PublicModel, openai.UsageFromProvider(result.Turn.Usage)))
+			_ = sse.Flush() // 确保 usage 在 [DONE] 前落到客户端，避免下游提前断开丢统计
+		}
 		_ = sse.WriteDone()
 		done = true
 	})
@@ -951,6 +956,19 @@ func estimatePromptChars(messages []map[string]any) int {
 		}
 	}
 	return total
+}
+
+type streamOptions struct {
+	IncludeUsage *bool `json:"include_usage"`
+}
+
+// resolveIncludeUsage 决定是否推送空 choices 的 usage 收尾 chunk。
+// 缺省 true（保留历史代理行为，下游常依赖该分片做统计）；显式 false 时跳过。
+func resolveIncludeUsage(opts *streamOptions) bool {
+	if opts == nil || opts.IncludeUsage == nil {
+		return true
+	}
+	return *opts.IncludeUsage
 }
 
 func mustJSON(value map[string]any) string {

@@ -265,3 +265,19 @@ func TestHealth(t *testing.T) {
 		t.Fatalf("health=%d", rec.Code)
 	}
 }
+
+func TestResolveIncludeUsage(t *testing.T) {
+	if !resolveIncludeUsage(nil) {
+		t.Fatal("nil stream_options should default to include usage")
+	}
+	if !resolveIncludeUsage(&streamOptions{}) {
+		t.Fatal("absent include_usage should default to true")
+	}
+	yes, no := true, false
+	if !resolveIncludeUsage(&streamOptions{IncludeUsage: &yes}) {
+		t.Fatal("explicit true")
+	}
+	if resolveIncludeUsage(&streamOptions{IncludeUsage: &no}) {
+		t.Fatal("explicit false must skip usage trailer")
+	}
+}

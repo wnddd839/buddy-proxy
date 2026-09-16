@@ -26,7 +26,7 @@ Authorization: Bearer <CODEBUDDY_PROXY_API_KEY>
 无需鉴权。
 
 ```json
-{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.1"}
+{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.2"}
 ```
 
 `version` 为构建时注入的发布号；本地 `go build` 未带 `-ldflags` 时多为 `dev`。
@@ -148,6 +148,7 @@ OpenCode 配置示例：
 |------|------|
 | `model` | 支持 `codebuddy/<id>` / `codebuddy:<id>` 前缀，会被剥离为上游 ID；空或 `default` 归一为 `auto` |
 | `stream` | `false` → `application/json`；`true` → `text/event-stream` |
+| `stream_options.include_usage` | 缺省按 `true` 推送空 `choices` 的 usage 收尾 chunk；显式 `false` 跳过 |
 | `max_tokens` / `max_completion_tokens` | 二者取正数，后者优先 |
 | `tool_choice` | 对象型会被归一为 `auto` / `none` / `required` |
 
@@ -163,9 +164,10 @@ JSON 请求体上限 **64MiB**（`httputil.MaxJSONBodyBytes`）。超过时返�
 
 1. 连接建立后**立即**发送 SSE 头与首个 `role=assistant` chunk，客户端不会把上游 TTFB 误判为挂起
 2. 期间按 `CODEBUDDY_PROXY_STREAM_KEEPALIVE_MS`（默认 5000ms）发送 `: keep-alive` 注释
-3. 结束时发送 finish chunk（`stop` 或 `tool_calls`）
-4. 再发一条 `stream_options.include_usage` 风格的 usage chunk（`choices: []`）
-5. 最后 `data: [DONE]`
+3. 工具调用分片使用 `delta.tool_calls[].index`（含 `0`），满足 OpenAI Java SDK 等强制校验客户端
+4. 结束时发送 finish chunk（`stop` 或 `tool_calls`）
+5. 默认再发一条 `stream_options.include_usage` 风格的 usage chunk（`choices: []`）；若请求显式传入 `"stream_options":{"include_usage":false}` 则跳过
+6. 最后 `data: [DONE]`
 
 usage chunk 形如：
 

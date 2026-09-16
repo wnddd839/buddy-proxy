@@ -278,6 +278,41 @@ func TestCompleteFromPoolPinnedAccountSwitchesAfter429(t *testing.T) {
 	}
 }
 
+func TestCompleteFromPoolPinnedAccountHealsAfterSiteMismatch(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	global, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "global", Site: "global", BearerToken: "token-global", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	domestic, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "domestic", Site: "domestic", BearerToken: "token-domestic", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Provider.HTTP = &http.Client{Transport: &scriptedChatTransport{}}
+	// 模拟：会话在 SITE=国际 时钉到国际号，随后管理台切到国内。
+	svc.Pins.Remember("conv-site-switch", global.ID)
+
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-site-switch",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("expected site-mismatch pin to self-heal, got %v", err)
+	}
+	if result.AccountID != domestic.ID {
+		t.Fatalf("AccountID=%s want domestic %s after SITE switch", result.AccountID, domestic.ID)
+	}
+	if pinned, ok := svc.Pins.Lookup("conv-site-switch"); !ok || pinned != domestic.ID {
+		t.Fatalf("pin=%q ok=%v want domestic %s", pinned, ok, domestic.ID)
+	}
+}
+
 func TestCompleteFromPoolSwitchPicksLiveHighestQuota(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
