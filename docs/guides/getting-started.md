@@ -61,6 +61,7 @@ Model      auto  或 GET /v1/models 返回的 id
 
 ```bash
 curl http://127.0.0.1:32126/health
+curl http://127.0.0.1:32126/readyz
 
 curl http://127.0.0.1:32126/v1/models \
   -H "Authorization: Bearer $CODEBUDDY_PROXY_API_KEY"
@@ -97,6 +98,7 @@ CODEBUDDY_INTERNET_ENVIRONMENT=internal
 | `no credentials` | 先完成 OAuth 登录 |
 | 管理台打不开 / 一直弹登录 | 确认 admin 密码；留空则免密 |
 | 国内账号打到海外 | 端点以**账号 site** 为准；检查账号 `site` 字段 |
+| 想同时用国内+国际 | 一个进程即可。模型用 `cn:…` / `global:…`，或请求头 `X-Site`。不要再开第二个进程 |
 | 模型列表只有 `auto` | 未登录或上游 `/v3/config` 为空；点管理台「刷新模型」 |
 
 更多排障见 [../operations/runbook.md](../operations/runbook.md)。

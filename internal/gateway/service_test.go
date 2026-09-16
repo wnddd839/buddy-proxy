@@ -24,17 +24,21 @@ func TestResolveProviderModel(t *testing.T) {
 		in     string
 		model  string
 		public string
+		site   string
 	}{
-		{"", "auto", "auto"},
-		{"codebuddy", "auto", "auto"},
-		{"codebuddy:deepseek-v4", "deepseek-v4", "deepseek-v4"},
-		{"codebuddy/deepseek-v4", "deepseek-v4", "deepseek-v4"},
-		{"deepseek-v4-flash", "deepseek-v4-flash", "deepseek-v4-flash"},
+		{"", "auto", "auto", ""},
+		{"codebuddy", "auto", "auto", ""},
+		{"codebuddy:deepseek-v4", "deepseek-v4", "deepseek-v4", ""},
+		{"codebuddy/deepseek-v4", "deepseek-v4", "deepseek-v4", ""},
+		{"deepseek-v4-flash", "deepseek-v4-flash", "deepseek-v4-flash", ""},
+		{"global:deepseek-v4.1-flash", "deepseek-v4.1-flash", "global:deepseek-v4.1-flash", "global"},
+		{"cn:glm-5.3-flash", "glm-5.3-flash", "cn:glm-5.3-flash", "domestic"},
+		{"codebuddy:global:auto", "auto", "global:auto", "global"},
 	}
 	for _, tc := range tests {
 		got := ResolveProviderModel(tc.in)
-		if got.Model != tc.model || got.PublicModel != tc.public {
-			t.Fatalf("ResolveProviderModel(%q) = %+v, want model=%q public=%q", tc.in, got, tc.model, tc.public)
+		if got.Model != tc.model || got.PublicModel != tc.public || got.Site != tc.site {
+			t.Fatalf("ResolveProviderModel(%q) = %+v, want model=%q public=%q site=%q", tc.in, got, tc.model, tc.public, tc.site)
 		}
 	}
 }
@@ -261,7 +265,7 @@ func TestCompleteFromPoolPinnedAccountSwitchesAfter429(t *testing.T) {
 	}
 	transport := &scriptedChatTransport{byAuth: map[string]int{"token-a": http.StatusTooManyRequests}}
 	svc.Provider.HTTP = &http.Client{Transport: transport}
-	svc.Pins.Remember("conv-sticky", a.ID)
+	svc.Pins.Remember(SessionPinKey("conv-sticky", "domestic"), a.ID)
 
 	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto", SessionKey: "conv-sticky",
@@ -273,7 +277,7 @@ func TestCompleteFromPoolPinnedAccountSwitchesAfter429(t *testing.T) {
 	if result.AccountID != b.ID {
 		t.Fatalf("AccountID=%s want %s after unpin", result.AccountID, b.ID)
 	}
-	if _, still := svc.Pins.Lookup("conv-sticky"); still && result.AccountID == a.ID {
+	if _, still := svc.Pins.Lookup(SessionPinKey("conv-sticky", "domestic")); still && result.AccountID == a.ID {
 		t.Fatal("failed pin must not keep the exhausted account")
 	}
 }
@@ -296,7 +300,7 @@ func TestCompleteFromPoolPinnedAccountHealsAfterSiteMismatch(t *testing.T) {
 	}
 	svc.Provider.HTTP = &http.Client{Transport: &scriptedChatTransport{}}
 	// 模拟：会话在 SITE=国际 时钉到国际号，随后管理台切到国内。
-	svc.Pins.Remember("conv-site-switch", global.ID)
+	svc.Pins.Remember(SessionPinKey("conv-site-switch", "domestic"), global.ID)
 
 	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto", SessionKey: "conv-site-switch",
@@ -308,10 +312,142 @@ func TestCompleteFromPoolPinnedAccountHealsAfterSiteMismatch(t *testing.T) {
 	if result.AccountID != domestic.ID {
 		t.Fatalf("AccountID=%s want domestic %s after SITE switch", result.AccountID, domestic.ID)
 	}
-	if pinned, ok := svc.Pins.Lookup("conv-site-switch"); !ok || pinned != domestic.ID {
+	if pinned, ok := svc.Pins.Lookup(SessionPinKey("conv-site-switch", "domestic")); !ok || pinned != domestic.ID {
 		t.Fatalf("pin=%q ok=%v want domestic %s", pinned, ok, domestic.ID)
 	}
 }
+
+func TestCompleteFromPoolRoutesByModelSitePrefix(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	global, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "global", Site: "global", BearerToken: "token-global", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	domestic, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "domestic", Site: "domestic", BearerToken: "token-domestic", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Provider.HTTP = &http.Client{Transport: &scriptedChatTransport{}}
+
+	local, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model:    "auto",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.AccountID != domestic.ID {
+		t.Fatalf("default SITE=domestic picked %s want %s", local.AccountID, domestic.ID)
+	}
+
+	resolved := ResolveProviderModel("global:auto")
+	remote, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model:    resolved.Model,
+		Site:     resolved.Site,
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("global: prefix should pick international account in one process, got %v", err)
+	}
+	if remote.AccountID != global.ID {
+		t.Fatalf("global: prefix picked %s want %s (no second process)", remote.AccountID, global.ID)
+	}
+}
+
+func TestSessionPinsAreIsolatedBySite(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	global, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "global", Site: "global", BearerToken: "token-global", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	domestic, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "domestic", Site: "domestic", BearerToken: "token-domestic", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Provider.HTTP = &http.Client{Transport: &scriptedChatTransport{}}
+	const session = "same-client-session"
+	cn, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", Site: "domestic", SessionKey: session,
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intl, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", Site: "global", SessionKey: session,
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cn.AccountID != domestic.ID || intl.AccountID != global.ID {
+		t.Fatalf("pins leaked across sites: cn=%s intl=%s", cn.AccountID, intl.AccountID)
+	}
+}
+
+func TestProbeCacheKeyedByProductAndClearedOnSwitch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", filepath.Join(dir, ".env"))
+	svc := New(config.Config{Site: "global", Product: "codebuddy", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	now := time.Now().UnixMilli()
+	svc.probeCache[svc.probeKey("global")] = provider.Reachability{OK: false, Site: "global", Cause: "upstream_infra", CheckedAt: now}
+	got := svc.probeSite(context.Background(), "global", false)
+	if got.OK || got.Cause != "upstream_infra" {
+		t.Fatalf("expected cached codebuddy failure, got %+v", got)
+	}
+	svc.updateConfig(func(c *config.Config) { c.Product = "workbuddy" })
+	svc.invalidateProbeCache()
+	svc.Provider.HTTP = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("Authorization Required")),
+			Request:    req,
+		}, nil
+	})}
+	fresh := svc.probeSite(context.Background(), "global", false)
+	if !fresh.OK {
+		t.Fatalf("workbuddy should not reuse codebuddy probe cache: %+v", fresh)
+	}
+}
+
+func TestProbeUpstreamSetsProbed(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "global", Product: "codebuddy", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	svc.Provider.HTTP = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("Authorization Required")),
+			Request:    req,
+		}, nil
+	})}
+	got := svc.ProbeUpstream(context.Background(), true)
+	if !got.Probed {
+		t.Fatalf("ProbeUpstream must set probed=true for /readyz JSON, got %+v", got)
+	}
+	if !got.OK {
+		t.Fatalf("401 auth layer should be reachable: %+v", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestCompleteFromPoolSwitchPicksLiveHighestQuota(t *testing.T) {
 	dir := t.TempDir()
@@ -341,7 +477,7 @@ func TestCompleteFromPoolSwitchPicksLiveHighestQuota(t *testing.T) {
 		creditsByAuth: map[string]float64{"token-b": 90, "token-c": 5},
 	}
 	svc.Provider.HTTP = &http.Client{Transport: transport}
-	svc.Pins.Remember("conv-quota", a.ID)
+	svc.Pins.Remember(SessionPinKey("conv-quota", "domestic"), a.ID)
 
 	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto", SessionKey: "conv-quota",

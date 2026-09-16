@@ -5,6 +5,34 @@
 
 ---
 
+## v0.4.9.3 · 2026-09-16 · 按请求选区 · 上游就绪探测 · Markdown 标题
+
+### 感谢
+
+- [@kouekikin24](https://github.com/kouekikin24) 提出 [#17](https://github.com/wnddd839/buddy-proxy/issues/17)：一个进程同时服务国内 + 国际号池；[#18](https://github.com/wnddd839/buddy-proxy/issues/18)：`/health` 上游挂了仍绿灯。
+- [@zeonseoi](https://github.com/zeonseoi) 提出 [#19](https://github.com/wnddd839/buddy-proxy/issues/19)：流式 Markdown 标题缺空格被当纯文本。
+
+### 解决了什么
+
+1. 同时持有国内号和国际号时，以前只能开两个进程、两份 `.env`。国际站 502 时国服其实是活的，单实例却用不上。
+2. `/health` 只表示进程存活。上游 chat 后端 502/504 时监控仍绿灯。
+3. GLM 等模型常输出 `##标题`（ATX 缺空格），再叠上 SSE 把 `\n` 和 `##` 拆成两片，客户端就把标题当纯文本。
+
+### 改了什么
+
+- **按请求选区**：`CODEBUDDY_SITE` 只是默认区域。模型前缀 `cn:` / `global:`（以及 `domestic:` / `intl:`）或请求头 `X-Site` 决定本轮号池；账号对象里本来就有 `site`。两区都有号时，`GET /v1/models` 额外返回带前缀别名。钉号 key 带 site，`cn:` 与 `global:` 并行互不抢 pin。
+- **就绪探测**：`GET /readyz` 与 `GET /health?deep=1` 向 chat 端点发空 POST（无 token）：401 = 鉴权层可达，502/504 + HTML = 上游基础设施故障。结果按 `site|product` 缓存 20s，切 SITE / 产品立刻清空。`/readyz` 的 `ok` 是 anyOK；`upstream.probed` 在填完 Sites 后为 `true`。
+- **错误归因**：上游 5xx 标 `cause: upstream_infra`；401 标 `account_blocked`；400 不再当成基础设施。有 `Retry-After` 时用 `errors.AsType` 从包装错误里取出并回写响应头。
+- **Markdown ATX**：流式 `text_delta` 不再把单独的 `\n` Trim 掉；行首 `##`–`######` 后面若缺空格则补上。单个 `#`（`#include` / shebang / `#define`）不动。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池与 Key 不用改。不必再为两区域开第二个进程。监控请改看 `/readyz` 或 `/health?deep=1`，不要把 `/health` 当成上游可用性。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.4.9.3
+
+---
+
 ## v0.4.9.2 · 2026-09-16 · 钉号切站自愈 · 流式 tool_calls index
 
 ### 感谢

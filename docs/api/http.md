@@ -26,8 +26,28 @@ Authorization: Bearer <CODEBUDDY_PROXY_API_KEY>
 无需鉴权。
 
 ```json
-{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.2"}
+{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.3"}
 ```
+
+`ok` 表示**进程存活**（liveness）。上游挂掉时这里仍是 200。
+
+Query：
+
+| 参数 | 说明 |
+|------|------|
+| `deep=1` | 附带上游可达性探测（有 20s 缓存）。上游不可达时返回 **503** `ok:false` |
+
+探测向 chat 端点发空 POST（无 token）：**401** 视为鉴权层可达，**502/504 + HTML** 视为上游基础设施故障。同 IP 高频探测会触发 WAF，因此必须走缓存。
+
+### `GET /readyz` · `HEAD /readyz`
+
+无需鉴权。`ok` 为 **anyOK**：任一探测区域可达即 200。两区都要活时请看 `upstream.allOk`。
+
+```json
+{"ok":false,"upstream":{"ok":false,"allOk":false,"probed":true,"cause":"upstream_infra","sites":{"global":{"ok":false,"status":502}}}}
+```
+
+探测缓存按 `site|product` 分区；管理台切换 CodeBuddy/WorkBuddy 或默认 SITE 会立即清空，避免把旧产品的 502/可达带到新产品。
 
 `version` 为构建时注入的发布号；本地 `go build` 未带 `-ldflags` 时多为 `dev`。
 
@@ -146,11 +166,15 @@ OpenCode 配置示例：
 
 | 字段 | 说明 |
 |------|------|
-| `model` | 支持 `codebuddy/<id>` / `codebuddy:<id>` 前缀，会被剥离为上游 ID；空或 `default` 归一为 `auto` |
+| `model` | 支持 `codebuddy/<id>` / `codebuddy:<id>` 前缀；也支持按请求选区：`cn:` / `domestic:`（国内）与 `global:` / `intl:`（国际）。无前缀时用进程默认 `CODEBUDDY_SITE`。空或 `default` 归一为 `auto` |
 | `stream` | `false` → `application/json`；`true` → `text/event-stream` |
 | `stream_options.include_usage` | 缺省按 `true` 推送空 `choices` 的 usage 收尾 chunk；显式 `false` 跳过 |
 | `max_tokens` / `max_completion_tokens` | 二者取正数，后者优先 |
 | `tool_choice` | 对象型会被归一为 `auto` / `none` / `required` |
+
+请求头 `X-Site: domestic|global` 可覆盖默认区域（模型前缀优先）。同一进程可同时持有国内号和国际号，不必再为两区域各开一个进程。
+
+号池里两个区域都有可用账号时，`GET /v1/models` 会同时返回默认区域的无前缀 ID，以及 `cn:` / `global:` 带前缀别名。
 
 JSON 请求体上限 **64MiB**（`httputil.MaxJSONBodyBytes`）。超过时返回 `413`：
 
@@ -227,7 +251,7 @@ usage chunk 形如：
 | GET | `/direct-admin/api/usage` | 用量汇总 + 分页明细 + 趋势 `series`；默认落盘 `proxy-usage.json`（约 400 条环形缓冲 + 90 日汇总） |
 | GET | `/direct-admin/api/client-config` | 前端配置（baseUrl / apiKey / site / requireApiKey） |
 | POST | `/direct-admin/api/client-config/generate-key` | 生成 `cbp_...` Key，写入 `~/.codebuddy/proxy.env`（或已有 `.env`）并立即生效 |
-| POST · PUT | `/direct-admin/api/pool-site` | 切换号池区域 `domestic` / `global`，回写 `.env` |
+| POST · PUT | `/direct-admin/api/pool-site` | 切换**默认**号池区域 `domestic` / `global`，回写 `.env`。请求仍可用 `cn:`/`global:` 或 `X-Site` 覆盖 |
 | POST · PUT | `/direct-admin/api/pool-product` | 切换上游产品 `codebuddy` / `workbuddy`，回写 `.env`；国内国际账号共用同一选择 |
 
 `generate-key` 会同步置 `CODEBUDDY_PROXY_REQUIRE_API_KEY=true`。**旧 Key 立即失效**，客户端必须同步更换。

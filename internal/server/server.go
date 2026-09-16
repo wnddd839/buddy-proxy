@@ -43,6 +43,8 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 	mux.HandleFunc("OPTIONS /{$}", s.handleOptions)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("HEAD /health", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
+	mux.HandleFunc("HEAD /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /v1/models", s.handleModelsAuth)
 	mux.HandleFunc("GET /models", s.handleModelsAuth)
 	mux.HandleFunc("GET /v1/model/info", s.handleModelInfoAuth)
@@ -88,18 +90,47 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-Site")
 	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+	deep := queryTruthy(r.URL.Query().Get("deep"))
+	payload := map[string]any{
 		"ok":        true,
 		"provider":  "codebuddy",
 		"transport": s.Svc.Config().Transport,
 		"version":   version.Version,
-	})
+	}
+	if deep {
+		upstream := s.Svc.ProbeUpstream(r.Context(), false)
+		payload["upstream"] = upstream
+		if !upstream.OK {
+			payload["ok"] = false
+			httputil.WriteJSON(w, http.StatusServiceUnavailable, payload)
+			return
+		}
+	} else {
+		payload["upstream"] = s.Svc.Status()["upstream"]
+	}
+	httputil.WriteJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	upstream := s.Svc.ProbeUpstream(r.Context(), false)
+	payload := map[string]any{
+		"ok":        upstream.OK,
+		"provider":  "codebuddy",
+		"transport": s.Svc.Config().Transport,
+		"version":   version.Version,
+		"upstream":  upstream,
+	}
+	status := http.StatusOK
+	if !upstream.OK {
+		status = http.StatusServiceUnavailable
+	}
+	httputil.WriteJSON(w, status, payload)
 }
 
 func (s *Server) handleModelsAuth(w http.ResponseWriter, r *http.Request) {
@@ -292,6 +323,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		maxTokens = *body.MaxTokens
 	}
 	reasoningEffort := strutil.First(body.ReasoningEffort, body.ReasoningEffortAlt)
+	site := providerModel.Site
+	if site == "" {
+		site = config.OptionalSite(r.Header.Get("X-Site"))
+	}
 	completeOpts := gateway.CompleteOptions{
 		Model:               providerModel.Model,
 		Messages:            body.Messages,
@@ -305,6 +340,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Thinking:            body.Thinking,
 		SessionKey:          sessionpin.Key(r.Header, body.PromptCacheKey, body.Messages),
 		SessionLabel:        sessionpin.SessionLabel(body.Messages),
+		Site:                site,
 	}
 
 	if body.Stream {
@@ -323,8 +359,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		s.recordChatJournal(chatStarted, proxyRequestID, completeOpts, providerModel.PublicModel, false, false, err.Error(), provider.Usage{}, nil)
 		finish(false, 0, 0, 0, 0, err.Error(), provider.Usage{})
-		typ, code := openai.ClassifyUpstream(err)
-		httputil.WriteJSON(w, http.StatusBadGateway, openai.NewErrorWithCode(err.Error(), typ, code))
+		s.writeChatError(w, http.StatusBadGateway, err)
 		return
 	}
 	s.recordChatJournal(chatStarted, proxyRequestID, completeOpts, providerModel.PublicModel, false, true, "", result.Turn.Usage, &result)
@@ -468,15 +503,23 @@ func (s *Server) streamChat(
 		s.recordChatJournal(chatStarted, proxyRequestID, opts, providerModel.PublicModel, true, false, err.Error(), provider.Usage{}, nil)
 		finish(false, streamedChars, 0, 0, 0, err.Error(), provider.Usage{})
 		typ, code := openai.ClassifyUpstream(err)
+		cause := openai.ClassifyCause(err)
+		retryAfter := openai.RetryAfter(err)
 		writeLocked(func() {
+			if retryAfter != "" {
+				w.Header().Set("Retry-After", retryAfter)
+			}
 			if !started {
-				httputil.WriteJSON(w, http.StatusBadGateway, openai.NewErrorWithCode(err.Error(), typ, code))
+				httputil.WriteJSON(w, http.StatusBadGateway, openai.NewErrorDetail(err.Error(), typ, code, cause, retryAfter))
 				done = true
 				return
 			}
-			errObj := map[string]any{"message": err.Error(), "type": typ}
+			errObj := map[string]any{"message": err.Error(), "type": typ, "cause": cause}
 			if code != nil {
 				errObj["code"] = code
+			}
+			if retryAfter != "" {
+				errObj["retry_after"] = retryAfter
 			}
 			_ = sse.WriteEvent(map[string]any{"error": errObj})
 			_ = sse.WriteDone()
@@ -536,6 +579,7 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 	publicOrigin := httputil.PublicOrigin(r, s.Svc.Config().PublicBaseURL)
 	switch {
 	case path == "/direct-admin/api/status" && r.Method == http.MethodGet:
+		_ = s.Svc.ProbeUpstream(r.Context(), false)
 		httputil.WriteJSON(w, http.StatusOK, s.Svc.Status())
 		return
 	case path == "/direct-admin/api/usage" && r.Method == http.MethodGet:
@@ -969,6 +1013,16 @@ func resolveIncludeUsage(opts *streamOptions) bool {
 		return true
 	}
 	return *opts.IncludeUsage
+}
+
+func (s *Server) writeChatError(w http.ResponseWriter, status int, err error) {
+	typ, code := openai.ClassifyUpstream(err)
+	cause := openai.ClassifyCause(err)
+	retryAfter := openai.RetryAfter(err)
+	if retryAfter != "" {
+		w.Header().Set("Retry-After", retryAfter)
+	}
+	httputil.WriteJSON(w, status, openai.NewErrorDetail(err.Error(), typ, code, cause, retryAfter))
 }
 
 func mustJSON(value map[string]any) string {

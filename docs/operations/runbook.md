@@ -28,7 +28,12 @@ CI（`.github/workflows/ci.yml`）在 push / PR 到 `main` 时执行 `gofmt` 检
 
 ```bash
 curl -fsS http://127.0.0.1:32126/health
-# {"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.2"}
+# {"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.3"}
+# ok 只表示进程存活。上游挂掉时这里仍是 200。
+
+curl -fsS http://127.0.0.1:32126/readyz
+# ok 为 anyOK：任一探测区域可达即 200。两区都要活时看 upstream.allOk。
+# 探测有 20s 缓存；管理台切 SITE / 产品会立刻清空。
 ```
 
 管理台 **05 / 用量与明细**（`#usage`）展示请求日志；默认持久化到 `CODEBUDDY_PROXY_USAGE_PATH`（缺省与账号池同目录的 `proxy-usage.json`）。`GET /direct-admin/api/usage` 见 `docs/api/http.md`。
@@ -51,6 +56,7 @@ curl -fsS http://127.0.0.1:32126/health
 | 现象 | 排查 |
 |------|------|
 | listen 失败 | 端口占用；换 `CODEBUDDY_PROXY_PORT` |
+| `/health` 200 但聊天全 502 | `/health` 只表示进程存活。看 `/readyz` 或 `/health?deep=1`；`cause=upstream_infra` 就是上游 chat 后端挂了 |
 | 401 API | Key 不匹配 / `REQUIRE_API_KEY`；管理台重新生成 Key 后客户端需同步更换 |
 | 无模型 | 未 OAuth；看 accounts path；点管理台「刷新模型」 |
 | 上游 401/403 | 管理台 refresh-token，或重新 OAuth |

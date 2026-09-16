@@ -48,7 +48,7 @@
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `CODEBUDDY_SITE` | `global` | `domestic` / `cn` / `china` / `internal` → 国内；其余（含空）→ 国际 |
+| `CODEBUDDY_SITE` | `global` | 默认号池区域。`domestic` / `cn` / `china` / `internal` → 国内；其余（含空）→ 国际。单请求可用模型前缀 `cn:` / `global:` 或头 `X-Site` 覆盖，不必为两区域开双进程 |
 | `CODEBUDDY_PRODUCT` | `codebuddy` | `workbuddy` / `wb` / `ide` → WorkBuddy IDE 头与域名；其余 → CodeBuddy CLI。国内国际共用，管理台可一键切换 |
 | `CODEBUDDY_INTERNET_ENVIRONMENT` | 空 | `internal` / `ioa` → `copilot.tencent.com`；`domestic` / `cn` / `china` → `www.codebuddy.cn` |
 | `CODEBUDDY_BASE_URL` | 按 site + product 推导 | 显式覆盖上游基址。切产品时管理台会改写为对应门户 |
@@ -63,7 +63,7 @@
 | `SITE` 或 `INTERNET_ENVIRONMENT` 为 `domestic` / `cn` / `china` | `https://www.codebuddy.cn` |
 | 其他 | `https://www.codebuddy.ai` |
 
-> **区域**以账号自身的 `site` 为准，不看反代机器 IP。**产品**（CodeBuddy / WorkBuddy）是进程级选择，国内国际账号共用同一套头和域名。切号池不会改产品，切产品也不会改号池。
+> **区域**以账号自身的 `site` 为准，不看反代机器 IP。进程级 `CODEBUDDY_SITE` 只是**默认**选号区域；同一进程的号池可以同时放国内号和国际号。**产品**（CodeBuddy / WorkBuddy）是进程级选择，国内国际账号共用同一套头和域名。切号池不会改产品，切产品也不会改号池。
 
 典型组合：
 

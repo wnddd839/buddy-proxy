@@ -234,6 +234,43 @@ func NormalizeSite(value string) string {
 	}
 }
 
+// OptionalSite 空值保持为空，避免把「未指定」归一成 global。
+func OptionalSite(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return NormalizeSite(value)
+}
+
+// SiteModelPrefix 是模型 ID 上的区域标签（cn / global），供按请求路由。
+func SiteModelPrefix(site string) string {
+	if NormalizeSite(site) == "domestic" {
+		return "cn"
+	}
+	return "global"
+}
+
+// SplitSitePrefix 解析 `cn:model` / `global:model`。无区域前缀时 ok=false。
+func SplitSitePrefix(model string) (site, rest string, ok bool) {
+	cleaned := strings.TrimSpace(model)
+	key, after, found := strings.Cut(cleaned, ":")
+	if !found {
+		return "", cleaned, false
+	}
+	rest = strings.TrimSpace(after)
+	if rest == "" {
+		rest = "auto"
+	}
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "cn", "domestic", "china", "internal":
+		return "domestic", rest, true
+	case "global", "intl", "international":
+		return "global", rest, true
+	default:
+		return "", cleaned, false
+	}
+}
+
 func NormalizeProduct(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "workbuddy", "wb", "ide":

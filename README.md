@@ -30,6 +30,11 @@
 - [@dyed-fanxing](https://github.com/dyed-fanxing) · [#2](https://github.com/wnddd839/buddy-proxy/issues/2) ZCode 把 git status 写进上下文触发 11128 · [#4](https://github.com/wnddd839/buddy-proxy/issues/4) DeepSeek Flash 1M 上下文卡在约 70%
 - [@carter003](https://github.com/carter003) · [#6](https://github.com/wnddd839/buddy-proxy/issues/6) 换号重试按剩余账号缩小上限、提前终止 · [#8](https://github.com/wnddd839/buddy-proxy/issues/8) 同会话应钉在一个账号，新会话再按额度选号 · [#9](https://github.com/wnddd839/buddy-proxy/issues/9) 管理台版本号与请求 / token / credit 用量明细 · [#10](https://github.com/wnddd839/buddy-proxy/issues/10) 用量表账号字段与账号/模型筛选 · [#11](https://github.com/wnddd839/buddy-proxy/issues/11) hy3 缓存命中率接近 0（按模型对照，非统计算错）
 - [@tearslee](https://github.com/tearslee) · [#7](https://github.com/wnddd839/buddy-proxy/issues/7) 经代理走 DSH/Codex 时缓存读取一直是 0
+- [@240xu](https://github.com/240xu) · [#12](https://github.com/wnddd839/buddy-proxy/pull/12) IDE 模型目录与可对话模型对不上
+- [@zeonseoi](https://github.com/zeonseoi) · [#13](https://github.com/wnddd839/buddy-proxy/issues/13) Qoder CN 同类封装 · [#19](https://github.com/wnddd839/buddy-proxy/issues/19) 流式 Markdown 标题缺空格被当纯文本
+- [@itaid](https://github.com/itaid) · [#14](https://github.com/wnddd839/buddy-proxy/issues/14) Claude Code 的 system 指纹触发上游 11128
+- [@kouekikin24](https://github.com/kouekikin24) · [#15](https://github.com/wnddd839/buddy-proxy/issues/15) SITE 切换后旧会话钉号硬失败 · [#17](https://github.com/wnddd839/buddy-proxy/issues/17) 一个进程同时服务国内+国际 · [#18](https://github.com/wnddd839/buddy-proxy/issues/18) `/health` 是存活探针、上游挂了仍绿灯
+- [@kkl31415926](https://github.com/kkl31415926) · [#16](https://github.com/wnddd839/buddy-proxy/issues/16) 流式 `tool_calls[].index` 缺失导致 Android Studio / OpenAI Java SDK 报错
 
 ---
 
@@ -58,7 +63,7 @@
 | **标准 OpenAI 形状** | `GET /v1/models` · `POST /v1/chat/completions`，流式与非流式都支持 |
 | **多账号调度** | 同会话钉在同一账号；新会话按额度快照选最大（缺快照或超过 5 分钟才探活）；失败换号前再探活拿最大；凭据以 `0600` 权限落盘 |
 | **真实余额** | 管理台直读官网 Credits，显示「剩余 / 总额」 |
-| **国内 / 国际** | 一键切换号池；**端点以账号自身区域为准**，不会把国内号打到海外 |
+| **国内 / 国际** | 同一进程可同时持有两区账号。默认区域可在管理台切换；单请求用 `cn:` / `global:` 或 `X-Site` 选区。**端点以账号自身区域为准** |
 | **CodeBuddy / WorkBuddy** | 一键切产品：CodeBuddy 走 CLI 头，WorkBuddy 走 IDE 头；模型目录随之切换 |
 | **模型列表** | 走协议 `/v3/config`，60 秒缓存，可强制刷新 |
 | **Token 用量透传** | 流式收尾补 usage chunk，含缓存命中统计（缓存字段兼容多上游别名） |
@@ -106,7 +111,7 @@ go run ./cmd/codebuddy-proxy
 | :--- | :--- |
 | API | `http://127.0.0.1:32126/v1` |
 | 管理台 | `http://127.0.0.1:32126/direct-admin/` |
-| Health | `http://127.0.0.1:32126/health` |
+| Health | `http://127.0.0.1:32126/health`（存活）· `/readyz`（上游可达） |
 
 ### 三步跑起来
 

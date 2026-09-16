@@ -28,6 +28,7 @@ func testServer(t *testing.T, requireAPIKey bool, adminPassword, apiKey string) 
 		Transport:     config.DefaultTransport,
 	}
 	svc := gateway.New(cfg, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	svc.Provider.HTTP = &http.Client{Transport: stubProbeTransport{status: http.StatusUnauthorized, body: "Authorization Required"}}
 	t.Cleanup(func() { _ = svc.Close() })
 	return New(cfg, svc)
 }
@@ -263,6 +264,56 @@ func TestHealth(t *testing.T) {
 	srv.HTTP.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("health=%d", rec.Code)
+	}
+}
+
+type stubProbeTransport struct {
+	status int
+	body   string
+}
+
+func (t stubProbeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	header := make(http.Header)
+	header.Set("Content-Type", "text/plain")
+	return &http.Response{
+		StatusCode: t.status,
+		Status:     http.StatusText(t.status),
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(t.body)),
+		Request:    req,
+	}, nil
+}
+
+func TestReadyzAndDeepHealthFollowUpstream(t *testing.T) {
+	srv := testServer(t, false, "", "")
+	srv.Svc.Provider.HTTP = &http.Client{Transport: stubProbeTransport{status: http.StatusBadGateway, body: "<html>openresty"}}
+
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/health?deep=1", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("deep health=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("liveness health should stay 200, got %d", rec.Code)
+	}
+}
+
+func TestReadyzOKWhenAuthLayerAnswers(t *testing.T) {
+	srv := testServer(t, false, "", "")
+	srv.Svc.Provider.HTTP = &http.Client{Transport: stubProbeTransport{status: http.StatusUnauthorized, body: "Authorization Required"}}
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("readyz=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

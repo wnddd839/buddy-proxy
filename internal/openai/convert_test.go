@@ -2,6 +2,8 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
@@ -88,6 +90,33 @@ func TestStreamUsageChunk(t *testing.T) {
 	raw, _ := json.Marshal(chunk)
 	if !contains(string(raw), `"usage"`) {
 		t.Fatalf("%s", raw)
+	}
+}
+
+func TestClassifyCause(t *testing.T) {
+	tests := []struct {
+		err  string
+		want string
+	}{
+		{"CodeBuddy chat completion failed with 502: <html>openresty", "upstream_infra"},
+		{"failed with 429: too many requests", "rate_limited"},
+		{"unapproved channel 11128", "account_blocked"},
+		{"request illegal 11140", "account_blocked"},
+		{"failed with 401: unauthorized", "account_blocked"},
+		{"failed with 400: bad request", ""},
+	}
+	for _, tc := range tests {
+		if got := ClassifyCause(errors.New(tc.err)); got != tc.want {
+			t.Fatalf("ClassifyCause(%q)=%q want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestRetryAfterUnwrapsWrappedChatError(t *testing.T) {
+	inner := &provider.ChatError{Status: 429, RetryAfter: "8", Msg: "failed with 429"}
+	wrapped := fmt.Errorf("retry: %w", inner)
+	if got := RetryAfter(wrapped); got != "8" {
+		t.Fatalf("RetryAfter wrapped=%q", got)
 	}
 }
 

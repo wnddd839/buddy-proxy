@@ -173,6 +173,47 @@ type Result struct {
 	Trace      RequestTrace
 }
 
+// ChatError 保留上游 HTTP 状态与 Retry-After，Error() 维持原本文本以便换号正则匹配。
+type ChatError struct {
+	Status     int
+	RetryAfter string
+	Msg        string
+}
+
+func (e *ChatError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Msg
+}
+
+func (e *ChatError) RetryAfterHeader() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.RetryAfter)
+}
+
+type Reachability struct {
+	OK        bool   `json:"ok"`
+	Site      string `json:"site"`
+	Status    int    `json:"status,omitzero"`
+	Cause     string `json:"cause,omitempty"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	Message   string `json:"message,omitempty"`
+	CheckedAt int64  `json:"checkedAt,omitzero"`
+}
+
+type UpstreamStatus struct {
+	OK        bool                    `json:"ok"`
+	AllOK     bool                    `json:"allOk"`
+	Probed    bool                    `json:"probed"`
+	Cause     string                  `json:"cause,omitempty"`
+	Message   string                  `json:"message,omitempty"`
+	CheckedAt int64                   `json:"checkedAt,omitzero"`
+	Sites     map[string]Reachability `json:"sites,omitempty"`
+}
+
 func NormalizeBaseURL(value string) string {
 	return strings.TrimRight(strings.TrimSpace(value), "/")
 }
@@ -264,6 +305,74 @@ func ResolveProtocolDirectEndpoint(opts ChatOptions) string {
 		path = path[3:]
 	}
 	return base + path
+}
+
+// ProbeChat 对 chat 端点发空 POST（无 token）。401 表示鉴权层可达；502/504 HTML 表示上游挂了。
+func (c *Client) ProbeChat(ctx context.Context, site, product string) Reachability {
+	opts := ChatOptions{Site: site, Product: product, ChatCompletionsPath: config.DefaultChatCompletionsPath}
+	endpoint := ResolveProtocolDirectEndpoint(opts)
+	out := Reachability{Site: config.NormalizeSite(site), Endpoint: endpoint, CheckedAt: time.Now().UnixMilli()}
+	if c == nil || c.HTTP == nil {
+		out.Cause = "unreachable"
+		out.Message = "http client unavailable"
+		return out
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader("{}"))
+	if err != nil {
+		out.Cause = "unreachable"
+		out.Message = err.Error()
+		return out
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		out.Cause = "unreachable"
+		out.Message = err.Error()
+		return InterpretProbe(out, 0, nil, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return InterpretProbe(out, resp.StatusCode, raw, nil)
+}
+
+// InterpretProbe 把探测响应归成可达 / 上游基础设施故障。
+func InterpretProbe(base Reachability, status int, body []byte, err error) Reachability {
+	base.Status = status
+	base.CheckedAt = time.Now().UnixMilli()
+	if err != nil {
+		base.OK = false
+		if base.Cause == "" {
+			base.Cause = "unreachable"
+		}
+		if base.Message == "" {
+			base.Message = err.Error()
+		}
+		return base
+	}
+	lower := strings.ToLower(string(body))
+	htmlInfra := strings.Contains(lower, "openresty") || strings.Contains(lower, "apisix") || strings.Contains(lower, "<html")
+	switch {
+	case status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout:
+		base.OK = false
+		base.Cause = "upstream_infra"
+		base.Message = strutil.Truncate(strings.TrimSpace(string(body)), 180)
+		if base.Message == "" {
+			base.Message = http.StatusText(status)
+		}
+	case htmlInfra && status >= 500:
+		base.OK = false
+		base.Cause = "upstream_infra"
+		base.Message = strutil.Truncate(strings.TrimSpace(string(body)), 180)
+	case status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusTooManyRequests || status == http.StatusBadRequest || (status >= 200 && status < 500):
+		base.OK = true
+		base.Cause = "reachable"
+		base.Message = http.StatusText(status)
+	default:
+		base.OK = false
+		base.Cause = "upstream_infra"
+		base.Message = http.StatusText(status)
+	}
+	return base
 }
 
 // ResolveProtocolDirectBillingEndpoint builds a /v2/billing/meter/* URL with the same
@@ -618,7 +727,11 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		msg := extractErrorMessage(raw, resp.StatusCode)
 		c.logUpstreamFailure(msg, resp.StatusCode, body, opts, endpoint, domain, region, model)
-		return Result{}, fmt.Errorf("CodeBuddy chat completion failed with %d: %s [region=%s site=%s endpoint=%s domain=%s model=%s]", resp.StatusCode, msg, region, config.NormalizeSite(opts.Site), endpoint, domain, model)
+		return Result{}, &ChatError{
+			Status:     resp.StatusCode,
+			RetryAfter: resp.Header.Get("Retry-After"),
+			Msg:        fmt.Sprintf("CodeBuddy chat completion failed with %d: %s [region=%s site=%s endpoint=%s domain=%s model=%s]", resp.StatusCode, msg, region, config.NormalizeSite(opts.Site), endpoint, domain, model),
+		}
 	}
 
 	result, err := c.readSSE(resp.Body, opts)
@@ -794,6 +907,7 @@ func partTypes(parts []any) []string {
 
 func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 	acc := newAccumulator()
+	fixer := newATXFixer()
 	reader := bufio.NewReaderSize(body, 64*1024)
 	var (
 		eventCount int
@@ -821,6 +935,9 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 			events = MapSSEEvent(payload)
 		}
 		for _, event := range events {
+			if event.Type == "text_delta" && event.Text != "" {
+				event.Text = fixer.Feed(event.Text)
+			}
 			eventCount++
 			acc.push(event)
 			if opts.OnEvent != nil {
@@ -1486,14 +1603,15 @@ func firstText(values ...any) string {
 		case nil:
 			continue
 		case string:
-			if strings.TrimSpace(v) != "" {
+			// 空白-only 的 delta（尤其是单独的 "\n"）也要保留，否则 ATX 标题会粘在上一行。
+			if v != "" {
 				return v
 			}
 		case map[string]any:
-			if text, ok := v["text"].(string); ok && strings.TrimSpace(text) != "" {
+			if text, ok := v["text"].(string); ok && text != "" {
 				return text
 			}
-			if text, ok := v["content"].(string); ok && strings.TrimSpace(text) != "" {
+			if text, ok := v["content"].(string); ok && text != "" {
 				return text
 			}
 		}

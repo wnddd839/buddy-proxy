@@ -28,6 +28,8 @@ import (
 
 const (
 	modelsCacheTTL = 60 * time.Second
+	probeCacheTTL  = 20 * time.Second
+	probeTimeout   = 4 * time.Second
 	// defaultMaxAccountRetries 单请求最多尝试的账号数（含换号重试），防止无限递归。
 	defaultMaxAccountRetries = 16
 	// quotaRefreshTimeout 换号/补快照时并行拉候选额度的上限，避免 billing 拖垮这次 chat。
@@ -101,14 +103,18 @@ type Service struct {
 	oauth *OAuthSession
 
 	modelsCacheMu sync.Mutex
-	modelsCache   struct {
-		key       string
-		result    models.ListResult
-		expiresAt time.Time
-	}
-	modelsFlight modelsFlight
-	Pins         *sessionpin.Table
-	Journal      *usagejournal.Journal
+	modelsCache   map[string]modelsCacheEntry
+	modelsFlight  modelsFlight
+	Pins          *sessionpin.Table
+	Journal       *usagejournal.Journal
+
+	probeMu    sync.Mutex
+	probeCache map[string]provider.Reachability
+}
+
+type modelsCacheEntry struct {
+	result    models.ListResult
+	expiresAt time.Time
 }
 
 func New(cfg config.Config, logger *slog.Logger) *Service {
@@ -135,6 +141,8 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 		Pins:     sessionpin.New(0),
 		Journal:  journal,
 	}
+	svc.modelsCache = map[string]modelsCacheEntry{}
+	svc.probeCache = map[string]provider.Reachability{}
 	svc.storeConfig(cfg)
 	return svc
 }
@@ -193,6 +201,7 @@ type ProviderModel struct {
 	Provider    string
 	Model       string
 	PublicModel string
+	Site        string
 }
 
 func ResolveProviderModel(model string) ProviderModel {
@@ -202,10 +211,19 @@ func ResolveProviderModel(model string) ProviderModel {
 		if requested == "" || requested == "default" {
 			requested = "auto"
 		}
-		return ProviderModel{Provider: "codebuddy", Model: requested, PublicModel: models.PublicModelID(requested)}
+		cleaned = requested
 	}
 	if cleaned == "" {
 		return ProviderModel{Provider: "codebuddy", Model: "auto", PublicModel: "auto"}
+	}
+	if site, rest, ok := config.SplitSitePrefix(cleaned); ok {
+		publicID := models.PublicModelID(rest)
+		return ProviderModel{
+			Provider:    "codebuddy",
+			Model:       publicID,
+			PublicModel: config.SiteModelPrefix(site) + ":" + publicID,
+			Site:        site,
+		}
 	}
 	publicID := models.PublicModelID(cleaned)
 	return ProviderModel{Provider: "codebuddy", Model: publicID, PublicModel: publicID}
@@ -215,6 +233,7 @@ type CompleteOptions struct {
 	AccountID           string
 	SessionKey          string
 	SessionLabel        string
+	Site                string // 本请求号池区域；空则回落进程默认 SITE
 	Model               string
 	Messages            []map[string]any
 	Stream              bool
@@ -282,6 +301,22 @@ type CompleteResult struct {
 	AccountID string           `json:"accountId"`
 }
 
+func (s *Service) requestSite(opts CompleteOptions) string {
+	if site := config.OptionalSite(opts.Site); site != "" {
+		return site
+	}
+	return s.ActivePoolSite()
+}
+
+// SessionPinKey 把会话钉号按区域隔开，避免同一 SessionKey 并行打 cn: 与 global: 时抢 pin。
+func SessionPinKey(session, site string) string {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return ""
+	}
+	return session + "\x1e" + config.NormalizeSite(site)
+}
+
 func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (CompleteResult, error) {
 	if opts.RetryDepth >= defaultMaxAccountRetries {
 		return CompleteResult{}, fmt.Errorf("%w（max=%d）", errRetryDepthExceeded, defaultMaxAccountRetries)
@@ -289,19 +324,21 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if opts.SessionKey == "" {
 		opts.SessionKey = sessionpin.Key(nil, "", opts.Messages)
 	}
-	if opts.AccountID == "" && opts.SessionKey != "" {
-		if id, ok := s.Pins.Lookup(opts.SessionKey); ok && !slices.Contains(opts.ExcludeIDs, id) {
+	site := s.requestSite(opts)
+	pinKey := SessionPinKey(opts.SessionKey, site)
+	if opts.AccountID == "" && pinKey != "" {
+		if id, ok := s.Pins.Lookup(pinKey); ok && !slices.Contains(opts.ExcludeIDs, id) {
 			opts.AccountID = id
 		} else if ok {
-			s.Pins.Forget(opts.SessionKey)
+			s.Pins.Forget(pinKey)
 		}
 	}
-	if opts.AccountID == "" && opts.RetryDepth == 0 && s.needsQuotaRefresh(opts.ExcludeIDs) {
-		s.refreshCandidateQuotas(ctx, opts.ExcludeIDs, true)
+	if opts.AccountID == "" && opts.RetryDepth == 0 && s.needsQuotaRefresh(opts.ExcludeIDs, site) {
+		s.refreshCandidateQuotas(ctx, opts.ExcludeIDs, true, site)
 	}
 	selection, err := s.Pool.Select(accounts.SelectOptions{
 		AccountID:   opts.AccountID,
-		Site:        s.ActivePoolSite(),
+		Site:        site,
 		ExcludeIDs:  opts.ExcludeIDs,
 		PreferQuota: opts.AccountID == "",
 	})
@@ -310,10 +347,10 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		// 对齐 reRetryNextAccount 对 site mismatch 的换号自愈意图。
 		if opts.AccountID != "" && isSiteMismatchError(err) {
 			staleID := opts.AccountID
-			if opts.SessionKey != "" {
-				s.Pins.Forget(opts.SessionKey)
+			if pinKey != "" {
+				s.Pins.Forget(pinKey)
 			}
-			s.Log.Warn("clearing pinned account after site mismatch", "accountId", staleID, "site", s.ActivePoolSite(), "error", err.Error())
+			s.Log.Warn("clearing pinned account after site mismatch", "accountId", staleID, "site", site, "error", err.Error())
 			opts.ExcludeIDs = append(append([]string{}, opts.ExcludeIDs...), staleID)
 			opts.AccountID = ""
 			opts.RetryDepth++
@@ -338,12 +375,12 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			return CompleteResult{}, err
 		}
 		if s.shouldRetryNextAccount(err, selection, opts) {
-			if opts.SessionKey != "" {
-				s.Pins.Forget(opts.SessionKey)
+			if pinKey != "" {
+				s.Pins.Forget(pinKey)
 			}
 			cooldown := s.resolveFailureCooldown(ctx, account, err)
 			_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
-			s.refreshCandidateQuotas(ctx, append(append([]string{}, opts.ExcludeIDs...), account.ID), false)
+			s.refreshCandidateQuotas(ctx, append(append([]string{}, opts.ExcludeIDs...), account.ID), false, site)
 			s.Log.Warn("retrying codebuddy request with next account", "accountId", account.ID, "error", err.Error())
 			next := append(append([]string{}, opts.ExcludeIDs...), account.ID)
 			opts.ExcludeIDs = next
@@ -372,8 +409,8 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		return CompleteResult{}, err
 	}
 	_ = s.Pool.MarkResult(selection, true, "", 0)
-	if opts.SessionKey != "" {
-		s.Pins.Remember(opts.SessionKey, account.ID)
+	if pinKey != "" {
+		s.Pins.Remember(pinKey, account.ID)
 	}
 	return CompleteResult{
 		Result:    result,
@@ -539,7 +576,7 @@ func quotaSnapshotFresh(account accounts.Account, nowMillis int64) bool {
 	return nowMillis-account.QuotaCheckedAt < quotaSnapshotTTL.Milliseconds()
 }
 
-func (s *Service) listSelectableAccounts(exclude []string) []accounts.Account {
+func (s *Service) listSelectableAccounts(exclude []string, site string) []accounts.Account {
 	if s == nil || s.Pool == nil {
 		return nil
 	}
@@ -547,7 +584,7 @@ func (s *Service) listSelectableAccounts(exclude []string) []accounts.Account {
 	if err != nil {
 		return nil
 	}
-	site := s.ActivePoolSite()
+	site = config.NormalizeSite(strutil.First(site, s.ActivePoolSite()))
 	now := time.Now().UnixMilli()
 	skip := map[string]struct{}{}
 	for _, id := range exclude {
@@ -575,9 +612,9 @@ func (s *Service) listSelectableAccounts(exclude []string) []accounts.Account {
 }
 
 // needsQuotaRefresh 任一可选账号缺快照或超过 TTL，新会话就要补探，避免只查过部分号时 PreferQuota 看不见更厚的号。
-func (s *Service) needsQuotaRefresh(exclude []string) bool {
+func (s *Service) needsQuotaRefresh(exclude []string, site string) bool {
 	now := time.Now().UnixMilli()
-	for _, account := range s.listSelectableAccounts(exclude) {
+	for _, account := range s.listSelectableAccounts(exclude, site) {
 		if !quotaSnapshotFresh(account, now) {
 			return true
 		}
@@ -586,12 +623,12 @@ func (s *Service) needsQuotaRefresh(exclude []string) bool {
 }
 
 // refreshCandidateQuotas 并行刷新候选额度。staleOnly 时只打缺失/过期的号（新会话）；换号时刷全部活号。
-func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, staleOnly bool) {
+func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, staleOnly bool, site string) {
 	if s == nil || s.Pool == nil || s.Provider == nil {
 		return
 	}
 	now := time.Now().UnixMilli()
-	candidates := s.listSelectableAccounts(exclude)
+	candidates := s.listSelectableAccounts(exclude, site)
 	if staleOnly {
 		filtered := candidates[:0]
 		for _, account := range candidates {
@@ -637,11 +674,105 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, 
 }
 
 func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult, error) {
+	return s.ListModelsForSites(ctx, fresh, s.credentialedSites())
+}
+
+func (s *Service) credentialedSites() []string {
+	store, err := s.Pool.Read()
+	if err != nil {
+		return []string{s.ActivePoolSite()}
+	}
+	seen := map[string]bool{}
+	var sites []string
+	for _, account := range store.Accounts {
+		if !account.Enabled || !accounts.HasCredentials(account) {
+			continue
+		}
+		site := config.NormalizeSite(account.Site)
+		if seen[site] {
+			continue
+		}
+		seen[site] = true
+		sites = append(sites, site)
+	}
+	if len(sites) == 0 {
+		return []string{s.ActivePoolSite()}
+	}
+	def := s.ActivePoolSite()
+	slices.Sort(sites)
+	out := make([]string, 0, len(sites))
+	if slices.Contains(sites, def) {
+		out = append(out, def)
+	}
+	for _, site := range sites {
+		if site != def {
+			out = append(out, site)
+		}
+	}
+	return out
+}
+
+func (s *Service) ListModelsForSites(ctx context.Context, fresh bool, sites []string) (models.ListResult, error) {
+	if len(sites) == 0 {
+		sites = []string{s.ActivePoolSite()}
+	}
+	if len(sites) == 1 {
+		return s.listModelsForSite(ctx, sites[0], fresh)
+	}
+	def := s.ActivePoolSite()
+	var merged models.ListResult
+	var notes []string
+	seenID := map[string]struct{}{}
+	for _, site := range sites {
+		listed, err := s.listModelsForSite(ctx, site, fresh)
+		if err != nil {
+			notes = append(notes, site+": "+err.Error())
+			continue
+		}
+		if listed.Message != "" {
+			notes = append(notes, listed.Message)
+		}
+		if !listed.OK && len(listed.Models) == 0 {
+			continue
+		}
+		if merged.ModelsSource == "" {
+			merged.ModelsSource = listed.ModelsSource
+		}
+		for _, model := range listed.Models {
+			if site == def {
+				if _, ok := seenID[model.ID]; !ok {
+					seenID[model.ID] = struct{}{}
+					merged.Models = append(merged.Models, model)
+				}
+			}
+			tagged := model
+			tagged.ID = config.SiteModelPrefix(site) + ":" + model.ID
+			if _, ok := seenID[tagged.ID]; ok {
+				continue
+			}
+			seenID[tagged.ID] = struct{}{}
+			merged.Models = append(merged.Models, tagged)
+		}
+		if listed.OK {
+			merged.OK = true
+		}
+	}
+	merged.Site = def
+	if !merged.OK && len(merged.Models) == 0 {
+		return s.listModelsForSite(ctx, def, fresh)
+	}
+	if len(notes) > 0 {
+		merged.Message = strings.Join(notes, "; ")
+	}
+	return merged, nil
+}
+
+func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fresh bool) (models.ListResult, error) {
 	store, err := s.Pool.Read()
 	if err != nil {
 		return models.ListResult{}, err
 	}
-	activeSite := s.ActivePoolSite()
+	activeSite = config.NormalizeSite(activeSite)
 	summary := accounts.SummarizeStoreForSite(store, s.Pool.Path(), activeSite)
 	if summary.Primary == nil || !summary.Primary.HasCredentials || config.NormalizeSite(summary.Primary.Site) != activeSite {
 		return models.ListResult{
@@ -668,22 +799,14 @@ func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult
 	}
 	cacheKey := strings.Join([]string{activeSite, product, account.ID, site, baseURL, internet}, "|")
 	if !fresh {
-		s.modelsCacheMu.Lock()
-		hit := s.modelsCache.key == cacheKey && time.Now().Before(s.modelsCache.expiresAt)
-		cached := s.modelsCache.result
-		s.modelsCacheMu.Unlock()
-		if hit && len(cached.Models) > 0 {
+		if cached, ok := s.cachedModels(cacheKey); ok {
 			return cached, nil
 		}
 	}
 
 	listed, err, _ := s.modelsFlight.Do(cacheKey, func() (models.ListResult, error) {
 		if !fresh {
-			s.modelsCacheMu.Lock()
-			hit := s.modelsCache.key == cacheKey && time.Now().Before(s.modelsCache.expiresAt)
-			cached := s.modelsCache.result
-			s.modelsCacheMu.Unlock()
-			if hit && len(cached.Models) > 0 {
+			if cached, ok := s.cachedModels(cacheKey); ok {
 				return cached, nil
 			}
 		}
@@ -701,23 +824,108 @@ func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult
 			ChatCompletionsPath: strutil.First(account.ChatCompletionsPath, s.Config().ChatCompletionsPath),
 		})
 		if out.OK && len(out.Models) > 0 {
-			s.modelsCacheMu.Lock()
-			s.modelsCache.key = cacheKey
-			s.modelsCache.result = out
-			s.modelsCache.expiresAt = time.Now().Add(modelsCacheTTL)
-			s.modelsCacheMu.Unlock()
+			s.storeModelsCache(cacheKey, out)
 		}
 		return out, nil
 	})
 	return listed, err
 }
 
+func (s *Service) cachedModels(key string) (models.ListResult, bool) {
+	s.modelsCacheMu.Lock()
+	defer s.modelsCacheMu.Unlock()
+	entry, ok := s.modelsCache[key]
+	if !ok || time.Now().After(entry.expiresAt) || len(entry.result.Models) == 0 {
+		return models.ListResult{}, false
+	}
+	return entry.result, true
+}
+
+func (s *Service) storeModelsCache(key string, result models.ListResult) {
+	s.modelsCacheMu.Lock()
+	defer s.modelsCacheMu.Unlock()
+	if s.modelsCache == nil {
+		s.modelsCache = map[string]modelsCacheEntry{}
+	}
+	s.modelsCache[key] = modelsCacheEntry{result: result, expiresAt: time.Now().Add(modelsCacheTTL)}
+}
+
 func (s *Service) invalidateModelsCache() {
 	s.modelsCacheMu.Lock()
-	s.modelsCache.key = ""
-	s.modelsCache.result = models.ListResult{}
-	s.modelsCache.expiresAt = time.Time{}
+	s.modelsCache = map[string]modelsCacheEntry{}
 	s.modelsCacheMu.Unlock()
+}
+
+// ProbeUpstream 按号池里有凭证的区域做廉价可达性探测（空 POST、无 token）。
+// 结果缓存 probeCacheTTL，避免把健康检查打成上游洪水。
+func (s *Service) probeKey(site string) string {
+	return config.NormalizeSite(site) + "|" + s.ActiveProduct()
+}
+
+func (s *Service) invalidateProbeCache() {
+	s.probeMu.Lock()
+	s.probeCache = map[string]provider.Reachability{}
+	s.probeMu.Unlock()
+}
+
+func (s *Service) ProbeUpstream(ctx context.Context, force bool) provider.UpstreamStatus {
+	sites := s.credentialedSites()
+	if len(sites) == 0 {
+		sites = []string{s.ActivePoolSite()}
+	}
+	out := provider.UpstreamStatus{CheckedAt: time.Now().UnixMilli(), Sites: map[string]provider.Reachability{}}
+	anyOK := false
+	allOK := true
+	for _, site := range sites {
+		item := s.probeSite(ctx, site, force)
+		out.Sites[site] = item
+		if item.OK {
+			anyOK = true
+		} else {
+			allOK = false
+		}
+	}
+	out.OK = anyOK
+	out.AllOK = allOK && len(sites) > 0
+	out.Probed = len(out.Sites) > 0
+	if !anyOK && len(out.Sites) > 0 {
+		out.Cause = "upstream_infra"
+		for _, site := range sites {
+			if msg := out.Sites[site].Message; msg != "" {
+				out.Message = msg
+				out.Cause = out.Sites[site].Cause
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (s *Service) probeSite(ctx context.Context, site string, force bool) provider.Reachability {
+	site = config.NormalizeSite(site)
+	key := s.probeKey(site)
+	if !force {
+		s.probeMu.Lock()
+		cached, ok := s.probeCache[key]
+		s.probeMu.Unlock()
+		if ok && cached.CheckedAt > 0 && time.Now().UnixMilli()-cached.CheckedAt < probeCacheTTL.Milliseconds() {
+			return cached
+		}
+	}
+	product := s.ActiveProduct()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	item := s.Provider.ProbeChat(probeCtx, site, product)
+	s.probeMu.Lock()
+	if s.probeCache == nil {
+		s.probeCache = map[string]provider.Reachability{}
+	}
+	s.probeCache[key] = item
+	s.probeMu.Unlock()
+	return item
 }
 
 func (s *Service) ConfiguredModels() []models.Model {
@@ -740,7 +948,7 @@ func (s *Service) ActiveProduct() string {
 }
 
 func (s *Service) SetPoolSite(site string) (map[string]any, error) {
-	return s.persistPoolRouting(site, s.ActiveProduct(), "号池已切换到 "+config.NormalizeSite(site)+"，后续请求只使用该区域账号。")
+	return s.persistPoolRouting(site, s.ActiveProduct(), "号池默认区域已切换到 "+config.NormalizeSite(site)+"。请求仍可用 cn:/global: 前缀或 X-Site 覆盖。")
 }
 
 func (s *Service) SetPoolProduct(product string) (map[string]any, error) {
@@ -779,6 +987,7 @@ func (s *Service) persistPoolRouting(site, product, note string) (map[string]any
 		c.InternetEnvironment = internet
 	})
 	s.invalidateModelsCache()
+	s.invalidateProbeCache()
 	_ = os.Setenv("CODEBUDDY_SITE", site)
 	_ = os.Setenv("CODEBUDDY_PRODUCT", product)
 	_ = os.Setenv("CODEBUDDY_BASE_URL", baseURL)
@@ -791,6 +1000,43 @@ func (s *Service) persistPoolRouting(site, product, note string) (map[string]any
 	payload["envFile"] = envPath
 	payload["note"] = note
 	return payload, nil
+}
+
+func (s *Service) cachedUpstreamStatus() provider.UpstreamStatus {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	out := provider.UpstreamStatus{Sites: map[string]provider.Reachability{}}
+	if len(s.probeCache) == 0 {
+		return out
+	}
+	product := s.ActiveProduct()
+	anyOK := false
+	allOK := true
+	var latest int64
+	for key, item := range s.probeCache {
+		cacheSite, cacheProduct, ok := strings.Cut(key, "|")
+		if !ok || cacheProduct != product {
+			continue
+		}
+		out.Sites[cacheSite] = item
+		out.Probed = true
+		if item.CheckedAt > latest {
+			latest = item.CheckedAt
+		}
+		if item.OK {
+			anyOK = true
+		} else {
+			allOK = false
+			if out.Message == "" {
+				out.Message = item.Message
+				out.Cause = item.Cause
+			}
+		}
+	}
+	out.OK = anyOK
+	out.AllOK = allOK && len(out.Sites) > 0
+	out.CheckedAt = latest
+	return out
 }
 
 func (s *Service) Status() map[string]any {
@@ -810,6 +1056,7 @@ func (s *Service) Status() map[string]any {
 	transport := cfg.Transport
 	store, _ := s.Pool.Read()
 	summary := accounts.SummarizeStoreForSite(store, s.Pool.Path(), site)
+	upstream := s.cachedUpstreamStatus()
 	return map[string]any{
 		"ok":          true,
 		"provider":    "codebuddy",
@@ -822,6 +1069,7 @@ func (s *Service) Status() map[string]any {
 		"poolSite":    site,
 		"product":     product,
 		"poolProduct": product,
+		"upstream":    upstream,
 		"config": map[string]any{
 			"host":                host,
 			"port":                port,

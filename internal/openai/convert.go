@@ -17,9 +17,11 @@ type ErrorBody struct {
 }
 
 type ErrorDetail struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Code    any    `json:"code,omitempty"`
+	Message    string `json:"message"`
+	Type       string `json:"type"`
+	Code       any    `json:"code,omitempty"`
+	Cause      string `json:"cause,omitempty"`
+	RetryAfter string `json:"retry_after,omitempty"`
 }
 
 func NewError(message, typ string) ErrorBody {
@@ -28,6 +30,10 @@ func NewError(message, typ string) ErrorBody {
 
 func NewErrorWithCode(message, typ string, code any) ErrorBody {
 	return ErrorBody{Error: ErrorDetail{Message: message, Type: typ, Code: code}}
+}
+
+func NewErrorDetail(message, typ string, code any, cause, retryAfter string) ErrorBody {
+	return ErrorBody{Error: ErrorDetail{Message: message, Type: typ, Code: code, Cause: cause, RetryAfter: retryAfter}}
 }
 
 // ClassifyUpstream 将 CodeBuddy 上游错误映射为 OpenAI 风格 type/code，
@@ -51,6 +57,46 @@ func ClassifyUpstream(err error) (typ string, code any) {
 		return "invalid_request_error", 11140
 	default:
 		return "upstream_error", nil
+	}
+}
+
+func RetryAfter(err error) string {
+	if err == nil {
+		return ""
+	}
+	if chatErr, ok := errors.AsType[*provider.ChatError](err); ok {
+		return strings.TrimSpace(chatErr.RetryAfterHeader())
+	}
+	return ""
+}
+
+// ClassifyCause 给出机器可读归因：upstream_infra / account_blocked / rate_limited。
+func ClassifyCause(err error) string {
+	if err == nil {
+		return ""
+	}
+	if IsClientCanceled(err) {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "429"), strings.Contains(msg, "rate limit"), strings.Contains(msg, "too many requests"):
+		return "rate_limited"
+	case strings.Contains(msg, "11128"), strings.Contains(msg, "unapproved channel"),
+		strings.Contains(msg, "11140"), strings.Contains(msg, "request illegal"),
+		strings.Contains(msg, "6004"), strings.Contains(msg, "waf"):
+		return "account_blocked"
+	case strings.Contains(msg, "401"), strings.Contains(msg, "unauthori"):
+		return "account_blocked"
+	case strings.Contains(msg, "403"), strings.Contains(msg, "forbidden"):
+		return "account_blocked"
+	case strings.Contains(msg, "400"), strings.Contains(msg, "invalid_request"):
+		return ""
+	case strings.Contains(msg, "502"), strings.Contains(msg, "503"), strings.Contains(msg, "504"),
+		strings.Contains(msg, "openresty"), strings.Contains(msg, "apisix"):
+		return "upstream_infra"
+	default:
+		return "upstream_infra"
 	}
 }
 

@@ -76,6 +76,38 @@ func TestNormalizeSite(t *testing.T) {
 	}
 }
 
+func TestOptionalSiteEmptyStaysEmpty(t *testing.T) {
+	if got := config.OptionalSite(""); got != "" {
+		t.Fatalf("OptionalSite empty=%q", got)
+	}
+	if got := config.OptionalSite("cn"); got != "domestic" {
+		t.Fatalf("OptionalSite cn=%q", got)
+	}
+}
+
+func TestSplitSitePrefix(t *testing.T) {
+	tests := []struct {
+		in   string
+		site string
+		rest string
+		ok   bool
+	}{
+		{"deepseek-v4", "", "deepseek-v4", false},
+		{"cn:deepseek-v4.1-flash", "domestic", "deepseek-v4.1-flash", true},
+		{"global:auto", "global", "auto", true},
+		{"domestic:glm-5.3-flash", "domestic", "glm-5.3-flash", true},
+		{"intl:gpt-5", "global", "gpt-5", true},
+		{"codebuddy:deepseek-v4", "", "codebuddy:deepseek-v4", false},
+		{"cn:", "domestic", "auto", true},
+	}
+	for _, tc := range tests {
+		site, rest, ok := config.SplitSitePrefix(tc.in)
+		if site != tc.site || rest != tc.rest || ok != tc.ok {
+			t.Fatalf("SplitSitePrefix(%q)=(%q,%q,%v) want (%q,%q,%v)", tc.in, site, rest, ok, tc.site, tc.rest, tc.ok)
+		}
+	}
+}
+
 func TestNormalizeProduct(t *testing.T) {
 	cases := map[string]string{
 		"":          "codebuddy",

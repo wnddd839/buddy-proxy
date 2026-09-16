@@ -1149,7 +1149,16 @@ function paintStatus(data){
   }
   const activeEnabled = accounts.activeEnabledCount != null ? accounts.activeEnabledCount : enabledCount;
   $('mEnabled').textContent = String(activeEnabled);
-  setHealth(!!data.ok, data.ok ? (loggedIn ? ('服务正常 · ' + siteLabel(poolSite) + '号池 · ' + productLabel(poolProduct)) : ('服务正常 · ' + siteLabel(poolSite) + '号池未登录')) : '状态异常');
+  const up = data.upstream || {};
+  var healthOk = !!data.ok;
+  var healthText = healthOk ? (loggedIn ? ('服务正常 · ' + siteLabel(poolSite) + '号池 · ' + productLabel(poolProduct)) : ('服务正常 · ' + siteLabel(poolSite) + '号池未登录')) : '状态异常';
+  if (up.probed && up.ok === false) {
+    healthOk = false;
+    healthText = '上游不可达' + (up.message ? (' · ' + String(up.message).slice(0, 48)) : '');
+  } else if (up.probed && up.ok) {
+    healthText = '服务正常 · 上游可达 · ' + siteLabel(poolSite) + '号池 · ' + productLabel(poolProduct);
+  }
+  setHealth(healthOk, healthText);
   if (primary && primary.id && primary.hasCredentials && !usageByAccount[primary.id] && !paintStatus._usageKick) {
     paintStatus._usageKick = true;
     fetchAccountUsage(primary.id, true).catch(function(){});
