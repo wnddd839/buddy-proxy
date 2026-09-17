@@ -145,6 +145,11 @@ while IFS= read -r path; do
   # --- path rules (BLOCK) ---
   for rule in "${BLOCK_PATH_RULES[@]}"; do
     if [[ "$path" =~ $rule ]]; then
+      # Tracked templates, not secrets. Already on main; users copy these to .env.
+      base="${path##*/}"
+      if [ "$base" = ".env.example" ]; then
+        break
+      fi
       report_block_path "$path" "$rule"
       break
     fi
