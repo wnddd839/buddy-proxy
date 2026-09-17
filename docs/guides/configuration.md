@@ -28,11 +28,18 @@
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `CODEBUDDY_PROXY_API_KEY` | 空 | 客户端 API Key。**留空时首次启动自动生成 `cbp_...` 并写入 `~/.codebuddy/proxy.env`（与账号池同目录）** |
-| `CODEBUDDY_PROXY_REQUIRE_API_KEY` | 跟随 API Key | `true` 时 `/v1` 强制鉴权。设了 API Key 就默认为 `true` |
+| `CODEBUDDY_PROXY_API_KEY` | 空 | 客户端主 Key。**留空且未配置 `CODEBUDDY_PROXY_API_KEYS` 时，首次启动自动生成 `cbp_...` 并写入 `~/.codebuddy/proxy.env`** |
+| `CODEBUDDY_PROXY_API_KEYS` | 空 | 多 Key 及可选区域绑定，例如 `cbp_aaa:global,cbp_bbb:domestic`。换 Key 等于换区。未写区域的 Key 只做鉴权。主 Key 也可出现在这张表里以绑定区域 |
+| `CODEBUDDY_PROXY_REQUIRE_API_KEY` | 跟随 API Key | `true` 时 `/v1` 强制鉴权。设了主 Key 或多 Key 就默认为 `true` |
 | `CODEBUDDY_PROXY_ADMIN_PASSWORD` | 空 | 管理台密码。**留空 = 管理台免密**（本地推荐），与 API Key 鉴权相互独立 |
 
-管理台「生成 API Key」会覆写 `proxy.env` / `.env` 中的 `CODEBUDDY_PROXY_API_KEY` 并置 `REQUIRE_API_KEY=true`，立即生效、旧 Key 失效。若当前目录已有 `.env` 则仍写该文件（开发方便）；否则写入 `~/.codebuddy/proxy.env`，避免换启动目录就换 Key。
+管理台「生成 API Key」会覆写 `proxy.env` / `.env` 中的 `CODEBUDDY_PROXY_API_KEY` 并置 `REQUIRE_API_KEY=true`，立即生效、旧**主** Key 失效。`CODEBUDDY_PROXY_API_KEYS` 里的绑定 Key 不受影响。若当前目录已有 `.env` 则仍写该文件（开发方便）；否则写入 `~/.codebuddy/proxy.env`，避免换启动目录就换 Key。
+
+同时服务国内 + 国际时，给客户端两把 Key 即可：
+
+```env
+CODEBUDDY_PROXY_API_KEYS=cbp_intl_xxx:global,cbp_cn_xxx:domestic
+```
 
 ## 账号池
 
@@ -48,7 +55,7 @@
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `CODEBUDDY_SITE` | `global` | 默认号池区域。`domestic` / `cn` / `china` / `internal` → 国内；其余（含空）→ 国际。单请求可用模型前缀 `cn:` / `global:` 或头 `X-Site` 覆盖，不必为两区域开双进程 |
+| `CODEBUDDY_SITE` | `global` | 默认号池区域。`domestic` / `cn` / `china` / `internal` → 国内；其余（含空）→ 国际。单请求优先级：模型前缀 `cn:` / `global:` > 头 `X-Site` > Key 绑定 > 本值。不必为两区域开双进程 |
 | `CODEBUDDY_PRODUCT` | `codebuddy` | `workbuddy` / `wb` / `ide` → WorkBuddy IDE 头与域名；其余 → CodeBuddy CLI。国内国际共用，管理台可一键切换 |
 | `CODEBUDDY_INTERNET_ENVIRONMENT` | 空 | `internal` / `ioa` → `copilot.tencent.com`；`domestic` / `cn` / `china` → `www.codebuddy.cn` |
 | `CODEBUDDY_BASE_URL` | 按 site + product 推导 | 显式覆盖上游基址。切产品时管理台会改写为对应门户 |

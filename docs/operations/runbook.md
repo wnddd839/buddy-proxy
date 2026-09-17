@@ -28,7 +28,7 @@ CI（`.github/workflows/ci.yml`）在 push / PR 到 `main` 时执行 `gofmt` 检
 
 ```bash
 curl -fsS http://127.0.0.1:32126/health
-# {"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.3"}
+# {"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.4"}
 # ok 只表示进程存活。上游挂掉时这里仍是 200。
 
 curl -fsS http://127.0.0.1:32126/readyz

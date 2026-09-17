@@ -33,7 +33,7 @@
 - [@240xu](https://github.com/240xu) · [#12](https://github.com/wnddd839/buddy-proxy/pull/12) IDE 模型目录与可对话模型对不上
 - [@zeonseoi](https://github.com/zeonseoi) · [#13](https://github.com/wnddd839/buddy-proxy/issues/13) Qoder CN 同类封装 · [#19](https://github.com/wnddd839/buddy-proxy/issues/19) 流式 Markdown 标题缺空格被当纯文本
 - [@itaid](https://github.com/itaid) · [#14](https://github.com/wnddd839/buddy-proxy/issues/14) Claude Code 的 system 指纹触发上游 11128
-- [@kouekikin24](https://github.com/kouekikin24) · [#15](https://github.com/wnddd839/buddy-proxy/issues/15) SITE 切换后旧会话钉号硬失败 · [#17](https://github.com/wnddd839/buddy-proxy/issues/17) 一个进程同时服务国内+国际 · [#18](https://github.com/wnddd839/buddy-proxy/issues/18) `/health` 是存活探针、上游挂了仍绿灯
+- [@kouekikin24](https://github.com/kouekikin24) · [#15](https://github.com/wnddd839/buddy-proxy/issues/15) SITE 切换后旧会话钉号硬失败 · [#17](https://github.com/wnddd839/buddy-proxy/issues/17) 一个进程同时服务国内+国际 · [#18](https://github.com/wnddd839/buddy-proxy/issues/18) `/health` 是存活探针、上游挂了仍绿灯 · [#20](https://github.com/wnddd839/buddy-proxy/issues/20) `cn:` / `global:` 别名把同一模型拆成多份
 - [@kkl31415926](https://github.com/kkl31415926) · [#16](https://github.com/wnddd839/buddy-proxy/issues/16) 流式 `tool_calls[].index` 缺失导致 Android Studio / OpenAI Java SDK 报错
 
 ---
@@ -63,7 +63,7 @@
 | **标准 OpenAI 形状** | `GET /v1/models` · `POST /v1/chat/completions`，流式与非流式都支持 |
 | **多账号调度** | 同会话钉在同一账号；新会话按额度快照选最大（缺快照或超过 5 分钟才探活）；失败换号前再探活拿最大；凭据以 `0600` 权限落盘 |
 | **真实余额** | 管理台直读官网 Credits，显示「剩余 / 总额」 |
-| **国内 / 国际** | 同一进程可同时持有两区账号。默认区域可在管理台切换；单请求用 `cn:` / `global:` 或 `X-Site` 选区。**端点以账号自身区域为准** |
+| **国内 / 国际** | 同一进程可同时持有两区账号。默认区域可在管理台切换；单请求用 Key 绑定、`X-Site` 或 `cn:` / `global:` 前缀选区。**端点以账号自身区域为准** |
 | **CodeBuddy / WorkBuddy** | 一键切产品：CodeBuddy 走 CLI 头，WorkBuddy 走 IDE 头；模型目录随之切换 |
 | **模型列表** | 走协议 `/v3/config`，60 秒缓存，可强制刷新 |
 | **Token 用量透传** | 流式收尾补 usage chunk，含缓存命中统计（缓存字段兼容多上游别名） |
@@ -121,7 +121,7 @@ go run ./cmd/codebuddy-proxy
 
 管理台密码留空即为免密（本地推荐）。`/v1` 的 API Key 建议保持开启。
 
-> 管理台「生成 API Key」会写入 `.env` 并**立即生效**——旧 Key 当场失效，客户端必须同步更换。
+> 管理台「生成 API Key」会写入 `.env` 并**立即生效**——旧主 Key 当场失效，客户端必须同步更换。`CODEBUDDY_PROXY_API_KEYS` 里的绑定 Key 不受影响。
 
 ---
 
@@ -155,6 +155,10 @@ CODEBUDDY_INTERNET_ENVIRONMENT=internal   # 国际用 public
 
 # 产品（与站点正交；同一套 token）
 CODEBUDDY_PRODUCT=codebuddy      # 或 workbuddy
+
+# 可选：一把 Key 绑一个区域。ZCode 等客户端换 Key 等于换区，
+# GET /v1/models 只返回该区无前缀目录，不再出现 cn: / global: 三份。
+# CODEBUDDY_PROXY_API_KEYS=cbp_aaa:global,cbp_bbb:domestic
 ```
 
 完整变量见 [配置参考](docs/guides/configuration.md)。

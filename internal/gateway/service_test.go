@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
+	"github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 )
 
@@ -358,6 +360,97 @@ func TestCompleteFromPoolRoutesByModelSitePrefix(t *testing.T) {
 	if remote.AccountID != global.ID {
 		t.Fatalf("global: prefix picked %s want %s (no second process)", remote.AccountID, global.ID)
 	}
+}
+
+func TestListModelsOmitsSiteAliasesAndStaysOnOneSite(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "global", Product: "codebuddy", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "global", Site: "global", BearerToken: "token-global", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "domestic", Site: "domestic", BearerToken: "token-domestic", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	svc.Provider.HTTP = &http.Client{Transport: catalogByHostTransport{}}
+
+	listed, err := svc.ListModels(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := modelIDs(listed.Models)
+	for _, id := range ids {
+		if strings.Contains(id, ":") {
+			t.Fatalf("GET catalog must not inject site aliases, got %v", ids)
+		}
+	}
+	if !containsID(ids, "deepseek-v4.1-flash") || !containsID(ids, "gpt-5") {
+		t.Fatalf("default SITE=global catalog=%v", ids)
+	}
+	if containsID(ids, "glm-5.3-flash") {
+		t.Fatalf("domestic-only model leaked into default catalog: %v", ids)
+	}
+
+	cn, err := svc.ListModelsForSite(context.Background(), "domestic", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cnIDs := modelIDs(cn.Models)
+	if containsID(cnIDs, "gpt-5") {
+		t.Fatalf("global-only model leaked into domestic catalog: %v", cnIDs)
+	}
+	if !containsID(cnIDs, "glm-5.3-flash") || !containsID(cnIDs, "deepseek-v4.1-flash") {
+		t.Fatalf("domestic catalog=%v", cnIDs)
+	}
+	if cn.Site != "domestic" {
+		t.Fatalf("site=%q", cn.Site)
+	}
+}
+
+func modelIDs(models []models.Model) []string {
+	out := make([]string, 0, len(models))
+	for _, m := range models {
+		out = append(out, m.ID)
+	}
+	return out
+}
+
+func containsID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
+type catalogByHostTransport struct{}
+
+func (catalogByHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+	host := req.URL.Host
+	token := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	ids := []string{"deepseek-v4.1-flash", "gpt-5"}
+	if token == "token-domestic" || strings.Contains(host, ".cn") {
+		ids = []string{"deepseek-v4.1-flash", "glm-5.3-flash"}
+	}
+	rows := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, map[string]any{"id": id, "name": id})
+	}
+	body, _ := json.Marshal(map[string]any{"models": rows})
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     http.StatusText(http.StatusOK),
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(string(body))),
+		Request:    req,
+	}, nil
 }
 
 func TestSessionPinsAreIsolatedBySite(t *testing.T) {

@@ -9,15 +9,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/gateway"
 )
 
 func testServer(t *testing.T, requireAPIKey bool, adminPassword, apiKey string) *Server {
 	t.Helper()
-	cfg := config.Config{
+	return testServerCfg(t, config.Config{
 		Host:          "127.0.0.1",
 		Port:          32126,
 		RequireAPIKey: requireAPIKey,
@@ -26,6 +28,22 @@ func testServer(t *testing.T, requireAPIKey bool, adminPassword, apiKey string) 
 		AccountsPath:  filepath.Join(t.TempDir(), "accounts.json"),
 		Site:          "domestic",
 		Transport:     config.DefaultTransport,
+	})
+}
+
+func testServerCfg(t *testing.T, cfg config.Config) *Server {
+	t.Helper()
+	if cfg.Host == "" {
+		cfg.Host = "127.0.0.1"
+	}
+	if cfg.Port == 0 {
+		cfg.Port = 32126
+	}
+	if cfg.AccountsPath == "" {
+		cfg.AccountsPath = filepath.Join(t.TempDir(), "accounts.json")
+	}
+	if cfg.Transport == "" {
+		cfg.Transport = config.DefaultTransport
 	}
 	svc := gateway.New(cfg, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 	svc.Provider.HTTP = &http.Client{Transport: stubProbeTransport{status: http.StatusUnauthorized, body: "Authorization Required"}}
@@ -48,6 +66,23 @@ func TestResponsesAPIExplainsChatCompletionsOnly(t *testing.T) {
 	}
 }
 
+func TestResolveRequestSite(t *testing.T) {
+	cases := []struct {
+		model, header, key, want string
+	}{
+		{"global", "cn", "domestic", "global"},
+		{"", "cn", "global", "domestic"},
+		{"", "", "cn", "domestic"},
+		{"", "", "", ""},
+	}
+	for _, tc := range cases {
+		got := resolveRequestSite(tc.model, tc.header, tc.key)
+		if got != tc.want {
+			t.Fatalf("resolveRequestSite(%q,%q,%q)=%q want %q", tc.model, tc.header, tc.key, got, tc.want)
+		}
+	}
+}
+
 func TestAuthorizeAPIKeyRequired(t *testing.T) {
 	srv := testServer(t, true, "", "secret-key")
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/v1/models", nil)
@@ -63,6 +98,117 @@ func TestAuthorizeAPIKeyRequired(t *testing.T) {
 	srv.HTTP.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("with key status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAuthorizeMappedAPIKeys(t *testing.T) {
+	srv := testServerCfg(t, config.Config{
+		RequireAPIKey: true,
+		APIKey:        "cbp_primary",
+		APIKeys:       config.ParseAPIKeys("cbp_cn:domestic,cbp_global:global"),
+		Site:          "domestic",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer cbp_cn")
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mapped key status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer cbp_unknown")
+	rec = httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown key status=%d", rec.Code)
+	}
+}
+
+func TestModelsCatalogFollowsXSite(t *testing.T) {
+	srv := testServer(t, false, "", "")
+	seedBothSites(t, srv)
+	srv.Svc.Provider.HTTP = &http.Client{Transport: catalogByHostTransport{}}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/v1/models", nil)
+	req.Header.Set("X-Site", "global")
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	ids := modelIDsFromList(t, rec.Body.Bytes())
+	if !containsID(ids, "gpt-5") || containsID(ids, "glm-5.3-flash") {
+		t.Fatalf("X-Site=global catalog=%v", ids)
+	}
+	for _, id := range ids {
+		if strings.Contains(id, ":") {
+			t.Fatalf("aliased id %q in %v", id, ids)
+		}
+	}
+}
+
+func TestModelsCatalogFollowsAPIKeySite(t *testing.T) {
+	srv := testServerCfg(t, config.Config{
+		RequireAPIKey: true,
+		APIKey:        "cbp_primary",
+		APIKeys:       config.ParseAPIKeys("cbp_cn:domestic,cbp_global:global"),
+		Site:          "global",
+		Product:       "codebuddy",
+	})
+	seedBothSites(t, srv)
+	srv.Svc.Provider.HTTP = &http.Client{Transport: catalogByHostTransport{}}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer cbp_cn")
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	ids := modelIDsFromList(t, rec.Body.Bytes())
+	if !containsID(ids, "glm-5.3-flash") || containsID(ids, "gpt-5") {
+		t.Fatalf("domestic key catalog=%v", ids)
+	}
+}
+
+func TestChatFollowsAPIKeySiteUnlessModelPrefix(t *testing.T) {
+	srv := testServerCfg(t, config.Config{
+		RequireAPIKey: true,
+		APIKey:        "cbp_primary",
+		APIKeys:       config.ParseAPIKeys("cbp_cn:domestic,cbp_global:global"),
+		Site:          "domestic",
+		Product:       "codebuddy",
+	})
+	seedBothSites(t, srv)
+	transport := &recordingUpstreamTransport{}
+	srv.Svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	post := func(key, model string) {
+		t.Helper()
+		body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.HTTP.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("key=%s model=%s status=%d body=%s", key, model, rec.Code, rec.Body.String())
+		}
+	}
+
+	post("cbp_global", "auto")
+	post("cbp_global", "cn:auto")
+	got := transport.chatTokens()
+	if len(got) < 2 {
+		t.Fatalf("chat tokens=%v", got)
+	}
+	if got[0] != "token-global" {
+		t.Fatalf("unprefixed model with global key used %q want token-global", got[0])
+	}
+	if got[1] != "token-domestic" {
+		t.Fatalf("cn: prefix must override key site, used %q want token-domestic", got[1])
 	}
 }
 
@@ -331,4 +477,105 @@ func TestResolveIncludeUsage(t *testing.T) {
 	if resolveIncludeUsage(&streamOptions{IncludeUsage: &no}) {
 		t.Fatal("explicit false must skip usage trailer")
 	}
+}
+
+func seedBothSites(t *testing.T, srv *Server) {
+	t.Helper()
+	if _, _, err := srv.Svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "global", Site: "global", BearerToken: "token-global", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := srv.Svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "domestic", Site: "domestic", BearerToken: "token-domestic", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func modelIDsFromList(t *testing.T, raw []byte) []string {
+	t.Helper()
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode models: %v body=%s", err, raw)
+	}
+	ids := make([]string, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
+func containsID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
+type recordingUpstreamTransport struct {
+	mu    sync.Mutex
+	chats []string
+}
+
+func (t *recordingUpstreamTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	header := make(http.Header)
+	token := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	if strings.Contains(req.URL.Path, "chat") {
+		t.mu.Lock()
+		t.chats = append(t.chats, token)
+		t.mu.Unlock()
+		header.Set("Content-Type", "text/event-stream")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")),
+			Request:    req,
+		}, nil
+	}
+	header.Set("Content-Type", "application/json")
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     http.StatusText(http.StatusOK),
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(`{"code":0,"data":{}}`)),
+		Request:    req,
+	}, nil
+}
+
+func (t *recordingUpstreamTransport) chatTokens() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string{}, t.chats...)
+}
+
+type catalogByHostTransport struct{}
+
+func (catalogByHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+	token := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
+	ids := []string{"deepseek-v4.1-flash", "gpt-5"}
+	if token == "token-domestic" || strings.Contains(req.URL.Host, ".cn") {
+		ids = []string{"deepseek-v4.1-flash", "glm-5.3-flash"}
+	}
+	rows := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, map[string]any{"id": id, "name": id})
+	}
+	body, _ := json.Marshal(map[string]any{"models": rows})
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     http.StatusText(http.StatusOK),
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(string(body))),
+		Request:    req,
+	}, nil
 }

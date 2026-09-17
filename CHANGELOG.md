@@ -5,6 +5,31 @@
 
 ---
 
+## v0.4.9.4 · 2026-09-17 · API Key 绑区域 · 目录不再灌别名
+
+### 感谢
+
+- [@kouekikin24](https://github.com/kouekikin24) 提出 [#20](https://github.com/wnddd839/buddy-proxy/issues/20)：`cn:` / `global:` 别名把同一模型拆成 2–3 份，ZCode 下拉框从 22 项涨到 73 项。
+
+### 解决了什么
+
+v0.4.9.3 用模型名前缀表达区域，`GET /v1/models` 在两区都有号时额外返回 `cn:` / `global:` 副本。按模型名组织 UI 的客户端会把同一模型显示多次。多数客户端也没有自定义 `X-Site` 的入口。
+
+### 改了什么
+
+- **Key → 区域**：`CODEBUDDY_PROXY_API_KEYS=cbp_aaa:global,cbp_bbb:domestic`。一把 Key 绑定一个号池区域；换 Key 等于换区。未出现在这张表里的主 Key（`CODEBUDDY_PROXY_API_KEY`）行为不变。
+- **干净目录**：`GET /v1/models` 只返回**当前请求区域**的无前缀模型 ID，不再注入 `cn:` / `global:` 别名。区域来源：`X-Site` > Key 绑定 > 进程默认 `CODEBUDDY_SITE`。
+- **聊天选区**：`模型前缀 > X-Site > Key 绑定 > CODEBUDDY_SITE`。`cn:` / `global:` 前缀仍可打聊天，只是不再出现在模型列表里。
+- 已配置 `CODEBUDDY_PROXY_API_KEYS` 时，启动不再额外生成一把主 Key。
+
+### 升级注意
+
+覆盖旧二进制后重启。若客户端曾把 `cn:deepseek-…` 写进模型列表，改回纯名字，并用两把 Key（或 `X-Site`）区分区域。单 Key 用户看到的目录会回到默认区域的一份干净列表。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.4.9.4
+
+---
+
 ## v0.4.9.3 · 2026-09-16 · 按请求选区 · 上游就绪探测 · Markdown 标题
 
 ### 感谢

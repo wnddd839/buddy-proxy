@@ -55,7 +55,8 @@ chmod +x ./codebuddy-proxy-linux-amd64   # 或 darwin 对应文件
 | 变量 | 说明 |
 |------|------|
 | `CODEBUDDY_PROXY_ADMIN_PASSWORD` | 管理后台密码；**留空=免密**（本地推荐）。API Key 仍可单独开启 |
-| `CODEBUDDY_PROXY_API_KEY` | 客户端 API Key |
+| `CODEBUDDY_PROXY_API_KEY` | 客户端主 Key |
+| `CODEBUDDY_PROXY_API_KEYS` | 可选。多 Key 绑区域，例如 `cbp_aaa:global,cbp_bbb:domestic` |
 | `CODEBUDDY_PROXY_PORT` | 端口，默认 `32126` |
 | `CODEBUDDY_SITE` | `domestic` 或 `global` |
 | `CODEBUDDY_PRODUCT` | `codebuddy`（默认）或 `workbuddy` |

@@ -22,7 +22,7 @@ func main() {
 
 	// First-run / binary UX: if no gateway key is configured, create one and
 	// persist it to .env so clients don't break after restart.
-	if strings.TrimSpace(cfg.APIKey) == "" {
+	if strings.TrimSpace(cfg.APIKey) == "" && len(cfg.APIKeys) == 0 {
 		key, err := server.GenerateProxyAPIKey()
 		if err != nil {
 			logger.Error("failed to generate default api key", "error", err)

@@ -209,6 +209,7 @@ func UpsertEnvFile(path string, values map[string]string) error {
 	// 追加缺失的键。
 	ordered := []string{
 		"CODEBUDDY_PROXY_API_KEY",
+		"CODEBUDDY_PROXY_API_KEYS",
 		"CODEBUDDY_PROXY_ADMIN_PASSWORD",
 		"CODEBUDDY_PROXY_REQUIRE_API_KEY",
 		"CODEBUDDY_SITE",

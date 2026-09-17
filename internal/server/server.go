@@ -134,22 +134,25 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModelsAuth(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeAPI(w, r) {
+	ok, keySite := s.authorizeAPI(w, r)
+	if !ok {
 		return
 	}
-	s.handleModels(w, r)
+	s.handleModels(w, r, keySite)
 }
 
 func (s *Server) handleChatAuth(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeAPI(w, r) {
+	ok, keySite := s.authorizeAPI(w, r)
+	if !ok {
 		return
 	}
-	s.handleChatCompletions(w, r)
+	s.handleChatCompletions(w, r, keySite)
 }
 
 // handleResponsesUnsupported：本代理只实现 Chat Completions，不实现 OpenAI Responses API。
 func (s *Server) handleResponsesUnsupported(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeAPI(w, r) {
+	ok, _ := s.authorizeAPI(w, r)
+	if !ok {
 		return
 	}
 	httputil.WriteJSON(w, http.StatusBadRequest, openai.NewError(
@@ -179,20 +182,21 @@ func (s *Server) handleFallback(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusNotFound, openai.NewError(fmt.Sprintf("Unsupported route: %s", path), "not_found_error"))
 }
 
-func (s *Server) authorizeAPI(w http.ResponseWriter, r *http.Request) bool {
+func (s *Server) authorizeAPI(w http.ResponseWriter, r *http.Request) (bool, string) {
 	cfg := s.Svc.Config()
 	if !cfg.RequireAPIKey {
-		return true
+		return true, ""
 	}
 	token := httputil.BearerToken(r)
 	if token == "" {
 		token = strings.TrimSpace(r.Header.Get("X-API-Key"))
 	}
-	if token == "" || !secretEqual(token, cfg.APIKey) {
+	ok, site := cfg.LookupAPIKey(token)
+	if !ok {
 		httputil.WriteJSON(w, http.StatusUnauthorized, openai.NewError("Missing or invalid API key", "authentication_error"))
-		return false
+		return false, ""
 	}
-	return true
+	return true, site
 }
 
 func (s *Server) authorizeAdmin(w http.ResponseWriter, r *http.Request) bool {
@@ -220,15 +224,16 @@ func secretEqual(a, b string) bool {
 }
 
 func (s *Server) handleModelInfoAuth(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeAPI(w, r) {
+	ok, keySite := s.authorizeAPI(w, r)
+	if !ok {
 		return
 	}
-	s.handleModelInfo(w, r)
+	s.handleModelInfo(w, r, keySite)
 }
 
-func (s *Server) handleModelInfo(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleModelInfo(w http.ResponseWriter, r *http.Request, keySite string) {
 	fresh := queryTruthy(r.URL.Query().Get("fresh"))
-	listed, err := s.Svc.ListModels(r.Context(), fresh)
+	listed, err := s.Svc.ListModelsForSite(r.Context(), resolveRequestSite("", r.Header.Get("X-Site"), keySite), fresh)
 	models := listed.Models
 	if err != nil || len(models) == 0 {
 		models = s.Svc.ConfiguredModels()
@@ -243,9 +248,9 @@ func (s *Server) handleModelInfo(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"data": data})
 }
 
-func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request, keySite string) {
 	fresh := queryTruthy(r.URL.Query().Get("fresh"))
-	listed, err := s.Svc.ListModels(r.Context(), fresh)
+	listed, err := s.Svc.ListModelsForSite(r.Context(), resolveRequestSite("", r.Header.Get("X-Site"), keySite), fresh)
 	models := listed.Models
 	if err != nil || len(models) == 0 {
 		models = s.Svc.ConfiguredModels()
@@ -285,7 +290,17 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
-func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+func resolveRequestSite(modelSite, headerSite, keySite string) string {
+	if site := config.OptionalSite(modelSite); site != "" {
+		return site
+	}
+	if site := config.OptionalSite(headerSite); site != "" {
+		return site
+	}
+	return config.OptionalSite(keySite)
+}
+
+func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, keySite string) {
 	var body struct {
 		Model               string           `json:"model"`
 		Messages            []map[string]any `json:"messages"`
@@ -323,10 +338,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		maxTokens = *body.MaxTokens
 	}
 	reasoningEffort := strutil.First(body.ReasoningEffort, body.ReasoningEffortAlt)
-	site := providerModel.Site
-	if site == "" {
-		site = config.OptionalSite(r.Header.Get("X-Site"))
-	}
+	site := resolveRequestSite(providerModel.Site, r.Header.Get("X-Site"), keySite)
 	completeOpts := gateway.CompleteOptions{
 		Model:               providerModel.Model,
 		Messages:            body.Messages,

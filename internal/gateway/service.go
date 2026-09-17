@@ -674,7 +674,15 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, 
 }
 
 func (s *Service) ListModels(ctx context.Context, fresh bool) (models.ListResult, error) {
-	return s.ListModelsForSites(ctx, fresh, s.credentialedSites())
+	return s.ListModelsForSite(ctx, "", fresh)
+}
+
+// ListModelsForSite 返回单个区域的无前缀目录。site 为空时用进程默认 SITE。
+func (s *Service) ListModelsForSite(ctx context.Context, site string, fresh bool) (models.ListResult, error) {
+	if strings.TrimSpace(site) == "" {
+		site = s.ActivePoolSite()
+	}
+	return s.listModelsForSite(ctx, config.NormalizeSite(site), fresh)
 }
 
 func (s *Service) credentialedSites() []string {
@@ -710,61 +718,6 @@ func (s *Service) credentialedSites() []string {
 		}
 	}
 	return out
-}
-
-func (s *Service) ListModelsForSites(ctx context.Context, fresh bool, sites []string) (models.ListResult, error) {
-	if len(sites) == 0 {
-		sites = []string{s.ActivePoolSite()}
-	}
-	if len(sites) == 1 {
-		return s.listModelsForSite(ctx, sites[0], fresh)
-	}
-	def := s.ActivePoolSite()
-	var merged models.ListResult
-	var notes []string
-	seenID := map[string]struct{}{}
-	for _, site := range sites {
-		listed, err := s.listModelsForSite(ctx, site, fresh)
-		if err != nil {
-			notes = append(notes, site+": "+err.Error())
-			continue
-		}
-		if listed.Message != "" {
-			notes = append(notes, listed.Message)
-		}
-		if !listed.OK && len(listed.Models) == 0 {
-			continue
-		}
-		if merged.ModelsSource == "" {
-			merged.ModelsSource = listed.ModelsSource
-		}
-		for _, model := range listed.Models {
-			if site == def {
-				if _, ok := seenID[model.ID]; !ok {
-					seenID[model.ID] = struct{}{}
-					merged.Models = append(merged.Models, model)
-				}
-			}
-			tagged := model
-			tagged.ID = config.SiteModelPrefix(site) + ":" + model.ID
-			if _, ok := seenID[tagged.ID]; ok {
-				continue
-			}
-			seenID[tagged.ID] = struct{}{}
-			merged.Models = append(merged.Models, tagged)
-		}
-		if listed.OK {
-			merged.OK = true
-		}
-	}
-	merged.Site = def
-	if !merged.OK && len(merged.Models) == 0 {
-		return s.listModelsForSite(ctx, def, fresh)
-	}
-	if len(notes) > 0 {
-		merged.Message = strings.Join(notes, "; ")
-	}
-	return merged, nil
 }
 
 func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fresh bool) (models.ListResult, error) {
@@ -948,7 +901,7 @@ func (s *Service) ActiveProduct() string {
 }
 
 func (s *Service) SetPoolSite(site string) (map[string]any, error) {
-	return s.persistPoolRouting(site, s.ActiveProduct(), "号池默认区域已切换到 "+config.NormalizeSite(site)+"。请求仍可用 cn:/global: 前缀或 X-Site 覆盖。")
+	return s.persistPoolRouting(site, s.ActiveProduct(), "号池默认区域已切换到 "+config.NormalizeSite(site)+"。请求仍可用 Key 绑定、X-Site 或 cn:/global: 前缀覆盖。")
 }
 
 func (s *Service) SetPoolProduct(product string) (map[string]any, error) {

@@ -98,7 +98,8 @@ CODEBUDDY_INTERNET_ENVIRONMENT=internal
 | `no credentials` | 先完成 OAuth 登录 |
 | 管理台打不开 / 一直弹登录 | 确认 admin 密码；留空则免密 |
 | 国内账号打到海外 | 端点以**账号 site** 为准；检查账号 `site` 字段 |
-| 想同时用国内+国际 | 一个进程即可。模型用 `cn:…` / `global:…`，或请求头 `X-Site`。不要再开第二个进程 |
+| 想同时用国内+国际 | 一个进程即可。ZCode 等客户端建议配两把 Key（`CODEBUDDY_PROXY_API_KEYS`）各绑一区；也可 `X-Site` 或聊天时写 `cn:…` / `global:…`。不要再开第二个进程 |
+| 模型列表出现 `cn:` / `global:` 三份 | 升级到 v0.4.9.4+；目录不再返回区域别名 |
 | 模型列表只有 `auto` | 未登录或上游 `/v3/config` 为空；点管理台「刷新模型」 |
 
 更多排障见 [../operations/runbook.md](../operations/runbook.md)。

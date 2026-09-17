@@ -26,7 +26,7 @@ Authorization: Bearer <CODEBUDDY_PROXY_API_KEY>
 无需鉴权。
 
 ```json
-{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.3"}
+{"ok":true,"provider":"codebuddy","transport":"protocol_direct","version":"v0.4.9.4"}
 ```
 
 `ok` 表示**进程存活**（liveness）。上游挂掉时这里仍是 200。
@@ -166,15 +166,15 @@ OpenCode 配置示例：
 
 | 字段 | 说明 |
 |------|------|
-| `model` | 支持 `codebuddy/<id>` / `codebuddy:<id>` 前缀；也支持按请求选区：`cn:` / `domestic:`（国内）与 `global:` / `intl:`（国际）。无前缀时用进程默认 `CODEBUDDY_SITE`。空或 `default` 归一为 `auto` |
+| `model` | 支持 `codebuddy/<id>` / `codebuddy:<id>` 前缀；也支持按请求选区：`cn:` / `domestic:`（国内）与 `global:` / `intl:`（国际）。无前缀时：`X-Site` > Key 绑定的区域 > 进程默认 `CODEBUDDY_SITE`。空或 `default` 归一为 `auto` |
 | `stream` | `false` → `application/json`；`true` → `text/event-stream` |
 | `stream_options.include_usage` | 缺省按 `true` 推送空 `choices` 的 usage 收尾 chunk；显式 `false` 跳过 |
 | `max_tokens` / `max_completion_tokens` | 二者取正数，后者优先 |
 | `tool_choice` | 对象型会被归一为 `auto` / `none` / `required` |
 
-请求头 `X-Site: domestic|global` 可覆盖默认区域（模型前缀优先）。同一进程可同时持有国内号和国际号，不必再为两区域各开一个进程。
+请求头 `X-Site: domestic|global` 可覆盖默认区域（模型前缀优先）。网关 Key 也可绑定区域（见 `CODEBUDDY_PROXY_API_KEYS`）。同一进程可同时持有国内号和国际号，不必再为两区域各开一个进程。
 
-号池里两个区域都有可用账号时，`GET /v1/models` 会同时返回默认区域的无前缀 ID，以及 `cn:` / `global:` 带前缀别名。
+`GET /v1/models` 只返回**当前请求区域**的无前缀模型 ID（`X-Site` > Key 绑定 > `CODEBUDDY_SITE`），不再注入 `cn:` / `global:` 别名。聊天请求仍可手写带前缀的模型名。
 
 JSON 请求体上限 **64MiB**（`httputil.MaxJSONBodyBytes`）。超过时返回 `413`：
 
@@ -251,10 +251,10 @@ usage chunk 形如：
 | GET | `/direct-admin/api/usage` | 用量汇总 + 分页明细 + 趋势 `series`；默认落盘 `proxy-usage.json`（约 400 条环形缓冲 + 90 日汇总） |
 | GET | `/direct-admin/api/client-config` | 前端配置（baseUrl / apiKey / site / requireApiKey） |
 | POST | `/direct-admin/api/client-config/generate-key` | 生成 `cbp_...` Key，写入 `~/.codebuddy/proxy.env`（或已有 `.env`）并立即生效 |
-| POST · PUT | `/direct-admin/api/pool-site` | 切换**默认**号池区域 `domestic` / `global`，回写 `.env`。请求仍可用 `cn:`/`global:` 或 `X-Site` 覆盖 |
+| POST · PUT | `/direct-admin/api/pool-site` | 切换**默认**号池区域 `domestic` / `global`，回写 `.env`。请求仍可用 Key 绑定、`X-Site` 或 `cn:`/`global:` 前缀覆盖 |
 | POST · PUT | `/direct-admin/api/pool-product` | 切换上游产品 `codebuddy` / `workbuddy`，回写 `.env`；国内国际账号共用同一选择 |
 
-`generate-key` 会同步置 `CODEBUDDY_PROXY_REQUIRE_API_KEY=true`。**旧 Key 立即失效**，客户端必须同步更换。
+`generate-key` 会同步置 `CODEBUDDY_PROXY_REQUIRE_API_KEY=true`。**主 Key（`CODEBUDDY_PROXY_API_KEY`）立即失效**，客户端必须同步更换。`CODEBUDDY_PROXY_API_KEYS` 里的绑定 Key 不受影响。
 
 ### 账号池
 

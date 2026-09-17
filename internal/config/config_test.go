@@ -31,6 +31,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("CODEBUDDY_PROXY_PORT", "")
 	t.Setenv("CURSOR_DIRECT_PORT", "")
 	t.Setenv("CODEBUDDY_PROXY_API_KEY", "")
+	t.Setenv("CODEBUDDY_PROXY_API_KEYS", "")
 	t.Setenv("CURSOR_DIRECT_API_KEY", "")
 	t.Setenv("CURSOR_GATEWAY_API_KEY", "")
 	_ = os.Unsetenv("CODEBUDDY_PROXY_HOST")
@@ -82,6 +83,77 @@ func TestOptionalSiteEmptyStaysEmpty(t *testing.T) {
 	}
 	if got := config.OptionalSite("cn"); got != "domestic" {
 		t.Fatalf("OptionalSite cn=%q", got)
+	}
+}
+
+func TestLoadAPIKeys(t *testing.T) {
+	t.Setenv("CODEBUDDY_PROXY_API_KEY", "")
+	t.Setenv("CURSOR_DIRECT_API_KEY", "")
+	t.Setenv("CURSOR_GATEWAY_API_KEY", "")
+	t.Setenv("CODEBUDDY_PROXY_API_KEYS", "cbp_aaa:global, cbp_bbb:cn")
+	t.Setenv("CODEBUDDY_PROXY_REQUIRE_API_KEY", "")
+	cfg := config.Load()
+	if !cfg.RequireAPIKey {
+		t.Fatal("mapped keys should enable requireApiKey")
+	}
+	if len(cfg.APIKeys) != 2 || cfg.APIKeys[0].Site != "global" || cfg.APIKeys[1].Site != "domestic" {
+		t.Fatalf("APIKeys=%#v", cfg.APIKeys)
+	}
+}
+
+func TestParseAPIKeys(t *testing.T) {
+	got := config.ParseAPIKeys("cbp_aaa:global, cbp_bbb:cn,cbp_ccc")
+	want := []config.APIKeyBinding{
+		{Key: "cbp_aaa", Site: "global"},
+		{Key: "cbp_bbb", Site: "domestic"},
+		{Key: "cbp_ccc", Site: ""},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len=%d want %d (%#v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("item %d = %#v want %#v", i, got[i], want[i])
+		}
+	}
+	if n := len(config.ParseAPIKeys("")); n != 0 {
+		t.Fatalf("empty input len=%d", n)
+	}
+}
+
+func TestLookupAPIKey(t *testing.T) {
+	cfg := config.Config{
+		APIKey:        "cbp_primary",
+		RequireAPIKey: true,
+		APIKeys:       config.ParseAPIKeys("cbp_aaa:global,cbp_bbb:domestic"),
+	}
+	cases := []struct {
+		token string
+		ok    bool
+		site  string
+	}{
+		{"cbp_aaa", true, "global"},
+		{"cbp_bbb", true, "domestic"},
+		{"cbp_primary", true, ""},
+		{"cbp_unknown", false, ""},
+		{"", false, ""},
+	}
+	for _, tc := range cases {
+		ok, site := cfg.LookupAPIKey(tc.token)
+		if ok != tc.ok || site != tc.site {
+			t.Fatalf("LookupAPIKey(%q)=(%v,%q) want (%v,%q)", tc.token, ok, site, tc.ok, tc.site)
+		}
+	}
+}
+
+func TestLookupAPIKeyPrimaryAlsoBound(t *testing.T) {
+	cfg := config.Config{
+		APIKey:  "cbp_aaa",
+		APIKeys: config.ParseAPIKeys("cbp_aaa:cn"),
+	}
+	ok, site := cfg.LookupAPIKey("cbp_aaa")
+	if !ok || site != "domestic" {
+		t.Fatalf("bound primary = (%v,%q) want (true, domestic)", ok, site)
 	}
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/subtle"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,10 +26,17 @@ const (
 	DefaultMaxIdleConnsPerHost = 20
 )
 
+// APIKeyBinding 把一把网关 Key 绑到可选区域。Site 为空表示不绑定，走进程默认 SITE。
+type APIKeyBinding struct {
+	Key  string
+	Site string
+}
+
 type Config struct {
 	Host                string
 	Port                int
 	APIKey              string
+	APIKeys             []APIKeyBinding
 	AdminPassword       string
 	RequireAPIKey       bool
 	PublicBaseURL       string
@@ -60,6 +68,7 @@ func Load() Config {
 		Host:                envOr("CODEBUDDY_PROXY_HOST", "CURSOR_DIRECT_HOST", DefaultHost),
 		Port:                envInt("CODEBUDDY_PROXY_PORT", "CURSOR_DIRECT_PORT", DefaultPort),
 		APIKey:              firstEnv("CODEBUDDY_PROXY_API_KEY", "CURSOR_DIRECT_API_KEY", "CURSOR_GATEWAY_API_KEY"),
+		APIKeys:             ParseAPIKeys(firstEnv("CODEBUDDY_PROXY_API_KEYS")),
 		AdminPassword:       firstEnv("CODEBUDDY_PROXY_ADMIN_PASSWORD", "CURSOR_DIRECT_ADMIN_PASSWORD", "CURSOR_GATEWAY_ADMIN_PASSWORD"),
 		PublicBaseURL:       strings.TrimRight(firstEnv("CODEBUDDY_PROXY_PUBLIC_BASE_URL", "CURSOR_DIRECT_PUBLIC_BASE_URL"), "/"),
 		AccountsPath:        expandHome(envOr("CODEBUDDY_PROXY_ACCOUNTS_PATH", "CURSOR_DIRECT_CODEBUDDY_ACCOUNTS_PATH", defaultAccountsPath())),
@@ -82,7 +91,7 @@ func Load() Config {
 
 	// 管理台密码为空则开放管理页（本地友好）。
 	// /v1 API Key 门禁仍由 CODEBUDDY_PROXY_REQUIRE_API_KEY 独立控制。
-	cfg.RequireAPIKey = envBool("CODEBUDDY_PROXY_REQUIRE_API_KEY", "CURSOR_DIRECT_REQUIRE_API_KEY", cfg.APIKey != "")
+	cfg.RequireAPIKey = envBool("CODEBUDDY_PROXY_REQUIRE_API_KEY", "CURSOR_DIRECT_REQUIRE_API_KEY", cfg.APIKey != "" || len(cfg.APIKeys) > 0)
 	if usageEnv := strings.TrimSpace(firstEnv("CODEBUDDY_PROXY_USAGE_PATH")); usageEnv != "" {
 		cfg.UsagePath = expandHome(usageEnv)
 	} else {
@@ -221,6 +230,58 @@ func envDuration(primary, fallback string, def time.Duration) time.Duration {
 
 func (c Config) Addr() string {
 	return c.Host + ":" + strconv.Itoa(c.Port)
+}
+
+// ParseAPIKeys 解析 `cbp_aaa:global,cbp_bbb:domestic`。无区域后缀的 Key 仍可鉴权，只是不绑 site。
+func ParseAPIKeys(raw string) []APIKeyBinding {
+	parts := strings.Split(raw, ",")
+	out := make([]APIKeyBinding, 0, len(parts))
+	seen := map[string]int{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key, site := part, ""
+		if k, rest, ok := strings.Cut(part, ":"); ok {
+			key = strings.TrimSpace(k)
+			site = OptionalSite(rest)
+		}
+		if key == "" {
+			continue
+		}
+		binding := APIKeyBinding{Key: key, Site: site}
+		if i, ok := seen[key]; ok {
+			out[i] = binding
+			continue
+		}
+		seen[key] = len(out)
+		out = append(out, binding)
+	}
+	return out
+}
+
+// LookupAPIKey 校验网关 Key。ok 表示鉴权通过；site 非空表示这把 Key 绑定了区域。
+func (c Config) LookupAPIKey(token string) (ok bool, site string) {
+	if token == "" {
+		return false, ""
+	}
+	matched := false
+	matchedSite := ""
+	for _, binding := range c.APIKeys {
+		if secretEqual(token, binding.Key) {
+			matched = true
+			matchedSite = binding.Site
+		}
+	}
+	if secretEqual(token, c.APIKey) {
+		matched = true
+	}
+	return matched, matchedSite
+}
+
+func secretEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func NormalizeSite(value string) string {
