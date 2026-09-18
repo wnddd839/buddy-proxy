@@ -521,6 +521,25 @@ func TestResolveFailureCooldownHonors6004ResetTime(t *testing.T) {
 	}
 }
 
+func TestResolveFailureCooldown6004RealWorldTail(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{}
+	reset := time.Now().In(loc).Add(13 * time.Hour).Truncate(time.Second)
+	// 生产实收文案：时间戳后紧跟 ", alternatively…"，旧截断集（\n;)][）拦不住它。
+	realWorld := fmt.Errorf("CodeBuddy chat completion failed with 429: usage exceeds frequency limit, but don't worry, your usage will reset at %s UTC+8, alternatively, you can switch to the other models to continue using it. (code 6004) [region=global site=global endpoint=https://www.workbuddy.ai/v2/chat/completions domain=www.workbuddy.ai model=deepseek-v4.1-flash]", reset.Format("2006-01-02 15:04:05"))
+	got := svc.resolveFailureCooldown(context.Background(), accounts.Account{}, realWorld)
+	if got == 2*time.Minute {
+		t.Fatalf("real-world 6004 fell back to fixed 2m cooldown; parse miss")
+	}
+	want := time.Until(reset)
+	if diff := got - want; diff < -2*time.Second || diff > 2*time.Second {
+		t.Fatalf("real-world 6004 cooldown=%s want ~%s", got, want)
+	}
+}
+
 func TestResolveFailureCooldown6004WithoutTimeStaysTwoMinutes(t *testing.T) {
 	svc := &Service{}
 	got := svc.resolveFailureCooldown(context.Background(), accounts.Account{}, errors.New("failed with 429: 6004 rate-model (no reset clock)"))
