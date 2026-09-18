@@ -476,12 +476,106 @@ func TestCompleteFromPoolPinnedDisabledLastAccountReturnsPoolError(t *testing.T)
 	}
 }
 
-func TestResolveFailureCooldown6004UsesFixedTwoMinutes(t *testing.T) {
-	svc := &Service{}
-	got := svc.resolveFailureCooldown(context.Background(), accounts.Account{}, errors.New("failed with 429: 6004 rate-model will reset at 2099-01-01 00:00:00"))
-	if got != 2*time.Minute {
-		t.Fatalf("resolveFailureCooldown(6004)=%s want 2m until experiment B", got)
+func TestResolveFailureCooldownHonors6004ResetTime(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
 	}
+	svc := &Service{}
+
+	localReset := time.Now().In(loc).Add(3 * time.Hour).Truncate(time.Second)
+	localErr := fmt.Errorf("failed with 429: 6004 rate-model will reset at %s", localReset.Format("2006-01-02 15:04:05"))
+	got := svc.resolveFailureCooldown(context.Background(), accounts.Account{}, localErr)
+	want := time.Until(localReset)
+	if got <= 0 || got > 48*time.Hour {
+		t.Fatalf("6004 local cooldown=%s want (0, 48h]", got)
+	}
+	if diff := got - want; diff < -2*time.Second || diff > 2*time.Second {
+		t.Fatalf("6004 local cooldown=%s want ~%s (parsed %s)", got, want, localReset.Format(time.RFC3339))
+	}
+
+	rfcReset := time.Now().Add(90 * time.Minute).Truncate(time.Second)
+	rfcErr := fmt.Errorf("failed with 429: 6004 will reset at %s", rfcReset.UTC().Format(time.RFC3339))
+	got = svc.resolveFailureCooldown(context.Background(), accounts.Account{}, rfcErr)
+	want = time.Until(rfcReset)
+	if diff := got - want; diff < -2*time.Second || diff > 2*time.Second {
+		t.Fatalf("6004 rfc3339 cooldown=%s want ~%s", got, want)
+	}
+
+	farErr := errors.New("failed with 429: 6004 rate-model will reset at 2099-01-01 00:00:00")
+	got = svc.resolveFailureCooldown(context.Background(), accounts.Account{}, farErr)
+	if got != 48*time.Hour {
+		t.Fatalf("6004 far-future cooldown=%s want 48h clamp", got)
+	}
+}
+
+func TestResolveFailureCooldown6004WithoutTimeStaysTwoMinutes(t *testing.T) {
+	svc := &Service{}
+	got := svc.resolveFailureCooldown(context.Background(), accounts.Account{}, errors.New("failed with 429: 6004 rate-model (no reset clock)"))
+	if got != 2*time.Minute {
+		t.Fatalf("6004 without time cooldown=%s want 2m", got)
+	}
+}
+
+func TestResolveFailureCooldownQuotaDoesNotUse6004Parser(t *testing.T) {
+	svc := &Service{}
+	got := svc.resolveFailureCooldown(context.Background(), accounts.Account{}, errors.New("quota exhausted will reset at 2099-01-01 00:00:00"))
+	if got == 48*time.Hour {
+		t.Fatal("quota exhausted must not take the 6004 error-text cooldown")
+	}
+}
+
+func TestPoolSelectSkipsUntil6004Reset(t *testing.T) {
+	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
+	t.Cleanup(func() { _ = pool.Close() })
+	one, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "one", BearerToken: "token-one", Site: "domestic",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "two", BearerToken: "token-two", Site: "domestic",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel, err := pool.Select(accounts.SelectOptions{Site: "domestic", AccountID: one.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reset := time.Now().Add(1200 * time.Millisecond)
+	msg := fmt.Sprintf("failed with 429: 6004 will reset at %s", reset.Format(time.RFC3339Nano))
+	cooldown := (&Service{}).resolveFailureCooldown(context.Background(), sel.Account, errors.New(msg))
+	if cooldown <= 0 || cooldown > time.Second+500*time.Millisecond {
+		t.Fatalf("expected short parsed cooldown, got %s", cooldown)
+	}
+	if err := pool.MarkResult(sel, false, msg, cooldown); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 8; i++ {
+		picked, err := pool.Select(accounts.SelectOptions{Site: "domestic"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if picked.Account.ID == one.ID {
+			t.Fatalf("expected 6004 cooldown account skipped, got %s on attempt %d", one.ID, i+1)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		picked, err := pool.Select(accounts.SelectOptions{Site: "domestic"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if picked.Account.ID == one.ID {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("expected account to rejoin pool after 6004 reset")
 }
 
 func TestCompleteFromPoolRoutesByModelSitePrefix(t *testing.T) {

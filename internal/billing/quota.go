@@ -77,7 +77,7 @@ func creditsNextResetAt(credits Credits, now time.Time) int64 {
 	nowMs := now.UnixMilli()
 	best := int64(0)
 	consider := func(raw string) {
-		ms := parseBillingTimeMillis(raw)
+		ms := ParseBillingTimeMillis(raw)
 		if ms <= nowMs {
 			return
 		}
@@ -94,6 +94,62 @@ func creditsNextResetAt(credits Credits, now time.Time) int64 {
 }
 
 func parseBillingTimeMillis(raw string) int64 {
+	return ParseBillingTimeMillis(raw)
+}
+
+const maxModelRateLimitCooldown = 48 * time.Hour
+
+// ModelRateLimitCooldown 从 6004 / rate-model 的 "will reset at" 文案解析冷却时长。
+// 解析失败或已过期时返回 ok=false，由调用方回退固定表。
+func ModelRateLimitCooldown(err error, now time.Time) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	has6004 := strings.Contains(lower, "6004")
+	hasRateModel := strings.Contains(lower, "rate-model") || strings.Contains(lower, "rate model")
+	if !has6004 && !hasRateModel {
+		return 0, false
+	}
+	if !strings.Contains(lower, "will reset at") {
+		return 0, false
+	}
+	ms := ParseBillingTimeMillis(extractWillResetAt(msg))
+	if ms <= 0 {
+		return 0, false
+	}
+	d := time.Duration(ms-now.UnixMilli()) * time.Millisecond
+	if d <= 0 {
+		return 0, false
+	}
+	if d > maxModelRateLimitCooldown {
+		d = maxModelRateLimitCooldown
+	}
+	return d, true
+}
+
+func extractWillResetAt(msg string) string {
+	lower := strings.ToLower(msg)
+	idx := strings.Index(lower, "will reset at")
+	if idx < 0 {
+		return ""
+	}
+	raw := strings.TrimSpace(msg[idx+len("will reset at"):])
+	if cut := strings.IndexAny(raw, "\n;)]"); cut >= 0 {
+		raw = strings.TrimSpace(raw[:cut])
+	}
+	lowerRaw := strings.ToLower(raw)
+	for _, suffix := range []string{" utc+8", " utc+08", " utc+08:00", " gmt+8", " gmt+08"} {
+		if strings.HasSuffix(lowerRaw, suffix) {
+			return strings.TrimSpace(raw[:len(raw)-len(suffix)])
+		}
+	}
+	return raw
+}
+
+// ParseBillingTimeMillis 解析上游时间戳。无时区按 Asia/Shanghai。
+func ParseBillingTimeMillis(raw string) int64 {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "<nil>" {
 		return 0

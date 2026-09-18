@@ -82,6 +82,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 - OAuth / Upsert / Delete / Replace / SetEnabled 同步刷盘（凭据不可丢）
 - 文件权限 `0600`，写入走 temp + rename 原子替换
 - `Pool.Close` / `Service.Close` / `Server.Shutdown` 强制 flush
+- 运行中禁止双实例共享同一账号文件，也禁止外部编辑后指望热合并；内存为权威
 
 ## 与 Node legacy 的关系
 

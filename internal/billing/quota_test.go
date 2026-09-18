@@ -63,6 +63,9 @@ func TestIsQuotaExhaustedErrorRejectsPlain429(t *testing.T) {
 	if IsQuotaExhaustedError(errors.New("429 too many requests")) {
 		t.Fatal("plain 429 should not trigger quota probe")
 	}
+	if IsQuotaExhaustedError(errors.New("failed with 429: 6004 will reset at 2099-01-01 00:00:00")) {
+		t.Fatal("6004 must not be treated as quota exhausted")
+	}
 	if !IsQuotaExhaustedError(errors.New("quota exhausted")) {
 		t.Fatal("quota message should match")
 	}
@@ -123,7 +126,7 @@ func TestParseBillingTimeMillisUsesChinaLocal(t *testing.T) {
 	}
 	raw := "2026-09-08T18:00:00"
 	want := time.Date(2026, 9, 8, 18, 0, 0, 0, loc).UnixMilli()
-	got := parseBillingTimeMillis(raw)
+	got := ParseBillingTimeMillis(raw)
 	if got != want {
 		t.Fatalf("got=%d want=%d", got, want)
 	}

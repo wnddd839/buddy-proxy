@@ -226,6 +226,7 @@ make release   # 四平台交叉编译 + SHA256SUMS.txt
 - **不要把 `.env`、账号 JSON、token、API Key 提交进仓库或分享给他人**
 - 管理台密码与 API Key 分开管理；本项目已移除 URL query 传密方式
 - 定期备份账号池 JSON，但注意其中包含凭据
+- 运行中的 `proxy-accounts.json` 只允许本进程写。禁止双实例共享同一文件；禁止外部编辑后指望不重启合并。外部加号请走管理台 Upsert，或停进程再改文件再启动。
 
 漏洞报告请勿开公开 issue，见 [SECURITY.md](SECURITY.md)。
 

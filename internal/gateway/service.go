@@ -568,7 +568,25 @@ func isRetryExhausted(err error) bool {
 
 func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.Account, err error) time.Duration {
 	base := failureCooldown(err)
+	if d, ok := billing.ModelRateLimitCooldown(err, time.Now()); ok {
+		s.logFailureCooldown(account.ID, d, "error_text")
+		return d
+	}
+	msg := ""
+	if err != nil {
+		msg = strings.ToLower(err.Error())
+	}
+	if strings.Contains(msg, "6004") {
+		if base <= 0 {
+			base = 2 * time.Minute
+		}
+		s.logFailureCooldown(account.ID, base, "fixed_2m")
+		return base
+	}
 	if s == nil || s.Pool == nil || s.Provider == nil || !billing.IsQuotaExhaustedError(err) {
+		if base == 2*time.Minute {
+			s.logFailureCooldown(account.ID, base, "fixed_2m")
+		}
 		return base
 	}
 	usage, probeErr := billing.FetchAccountUsage(ctx, s.Provider, account, s.Config())
@@ -590,6 +608,17 @@ func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.A
 		return quotaCooldown
 	}
 	return base
+}
+
+func (s *Service) logFailureCooldown(accountID string, d time.Duration, source string) {
+	if s == nil || s.Log == nil {
+		return
+	}
+	s.Log.Info("account failure cooldown",
+		"accountId", accountID,
+		"cooldown", d.String(),
+		"cooldown_source", source,
+	)
 }
 
 func quotaSnapshotFresh(account accounts.Account, nowMillis int64) bool {

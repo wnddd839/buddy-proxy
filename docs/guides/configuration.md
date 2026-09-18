@@ -51,6 +51,8 @@ CODEBUDDY_PROXY_API_KEYS=cbp_intl_xxx:global,cbp_cn_xxx:domestic
 
 账号文件以 `0600` 权限写入。备份与迁移只需复制这个 JSON。
 
+运行中的 `proxy-accounts.json` 只允许本进程写。禁止双实例共享同一文件；禁止外部编辑后指望不重启合并。外部加号请走管理台 Upsert，或停进程再改文件再启动。
+
 ## 站点 / 区域
 
 | 变量 | 默认值 | 说明 |
