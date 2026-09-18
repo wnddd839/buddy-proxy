@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -117,6 +118,12 @@ func ModelRateLimitCooldown(err error, now time.Time) (time.Duration, bool) {
 	}
 	ms := ParseBillingTimeMillis(extractWillResetAt(msg))
 	if ms <= 0 {
+		// 旧逻辑解析失败：生产 6004 文案的时间戳后紧跟 ", alternatively…"，逗号不在
+		// 旧截断集里，整段尾巴进解析器必然失败 → 回落固定 2 分钟。改按时间戳形状提取，
+		// 时间戳之后的文案不参与解析。
+		ms = ParseBillingTimeMillis(extractWillResetAtByShape(msg))
+	}
+	if ms <= 0 {
 		return 0, false
 	}
 	d := time.Duration(ms-now.UnixMilli()) * time.Millisecond
@@ -129,6 +136,8 @@ func ModelRateLimitCooldown(err error, now time.Time) (time.Duration, bool) {
 	return d, true
 }
 
+// extractWillResetAt 截取 "will reset at" 之后的时间戳（v0.4.9.5 原逻辑，保持不变）。
+// 它按标点截断，且只认少数几个 +8 后缀写法。
 func extractWillResetAt(msg string) string {
 	lower := strings.ToLower(msg)
 	idx := strings.Index(lower, "will reset at")
@@ -146,6 +155,28 @@ func extractWillResetAt(msg string) string {
 		}
 	}
 	return raw
+}
+
+// reWillResetAt 提取时间戳本体：日期 + 时间 + 可选小数秒 + 可选时区
+// （`UTC+8` / `GMT+8` 风格，或 RFC3339 的 `Z` / `±HH:MM`）。
+var reWillResetAt = regexp.MustCompile(`(?i)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s*(?:UTC|GMT)\s*[+-]\s*\d{1,2}(?::?\d{2})?|Z|[+-]\d{2}:?\d{2})?`)
+
+// reChinaZoneSuffix 匹配 ` UTC+8` / ` GMT +08:00` 这类中国时区后缀（容忍空格，但必须是 `+`）。
+// ParseBillingTimeMillis 不认这种写法，剥掉后按 Asia/Shanghai 解析；非 +8 偏移（含 `UTC-8`）
+// 不剥——宁可解析失败回落固定冷却，也不按错误的时区换算。
+var reChinaZoneSuffix = regexp.MustCompile(`(?i)\s*(?:GMT|UTC)\s*\+\s*0?8(?::?0{2})?$`)
+
+// extractWillResetAtByShape 按时间戳形状提取，供旧逻辑解析失败时兜底：生产 6004 文案的
+// 时间戳后紧跟 ", alternatively, you can switch to…"（逗号不在旧截断集里），旧逻辑会把
+// 整段文案带进 ParseBillingTimeMillis → 失败 → 回落固定 2 分钟冷却。
+func extractWillResetAtByShape(msg string) string {
+	lower := strings.ToLower(msg)
+	idx := strings.Index(lower, "will reset at")
+	if idx < 0 {
+		return ""
+	}
+	raw := strings.TrimSpace(reWillResetAt.FindString(msg[idx+len("will reset at"):]))
+	return strings.TrimSpace(reChinaZoneSuffix.ReplaceAllString(raw, ""))
 }
 
 // ParseBillingTimeMillis 解析上游时间戳。无时区按 Asia/Shanghai。
