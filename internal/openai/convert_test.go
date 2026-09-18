@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 )
 
@@ -102,12 +103,27 @@ func TestClassifyCause(t *testing.T) {
 		{"failed with 429: too many requests", "rate_limited"},
 		{"unapproved channel 11128", "account_blocked"},
 		{"request illegal 11140", "account_blocked"},
+		{"rate model 6004", "account_blocked"},
 		{"failed with 401: unauthorized", "account_blocked"},
 		{"failed with 400: bad request", ""},
 	}
 	for _, tc := range tests {
 		if got := ClassifyCause(errors.New(tc.err)); got != tc.want {
 			t.Fatalf("ClassifyCause(%q)=%q want %q", tc.err, got, tc.want)
+		}
+	}
+
+	poolTests := []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("%w: x", accounts.ErrAccountDisabled), "pool_state"},
+		{fmt.Errorf("%w: x", accounts.ErrAccountNotFound), "pool_state"},
+		{fmt.Errorf("%w: x", accounts.ErrNoCredentials), "pool_state"},
+	}
+	for _, tc := range poolTests {
+		if got := ClassifyCause(tc.err); got != tc.want {
+			t.Fatalf("ClassifyCause(%v)=%q want %q", tc.err, got, tc.want)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 )
@@ -78,7 +79,16 @@ func ClassifyCause(err error) string {
 	if IsClientCanceled(err) {
 		return ""
 	}
+	if errors.Is(err, accounts.ErrAccountDisabled) ||
+		errors.Is(err, accounts.ErrAccountNotFound) ||
+		errors.Is(err, accounts.ErrNoCredentials) ||
+		errors.Is(err, accounts.ErrNoAccounts) {
+		return "pool_state"
+	}
 	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "site mismatch") {
+		return "pool_state"
+	}
 	switch {
 	case strings.Contains(msg, "429"), strings.Contains(msg, "rate limit"), strings.Contains(msg, "too many requests"):
 		return "rate_limited"

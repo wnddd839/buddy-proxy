@@ -18,6 +18,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/models"
+	"github.com/wnddd839/codebuddy-proxy/internal/openai"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 )
 
@@ -316,6 +317,170 @@ func TestCompleteFromPoolPinnedAccountHealsAfterSiteMismatch(t *testing.T) {
 	}
 	if pinned, ok := svc.Pins.Lookup(SessionPinKey("conv-site-switch", "domestic")); !ok || pinned != domestic.ID {
 		t.Fatalf("pin=%q ok=%v want domestic %s", pinned, ok, domestic.ID)
+	}
+}
+
+func TestIsPinnedAccountUnusable(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		want   bool
+		reason string
+	}{
+		{
+			name:   "wrapped no credentials",
+			err:    fmt.Errorf("%w: x", accounts.ErrNoCredentials),
+			want:   true,
+			reason: "no_credentials",
+		},
+		{
+			name:   "wrapped disabled",
+			err:    fmt.Errorf("%w: acc-a", accounts.ErrAccountDisabled),
+			want:   true,
+			reason: "disabled",
+		},
+		{
+			name:   "wrapped not found",
+			err:    fmt.Errorf("%w: acc-a", accounts.ErrAccountNotFound),
+			want:   true,
+			reason: "not_found",
+		},
+		{
+			name:   "site mismatch",
+			err:    errors.New("account acc-a site mismatch: global != domestic"),
+			want:   true,
+			reason: "site_mismatch",
+		},
+		{
+			name: "plain 429 is not pin-unusable",
+			err:  errors.New("429 too many requests"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isPinnedAccountUnusable(tc.err); got != tc.want {
+				t.Fatalf("isPinnedAccountUnusable(%v)=%v want %v", tc.err, got, tc.want)
+			}
+			if got := pinnedAccountUnusableReason(tc.err); got != tc.reason {
+				t.Fatalf("pinnedAccountUnusableReason(%v)=%q want %q", tc.err, got, tc.reason)
+			}
+		})
+	}
+}
+
+func TestCompleteFromPoolPinnedAccountHealsAfterDisabled(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	a, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "a", Site: "domestic", BearerToken: "token-a", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "b", Site: "domestic", BearerToken: "token-b", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Provider.HTTP = &http.Client{Transport: &scriptedChatTransport{}}
+	svc.Pins.Remember(SessionPinKey("conv-disabled", "domestic"), a.ID)
+	if _, _, err := svc.Pool.SetEnabled(a.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-disabled",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("expected disabled pin to self-heal, got %v", err)
+	}
+	if result.AccountID != b.ID {
+		t.Fatalf("AccountID=%s want %s after disable", result.AccountID, b.ID)
+	}
+	if pinned, ok := svc.Pins.Lookup(SessionPinKey("conv-disabled", "domestic")); !ok || pinned == a.ID {
+		t.Fatalf("pin=%q ok=%v must not still point at disabled %s", pinned, ok, a.ID)
+	}
+}
+
+func TestCompleteFromPoolPinnedAccountHealsAfterDeleted(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	a, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "a", Site: "domestic", BearerToken: "token-a", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "b", Site: "domestic", BearerToken: "token-b", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Provider.HTTP = &http.Client{Transport: &scriptedChatTransport{}}
+	svc.Pins.Remember(SessionPinKey("conv-deleted", "domestic"), a.ID)
+	if _, err := svc.Pool.Delete(a.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-deleted",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("expected deleted pin to self-heal, got %v", err)
+	}
+	if result.AccountID != b.ID {
+		t.Fatalf("AccountID=%s want %s after delete", result.AccountID, b.ID)
+	}
+	if pinned, ok := svc.Pins.Lookup(SessionPinKey("conv-deleted", "domestic")); !ok || pinned == a.ID {
+		t.Fatalf("pin=%q ok=%v must not still point at deleted %s", pinned, ok, a.ID)
+	}
+}
+
+func TestCompleteFromPoolPinnedDisabledLastAccountReturnsPoolError(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	a, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "only", Site: "domestic", BearerToken: "token-only", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Provider.HTTP = &http.Client{Transport: &scriptedChatTransport{}}
+	svc.Pins.Remember(SessionPinKey("conv-last", "domestic"), a.ID)
+	if _, _, err := svc.Pool.SetEnabled(a.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-last",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected pool error when no other account remains")
+	}
+	if errors.Is(err, errRetryDepthExceeded) {
+		t.Fatalf("must not recurse to retry-depth exceeded, got %v", err)
+	}
+	if !errors.Is(err, accounts.ErrAccountDisabled) && !errors.Is(err, accounts.ErrNoAccounts) {
+		t.Fatalf("want original pool error, got %v", err)
+	}
+	if got := openai.ClassifyCause(err); got != "pool_state" {
+		t.Fatalf("ClassifyCause=%q want pool_state", got)
+	}
+}
+
+func TestResolveFailureCooldown6004UsesFixedTwoMinutes(t *testing.T) {
+	svc := &Service{}
+	got := svc.resolveFailureCooldown(context.Background(), accounts.Account{}, errors.New("failed with 429: 6004 rate-model will reset at 2099-01-01 00:00:00"))
+	if got != 2*time.Minute {
+		t.Fatalf("resolveFailureCooldown(6004)=%s want 2m until experiment B", got)
 	}
 }
 

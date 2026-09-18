@@ -345,12 +345,17 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if err != nil {
 		// 会话钉号与当前 SITE 不符时 Select 会早退；此处 Forget + 清 AccountID 重入，
 		// 对齐 reRetryNextAccount 对 site mismatch 的换号自愈意图。
-		if opts.AccountID != "" && isSiteMismatchError(err) {
+		if opts.AccountID != "" && isPinnedAccountUnusable(err) {
 			staleID := opts.AccountID
 			if pinKey != "" {
 				s.Pins.Forget(pinKey)
 			}
-			s.Log.Warn("clearing pinned account after site mismatch", "accountId", staleID, "site", site, "error", err.Error())
+			s.Log.Warn("clearing pinned account after it became unusable",
+				"accountId", staleID,
+				"site", site,
+				"pin_cleared_reason", pinnedAccountUnusableReason(err),
+				"error", err.Error(),
+			)
 			opts.ExcludeIDs = append(append([]string{}, opts.ExcludeIDs...), staleID)
 			opts.AccountID = ""
 			opts.RetryDepth++
@@ -512,6 +517,27 @@ func isSiteMismatchError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "site mismatch")
+}
+
+func pinnedAccountUnusableReason(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, accounts.ErrAccountDisabled):
+		return "disabled"
+	case errors.Is(err, accounts.ErrAccountNotFound):
+		return "not_found"
+	case errors.Is(err, accounts.ErrNoCredentials):
+		return "no_credentials"
+	case isSiteMismatchError(err):
+		return "site_mismatch"
+	default:
+		return ""
+	}
+}
+
+func isPinnedAccountUnusable(err error) bool {
+	return pinnedAccountUnusableReason(err) != ""
 }
 
 func failureCooldown(err error) time.Duration {
