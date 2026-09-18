@@ -51,7 +51,7 @@ CODEBUDDY_PROXY_API_KEYS=cbp_intl_xxx:global,cbp_cn_xxx:domestic
 
 账号文件以 `0600` 权限写入。备份与迁移只需复制这个 JSON。
 
-运行中的 `proxy-accounts.json` 只允许本进程写。禁止双实例共享同一文件；禁止外部编辑后指望不重启合并。外部加号请走管理台 Upsert，或停进程再改文件再启动。
+建议一进程一份 `proxy-accounts.json`。请求回写（Flush）会按 id 吸收磁盘上新增的账号，避免整表覆盖抹掉外部加号；Delete / Upsert 仍直接写盘。双实例同时删/加仍可能打架。无凭据账号仍会被 Normalize 丢掉。加号优先走管理台。
 
 ## 站点 / 区域
 

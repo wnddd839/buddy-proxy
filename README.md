@@ -33,7 +33,7 @@
 - [@240xu](https://github.com/240xu) · [#12](https://github.com/wnddd839/buddy-proxy/pull/12) IDE 模型目录与可对话模型对不上
 - [@zeonseoi](https://github.com/zeonseoi) · [#13](https://github.com/wnddd839/buddy-proxy/issues/13) Qoder CN 同类封装 · [#19](https://github.com/wnddd839/buddy-proxy/issues/19) 流式 Markdown 标题缺空格被当纯文本
 - [@itaid](https://github.com/itaid) · [#14](https://github.com/wnddd839/buddy-proxy/issues/14) Claude Code 的 system 指纹触发上游 11128
-- [@kouekikin24](https://github.com/kouekikin24) · [#15](https://github.com/wnddd839/buddy-proxy/issues/15) SITE 切换后旧会话钉号硬失败 · [#17](https://github.com/wnddd839/buddy-proxy/issues/17) 一个进程同时服务国内+国际 · [#18](https://github.com/wnddd839/buddy-proxy/issues/18) `/health` 是存活探针、上游挂了仍绿灯 · [#20](https://github.com/wnddd839/buddy-proxy/issues/20) `cn:` / `global:` 别名把同一模型拆成多份
+- [@kouekikin24](https://github.com/kouekikin24) · [#15](https://github.com/wnddd839/buddy-proxy/issues/15) SITE 切换后旧会话钉号硬失败 · [#17](https://github.com/wnddd839/buddy-proxy/issues/17) 一个进程同时服务国内+国际 · [#18](https://github.com/wnddd839/buddy-proxy/issues/18) `/health` 是存活探针、上游挂了仍绿灯 · [#20](https://github.com/wnddd839/buddy-proxy/issues/20) `cn:` / `global:` 别名把同一模型拆成多份 · [#22](https://github.com/wnddd839/buddy-proxy/issues/22) 6004 冷却应对齐上游 reset · [#23](https://github.com/wnddd839/buddy-proxy/issues/23) 禁号/删号后钉会话 502 · [#24](https://github.com/wnddd839/buddy-proxy/issues/24) 管理台按当前号池过滤与多 Key · [#25](https://github.com/wnddd839/buddy-proxy/issues/25) 外部加号被整表回写抹掉
 - [@kkl31415926](https://github.com/kkl31415926) · [#16](https://github.com/wnddd839/buddy-proxy/issues/16) 流式 `tool_calls[].index` 缺失导致 Android Studio / OpenAI Java SDK 报错
 
 ---
@@ -61,7 +61,7 @@
 | :--- | :--- |
 | **协议直连** | OAuth 登录后直连上游，不依赖 `codebuddy --serve` 等本地中间进程 |
 | **标准 OpenAI 形状** | `GET /v1/models` · `POST /v1/chat/completions`，流式与非流式都支持 |
-| **多账号调度** | 同会话钉在同一账号；新会话按额度快照选最大（缺快照或超过 5 分钟才探活）；失败换号前再探活拿最大；凭据以 `0600` 权限落盘 |
+| **多账号调度** | 同会话钉在同一账号；钉号被禁用/删除会换号。新会话按额度快照选最大（缺快照或超过 5 分钟才探活）；失败换号前再探活拿最大。6004 按错误文案 `will reset at` 长冷却。凭据以 `0600` 权限落盘 |
 | **真实余额** | 管理台直读官网 Credits，显示「剩余 / 总额」 |
 | **国内 / 国际** | 同一进程可同时持有两区账号。默认区域可在管理台切换；单请求用 Key 绑定、`X-Site` 或 `cn:` / `global:` 前缀选区。**端点以账号自身区域为准** |
 | **CodeBuddy / WorkBuddy** | 一键切产品：CodeBuddy 走 CLI 头，WorkBuddy 走 IDE 头；模型目录随之切换 |
@@ -226,7 +226,7 @@ make release   # 四平台交叉编译 + SHA256SUMS.txt
 - **不要把 `.env`、账号 JSON、token、API Key 提交进仓库或分享给他人**
 - 管理台密码与 API Key 分开管理；本项目已移除 URL query 传密方式
 - 定期备份账号池 JSON，但注意其中包含凭据
-- 运行中的 `proxy-accounts.json` 只允许本进程写。禁止双实例共享同一文件；禁止外部编辑后指望不重启合并。外部加号请走管理台 Upsert，或停进程再改文件再启动。
+- 建议一进程一份 `proxy-accounts.json`。Flush 会按 id 吸收磁盘上新增的账号，避免请求回写把外部加号整表抹掉；双实例同时删/加仍可能打架。无凭据账号仍会被丢掉。加号优先走管理台。
 
 漏洞报告请勿开公开 issue，见 [SECURITY.md](SECURITY.md)。
 
