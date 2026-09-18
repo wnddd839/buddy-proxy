@@ -119,6 +119,16 @@ func TestParseAPIKeys(t *testing.T) {
 	if n := len(config.ParseAPIKeys("")); n != 0 {
 		t.Fatalf("empty input len=%d", n)
 	}
+	formatted := config.FormatAPIKeys(got)
+	roundTrip := config.ParseAPIKeys(formatted)
+	if len(roundTrip) != len(got) {
+		t.Fatalf("FormatAPIKeys round-trip len=%d want %d", len(roundTrip), len(got))
+	}
+	for i := range got {
+		if roundTrip[i] != got[i] {
+			t.Fatalf("FormatAPIKeys round-trip item %d = %#v want %#v", i, roundTrip[i], got[i])
+		}
+	}
 }
 
 func TestLookupAPIKey(t *testing.T) {

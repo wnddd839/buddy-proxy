@@ -197,6 +197,14 @@ func (s *Service) SetAPIKey(key string) config.Config {
 	})
 }
 
+// SetAPIKeys 热更新 CODEBUDDY_PROXY_API_KEYS 绑定表，不改主 Key。
+func (s *Service) SetAPIKeys(keys []config.APIKeyBinding) config.Config {
+	copied := append([]config.APIKeyBinding(nil), keys...)
+	return s.updateConfig(func(c *config.Config) {
+		c.APIKeys = copied
+	})
+}
+
 type ProviderModel struct {
 	Provider    string
 	Model       string

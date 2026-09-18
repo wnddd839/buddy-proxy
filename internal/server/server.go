@@ -686,6 +686,73 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		payload["note"] = "新 API Key 已写入 " + envPath + "，重启后仍然有效。请同步更新 ZCode / NewAPI 等客户端里的 Key。"
 		httputil.WriteJSON(w, http.StatusOK, payload)
 		return
+	case path == "/direct-admin/api/client-config/bound-keys" && r.Method == http.MethodPost:
+		var body struct {
+			Site string `json:"site"`
+		}
+		_ = httputil.ReadJSON(r, &body)
+		site := config.OptionalSite(body.Site)
+		if site == "" {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "site 必须是 domestic 或 global"})
+			return
+		}
+		key, err := GenerateProxyAPIKey()
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		cfg := s.Svc.Config()
+		next := append(append([]config.APIKeyBinding(nil), cfg.APIKeys...), config.APIKeyBinding{Key: key, Site: site})
+		envPath, err := s.persistBoundAPIKeys(next)
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok":    false,
+				"error": "绑定 Key 已生成但写入 .env 失败: " + err.Error(),
+			})
+			return
+		}
+		payload := s.clientConfigPayload(publicOrigin)
+		payload["generated"] = true
+		payload["envFile"] = envPath
+		payload["note"] = "绑定 Key 已写入 " + envPath + "，立即生效。"
+		httputil.WriteJSON(w, http.StatusOK, payload)
+		return
+	case path == "/direct-admin/api/client-config/bound-keys" && r.Method == http.MethodDelete:
+		var body struct {
+			Key string `json:"key"`
+		}
+		_ = httputil.ReadJSON(r, &body)
+		target := strings.TrimSpace(body.Key)
+		if target == "" {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "缺少要删除的绑定 Key"})
+			return
+		}
+		cfg := s.Svc.Config()
+		next := make([]config.APIKeyBinding, 0, len(cfg.APIKeys))
+		found := false
+		for _, binding := range cfg.APIKeys {
+			if binding.Key == target {
+				found = true
+				continue
+			}
+			next = append(next, binding)
+		}
+		if !found {
+			httputil.WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "绑定 Key 不存在"})
+			return
+		}
+		envPath, err := s.persistBoundAPIKeys(next)
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok":    false,
+				"error": "删除绑定 Key 后写入 .env 失败: " + err.Error(),
+			})
+			return
+		}
+		payload := s.clientConfigPayload(publicOrigin)
+		payload["envFile"] = envPath
+		httputil.WriteJSON(w, http.StatusOK, payload)
+		return
 	case path == "/direct-admin/api/codebuddy/status" && r.Method == http.MethodGet:
 		store, err := s.Svc.Pool.Read()
 		if err != nil {
@@ -972,6 +1039,15 @@ func (s *Server) clientConfigPayload(publicOrigin string) map[string]any {
 	cfg := s.Svc.Config()
 	apiBase := strings.TrimRight(publicOrigin, "/") + "/v1"
 	key := strings.TrimSpace(cfg.APIKey)
+	bound := make([]map[string]any, 0, len(cfg.APIKeys))
+	for _, binding := range cfg.APIKeys {
+		bound = append(bound, map[string]any{
+			"site":       binding.Site,
+			"preview":    strutil.MaskSecret(binding.Key, 6),
+			"configured": true,
+			"key":        binding.Key,
+		})
+	}
 	return map[string]any{
 		"ok":                 true,
 		"baseUrl":            apiBase,
@@ -983,12 +1059,24 @@ func (s *Server) clientConfigPayload(publicOrigin string) map[string]any {
 		"apiKeyConfigured":   key != "",
 		"apiKeyPreview":      strutil.MaskSecret(key, 6),
 		"apiKey":             key,
+		"apiKeys":            bound,
 		"transport":          cfg.Transport,
 		"site":               s.Svc.ActivePoolSite(),
 		"poolSite":           s.Svc.ActivePoolSite(),
 		"product":            s.Svc.ActiveProduct(),
 		"poolProduct":        s.Svc.ActiveProduct(),
 	}
+}
+
+func (s *Server) persistBoundAPIKeys(keys []config.APIKeyBinding) (string, error) {
+	envPath := config.ResolveEnvFilePath()
+	if err := config.UpsertEnvFile(envPath, map[string]string{
+		"CODEBUDDY_PROXY_API_KEYS": config.FormatAPIKeys(keys),
+	}); err != nil {
+		return envPath, err
+	}
+	s.Svc.SetAPIKeys(keys)
+	return envPath, nil
 }
 
 // GenerateProxyAPIKey 生成网关 API Key（cbp_... 前缀）。

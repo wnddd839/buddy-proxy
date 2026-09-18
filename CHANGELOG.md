@@ -5,6 +5,34 @@
 
 ---
 
+## v0.4.9.5 · 2026-09-18 · 钉号禁删自愈 · 6004 对齐 reset
+
+### 感谢
+
+- [@kouekikin24](https://github.com/kouekikin24) 提出 [#23](https://github.com/wnddd839/buddy-proxy/issues/23)：禁号/删号后被钉会话硬失败 502；[#22](https://github.com/wnddd839/buddy-proxy/issues/22)：6004 冷却固定 2 分钟、不读上游恢复时间；[#25](https://github.com/wnddd839/buddy-proxy/issues/25)：外部加号被整表回写抹掉；[#24](https://github.com/wnddd839/buddy-proxy/issues/24)：管理台 02 页不按当前号池过滤、03 页看不见绑区 Key。
+
+### 解决了什么
+
+1. 长会话钉在某账号上时，管理台禁用或删除该号，同一会话会立刻 502，且绕过换号，直到 pin TTL。
+2. 上游 6004（模型额度/频控）文案里带了 `will reset at`，号池却一律冷却 2 分钟，到期后又打到同一张还在封顶的号。
+3. 运行中往 `proxy-accounts.json` 加号，下一次 Flush 会把内存两份整表写回去，金丝雀账号消失。
+4. 管理台 02 页混着两个区域的号；03 页只展示主 Key，`CODEBUDDY_PROXY_API_KEYS` 绑区 Key 看不见也管不了。
+
+### 改了什么
+
+- **钉号自愈（[#23](https://github.com/wnddd839/buddy-proxy/issues/23)）**：禁用、删除、无凭据、site mismatch 都会 Forget 钉号并重选。池里还有别的号时，客户端拿到 200。空池仍报错，`cause=pool_state`（不是 `upstream_infra`）。
+- **6004 冷却（[#22](https://github.com/wnddd839/buddy-proxy/issues/22)）**：解析错误文案里的 `will reset at`（无时区按 Asia/Shanghai，也认 RFC3339；生产 ChatError 的 `[region=…]` 信封也会先截掉）。写入 `cooldownUntil`，上限 48 小时。解析失败仍 2 分钟。看日志 `cooldown_source=error_text` 还是 `fixed_2m`。6004 没有进额度探测。
+- **Flush 按 id 吸收磁盘新增（[#25](https://github.com/wnddd839/buddy-proxy/issues/25)）**：避免整表回写抹掉外部加号。同一 id 以内存热字段为准；Delete 仍直接写盘，不会把已删 id 救回来。双实例同时删/加仍可能打架。继续一进程一文件。
+- **管理台（[#24](https://github.com/wnddd839/buddy-proxy/issues/24)）**：02 页只列出当前号池账号（另一区有号时空态提示去切区域，不说「请先 OAuth」）。03 页列出绑区 Key：预览、区域、复制、删除；可按 domestic/global 新建绑定 Key，写入 `CODEBUDDY_PROXY_API_KEYS` 并热更新。不删主 Key。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池不用迁移。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.4.9.5
+
+---
+
 ## v0.4.9.4 · 2026-09-17 · API Key 绑区域 · 目录不再灌别名
 
 ### 感谢

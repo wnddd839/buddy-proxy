@@ -248,6 +248,19 @@ pre{
 }
 .copyline{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
 .copyline input{font-family:var(--mono);font-size:12.5px}
+.bound-keys{margin-top:18px;display:flex;flex-direction:column;gap:0}
+.bound-key{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  padding:12px 0;border-top:1px solid var(--fg-10);
+}
+.bound-key .meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.bound-keys-new{margin-top:16px}
+.bound-keys-new label{
+  display:block;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40);margin-bottom:8px;
+}
+.bound-keys-new select{
+  width:100%;padding:8px 10px;border:1px solid var(--fg-20);background:transparent;font:inherit;
+}
 .secret-hint{margin-top:12px;font-size:12px;color:var(--fg-40);line-height:1.5}
 .toast{
   position:fixed;right:24px;bottom:24px;z-index:100;min-width:180px;max-width:min(420px,92vw);
@@ -525,7 +538,18 @@ pre{
             </div>
           </div>
         </div>
-        <div class="secret-hint" id="clientConfigHint">API Key 点击复制时才会读取明文。Key 默认写入 ~/.codebuddy/proxy.env，与账号池同目录，换文件夹启动也会沿用同一把。</div>
+        <div class="bound-keys" id="boundApiKeys"></div>
+        <div class="bound-keys-new">
+          <label for="boundKeySite">新建绑定 Key</label>
+          <div class="copyline">
+            <select id="boundKeySite" aria-label="绑定区域">
+              <option value="domestic">国内 domestic</option>
+              <option value="global">国际 global</option>
+            </select>
+            <button class="teal" id="btnNewBoundKey" type="button">新建绑定 Key</button>
+          </div>
+        </div>
+        <div class="secret-hint" id="clientConfigHint">API Key 点击复制时才会读取明文。Key 默认写入 ~/.codebuddy/proxy.env，与账号池同目录，换文件夹启动也会沿用同一把。绑定 Key 换区不改主 Key。</div>
       </div>
     </section>
   </div>
@@ -733,10 +757,15 @@ function formatResetAt(ms){
 const usageByAccount = {};
 function renderAccounts(summary, activeSite) {
   const box = $('accounts');
-  const accounts = (summary && summary.accounts) || [];
+  const all = (summary && summary.accounts) || [];
   activeSite = normalizeSite(activeSite || (summary && summary.activeSite) || '');
-  if (!accounts.length) {
+  if (!all.length) {
     box.innerHTML = '<div class="empty">暂无账号。请先在下方完成 OAuth 登录。</div>';
+    return;
+  }
+  const accounts = all.filter(function(a){ return normalizeSite(a.site) === activeSite; });
+  if (!accounts.length) {
+    box.innerHTML = '<div class="empty">当前号池没有账号，切到另一区域可管理其他号</div>';
     return;
   }
   box.innerHTML = accounts.map(function(a) {
@@ -744,7 +773,7 @@ function renderAccounts(summary, activeSite) {
     const label = escapeHtml(a.label || a.id);
     const logged = a.loggedIn && a.hasCredentials;
     const site = normalizeSite(a.site);
-    const inPool = !activeSite || site === activeSite;
+    const inPool = true;
     let poolStateHtml = '';
     if (a.quotaExhausted && a.quotaResetAt) {
       poolStateHtml = '<div class="usage-line"><span class="pill bad">配额耗尽 · ' + escapeHtml(formatResetAt(a.quotaResetAt)) + ' 恢复</span></div>';
@@ -1237,6 +1266,52 @@ function paintClientConfig(cfg){
   clientConfig.baseUrl = base;
   clientConfig.chatCompletionsUrl = chat;
   clientConfig.recommendedModel = model;
+  renderBoundApiKeys(cfg.apiKeys || []);
+}
+function renderBoundApiKeys(list){
+  const box = $('boundApiKeys');
+  if (!box) return;
+  if (!list.length) {
+    box.innerHTML = '<div class="empty">还没有区域绑定 Key。主 Key 仍可用；新建一把即可按区域接入。</div>';
+    return;
+  }
+  box.innerHTML = list.map(function(item){
+    const site = normalizeSite(item.site);
+    const preview = escapeHtml(item.preview || '已配置');
+    const key = String(item.key || '');
+    return '<div class="bound-key">' +
+      '<div class="meta"><span class="mono">' + preview + '</span>' +
+        '<span class="badge site">' + escapeHtml(siteLabel(site)) + '</span></div>' +
+      '<div class="actions">' +
+        '<button class="ghost" data-act="copy-bound" data-key="' + escapeHtml(key) + '" type="button">复制</button>' +
+        '<button class="danger" data-act="delete-bound" data-key="' + escapeHtml(key) + '" type="button">删除</button>' +
+      '</div></div>';
+  }).join('');
+  box.querySelectorAll('button[data-act]').forEach(function(btn){
+    btn.addEventListener('click', onBoundKeyAction);
+  });
+}
+async function onBoundKeyAction(ev){
+  const btn = ev.currentTarget;
+  const act = btn.getAttribute('data-act');
+  const key = btn.getAttribute('data-key') || '';
+  if (act === 'copy-bound') {
+    return copyText(key, '绑定 Key', btn);
+  }
+  if (act === 'delete-bound') {
+    if (!confirm('删除这把区域绑定 Key？主 API Key 不会被删。')) return;
+    const data = await api('/direct-admin/api/client-config/bound-keys', {method:'DELETE', body: JSON.stringify({key:key})});
+    paintClientConfig(data);
+    showToast('绑定 Key 已删除');
+  }
+}
+async function generateBoundKey(){
+  const site = $('boundKeySite') ? $('boundKeySite').value : 'global';
+  const data = await api('/direct-admin/api/client-config/bound-keys', {method:'POST', body: JSON.stringify({site:site})});
+  paintClientConfig(data);
+  const created = (data.apiKeys || []).filter(function(item){ return item && item.key && item.site === normalizeSite(site); }).pop();
+  if (created && created.key) await copyText(created.key, '绑定 Key', $('btnNewBoundKey'));
+  if (data.note) showToast(data.note);
 }
 async function refreshClientConfig(){
   const data = await api('/direct-admin/api/client-config');
@@ -1405,6 +1480,7 @@ $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg'
 $('btnPoll').onclick = function(){ pollOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 $('btnRefreshClient').onclick = function(){ refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); }); };
 $('btnGenerateKey').onclick = function(){ generateApiKey().catch(function(e){ showToast(e.message, 'error'); }); };
+if ($('btnNewBoundKey')) $('btnNewBoundKey').onclick = function(){ generateBoundKey().catch(function(e){ showToast(e.message, 'error'); }); };
 $('copyBaseUrl').onclick = function(){ copyText($('openAiBaseUrl').value, 'Base URL', $('copyBaseUrl')); };
 $('copyChatUrl').onclick = function(){ copyText($('openAiChatUrl').value, 'Chat Completions', $('copyChatUrl')); };
 $('copyModel').onclick = function(){ copyText($('openAiModel').value, '模型', $('copyModel')); };

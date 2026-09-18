@@ -261,6 +261,23 @@ func ParseAPIKeys(raw string) []APIKeyBinding {
 	return out
 }
 
+// FormatAPIKeys 把绑定表写成 `cbp_aaa:global,cbp_bbb:domestic`，供回写 .env。
+func FormatAPIKeys(keys []APIKeyBinding) string {
+	parts := make([]string, 0, len(keys))
+	for _, binding := range keys {
+		key := strings.TrimSpace(binding.Key)
+		if key == "" {
+			continue
+		}
+		if site := OptionalSite(binding.Site); site != "" {
+			parts = append(parts, key+":"+site)
+			continue
+		}
+		parts = append(parts, key)
+	}
+	return strings.Join(parts, ",")
+}
+
 // LookupAPIKey 校验网关 Key。ok 表示鉴权通过；site 非空表示这把 Key 绑定了区域。
 func (c Config) LookupAPIKey(token string) (ok bool, site string) {
 	if token == "" {

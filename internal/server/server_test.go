@@ -579,3 +579,151 @@ func (catalogByHostTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		Request:    req,
 	}, nil
 }
+
+func TestClientConfigIncludesBoundAPIKeys(t *testing.T) {
+	srv := testServerCfg(t, config.Config{
+		APIKey:        "cbp_primary",
+		RequireAPIKey: true,
+		APIKeys:       config.ParseAPIKeys("cbp_aaa:global,cbp_bbb:domestic"),
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/direct-admin/api/client-config", nil)
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		OK               bool   `json:"ok"`
+		APIKey           string `json:"apiKey"`
+		APIKeyPreview    string `json:"apiKeyPreview"`
+		APIKeyConfigured bool   `json:"apiKeyConfigured"`
+		APIKeys          []struct {
+			Site       string `json:"site"`
+			Preview    string `json:"preview"`
+			Configured bool   `json:"configured"`
+			Key        string `json:"key"`
+		} `json:"apiKeys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.APIKey != "cbp_primary" || !payload.APIKeyConfigured || payload.APIKeyPreview == "" {
+		t.Fatalf("primary apiKey shape changed: %+v", payload)
+	}
+	if len(payload.APIKeys) != 2 {
+		t.Fatalf("apiKeys=%d want 2 body=%s", len(payload.APIKeys), rec.Body.String())
+	}
+	byKey := map[string]string{}
+	for _, item := range payload.APIKeys {
+		if !item.Configured || item.Preview == "" || item.Key == "" {
+			t.Fatalf("bound key incomplete: %+v", item)
+		}
+		byKey[item.Key] = item.Site
+	}
+	if byKey["cbp_aaa"] != "global" || byKey["cbp_bbb"] != "domestic" {
+		t.Fatalf("apiKeys=%v", byKey)
+	}
+}
+
+func TestGenerateAndDeleteBoundAPIKey(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "proxy.env")
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", envPath)
+	srv := testServerCfg(t, config.Config{
+		APIKey:  "cbp_primary",
+		APIKeys: config.ParseAPIKeys("cbp_old:global"),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/direct-admin/api/client-config/bound-keys", strings.NewReader(`{"site":"domestic"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("generate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var generated struct {
+		OK      bool   `json:"ok"`
+		APIKey  string `json:"apiKey"`
+		APIKeys []struct {
+			Site string `json:"site"`
+			Key  string `json:"key"`
+		} `json:"apiKeys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &generated); err != nil {
+		t.Fatal(err)
+	}
+	if generated.APIKey != "cbp_primary" {
+		t.Fatalf("primary apiKey mutated: %q", generated.APIKey)
+	}
+	newKey := ""
+	for _, item := range generated.APIKeys {
+		if item.Key != "cbp_old" {
+			newKey = item.Key
+		}
+	}
+	if newKey == "" || !strings.HasPrefix(newKey, "cbp_") {
+		t.Fatalf("missing generated bound key: %+v", generated.APIKeys)
+	}
+
+	envRaw, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envText := string(envRaw)
+	if !strings.Contains(envText, "CODEBUDDY_PROXY_API_KEYS=") {
+		t.Fatalf("env missing CODEBUDDY_PROXY_API_KEYS: %s", envText)
+	}
+	parsed := config.ParseAPIKeys(envAPIKeysValue(envText))
+	gotKeys := map[string]string{}
+	for _, b := range parsed {
+		gotKeys[b.Key] = b.Site
+	}
+	if gotKeys["cbp_old"] != "global" || gotKeys[newKey] != "domestic" {
+		t.Fatalf("env bindings=%v", gotKeys)
+	}
+
+	cfg := srv.Svc.Config()
+	if ok, site := cfg.LookupAPIKey("cbp_old"); !ok || site != "global" {
+		t.Fatalf("old key lookup=(%v,%q)", ok, site)
+	}
+	if ok, site := cfg.LookupAPIKey(newKey); !ok || site != "domestic" {
+		t.Fatalf("new key lookup=(%v,%q)", ok, site)
+	}
+	if ok, _ := cfg.LookupAPIKey("cbp_primary"); !ok {
+		t.Fatal("primary key should still authenticate")
+	}
+
+	del := httptest.NewRequest(http.MethodDelete, "http://127.0.0.1:32126/direct-admin/api/client-config/bound-keys", strings.NewReader(`{"key":"`+newKey+`"}`))
+	del.Header.Set("Content-Type", "application/json")
+	delRec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(delRec, del)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", delRec.Code, delRec.Body.String())
+	}
+	cfg = srv.Svc.Config()
+	if ok, _ := cfg.LookupAPIKey(newKey); ok {
+		t.Fatal("deleted bound key still authenticates")
+	}
+	if ok, site := cfg.LookupAPIKey("cbp_old"); !ok || site != "global" {
+		t.Fatalf("remaining bound key lookup=(%v,%q)", ok, site)
+	}
+	if ok, _ := cfg.LookupAPIKey("cbp_primary"); !ok {
+		t.Fatal("primary key must not be deleted by bound-key list")
+	}
+	envRaw, err = os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(envRaw), newKey) {
+		t.Fatalf("deleted key still in env: %s", envRaw)
+	}
+}
+
+func envAPIKeysValue(envText string) string {
+	for _, line := range strings.Split(envText, "\n") {
+		line = strings.TrimSpace(line)
+		if key, val, ok := strings.Cut(line, "="); ok && strings.TrimSpace(key) == "CODEBUDDY_PROXY_API_KEYS" {
+			return strings.Trim(strings.TrimSpace(val), `"'`)
+		}
+	}
+	return ""
+}
