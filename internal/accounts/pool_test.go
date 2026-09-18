@@ -449,3 +449,205 @@ func TestPoolPreferQuotaFallsBackToRoundRobinWithoutQuota(t *testing.T) {
 		t.Fatalf("no quota data should keep round-robin, got %s", sel.Account.ID)
 	}
 }
+
+func TestFlushMergesDiskCanaryByID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "accounts.json")
+	pool := accounts.NewPool(path)
+	t.Cleanup(func() { _ = pool.Close() })
+	one, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "one", Site: "domestic", BearerToken: "token-one",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "two", Site: "domestic", BearerToken: "token-two",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk accounts.Store
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	canary := accounts.CreateAccount(accounts.Account{
+		ID: "canary-id", Label: "canary", Site: "domestic", BearerToken: "token-canary",
+	})
+	onDisk.Accounts = append(onDisk.Accounts, canary)
+	payload, err := json.Marshal(onDisk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sel, err := pool.Select(accounts.SelectOptions{Site: "domestic", AccountID: one.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.MarkResult(sel, true, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := pool.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !accountIDPresent(store, "canary-id") {
+		t.Fatalf("canary id missing after flush merge, accounts=%v", accountIDs(store))
+	}
+	if len(store.Accounts) != 3 {
+		t.Fatalf("want 3 accounts after absorbing canary, got %d %v", len(store.Accounts), accountIDs(store))
+	}
+}
+
+func TestFlushKeepsSameProcessUpsert(t *testing.T) {
+	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
+	t.Cleanup(func() { _ = pool.Close() })
+	if _, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "one", Site: "domestic", BearerToken: "token-one",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "two", Site: "domestic", BearerToken: "token-two",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	third, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "three", Site: "domestic", BearerToken: "token-three",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := pool.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !accountIDPresent(store, third.ID) {
+		t.Fatalf("same-process upsert lost after flush, accounts=%v", accountIDs(store))
+	}
+}
+
+func TestFlushAfterDeleteDoesNotResurrect(t *testing.T) {
+	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
+	t.Cleanup(func() { _ = pool.Close() })
+	one, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "one", Site: "domestic", BearerToken: "token-one",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "two", Site: "domestic", BearerToken: "token-two",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Delete(one.ID); err != nil {
+		t.Fatal(err)
+	}
+	sel, err := pool.Select(accounts.SelectOptions{Site: "domestic", AccountID: two.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.MarkResult(sel, true, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := pool.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accountIDPresent(store, one.ID) {
+		t.Fatalf("deleted id %s resurrected after flush, accounts=%v", one.ID, accountIDs(store))
+	}
+	if !accountIDPresent(store, two.ID) {
+		t.Fatalf("remaining account missing, accounts=%v", accountIDs(store))
+	}
+}
+
+func TestFlushMergeSkipsDiskAccountWithoutCredentials(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "accounts.json")
+	pool := accounts.NewPool(path)
+	t.Cleanup(func() { _ = pool.Close() })
+	one, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "one", Site: "domestic", BearerToken: "token-one",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var onDisk accounts.Store
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	onDisk.Accounts = append(onDisk.Accounts, accounts.Account{ID: "no-cred", Label: "empty", Site: "domestic"})
+	payload, err := json.Marshal(onDisk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(payload, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sel, err := pool.Select(accounts.SelectOptions{Site: "domestic", AccountID: one.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.MarkResult(sel, true, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := pool.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accountIDPresent(store, "no-cred") {
+		t.Fatal("NormalizeStore/merge must still drop accounts without credentials")
+	}
+}
+
+func accountIDs(store accounts.Store) []string {
+	ids := make([]string, 0, len(store.Accounts))
+	for _, acc := range store.Accounts {
+		ids = append(ids, acc.ID)
+	}
+	return ids
+}
+
+func accountIDPresent(store accounts.Store, id string) bool {
+	for _, acc := range store.Accounts {
+		if acc.ID == id {
+			return true
+		}
+	}
+	return false
+}

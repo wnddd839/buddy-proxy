@@ -146,6 +146,29 @@ func cloneStore(store Store) Store {
 	return out
 }
 
+// mergeByID 把磁盘上本进程还没有的账号吸收进内存快照。
+// 同一 id 以 mem 为准（热字段和凭据都是本进程正在服务的）；磁盘独有 id 追加；内存独有 id 保留。
+func mergeByID(disk, mem Store) Store {
+	out := cloneStore(mem)
+	index := make(map[string]struct{}, len(out.Accounts))
+	for _, acc := range out.Accounts {
+		if acc.ID != "" {
+			index[acc.ID] = struct{}{}
+		}
+	}
+	for _, acc := range disk.Accounts {
+		if acc.ID == "" || !HasCredentials(acc) {
+			continue
+		}
+		if _, exists := index[acc.ID]; exists {
+			continue
+		}
+		index[acc.ID] = struct{}{}
+		out.Accounts = append(out.Accounts, acc)
+	}
+	return out
+}
+
 func (p *Pool) Read() (Store, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -248,12 +271,23 @@ func (p *Pool) Flush() error {
 	snap := cloneStore(p.mem)
 	p.dirty = false
 	p.mu.Unlock()
-	if err := p.writeDisk(snap); err != nil {
+
+	disk, err := p.readDisk()
+	merged := snap
+	if err == nil {
+		merged = mergeByID(disk, snap)
+	}
+
+	if err := p.writeDisk(merged); err != nil {
 		p.mu.Lock()
 		p.dirty = true
 		p.mu.Unlock()
 		return err
 	}
+	p.mu.Lock()
+	p.mem = mergeByID(merged, p.mem)
+	p.loaded = true
+	p.mu.Unlock()
 	return nil
 }
 
