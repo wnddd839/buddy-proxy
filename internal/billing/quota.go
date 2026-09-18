@@ -136,7 +136,7 @@ func extractWillResetAt(msg string) string {
 		return ""
 	}
 	raw := strings.TrimSpace(msg[idx+len("will reset at"):])
-	if cut := strings.IndexAny(raw, "\n;)]"); cut >= 0 {
+	if cut := strings.IndexAny(raw, "\n;)]["); cut >= 0 {
 		raw = strings.TrimSpace(raw[:cut])
 	}
 	lowerRaw := strings.ToLower(raw)

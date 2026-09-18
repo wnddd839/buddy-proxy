@@ -507,6 +507,18 @@ func TestResolveFailureCooldownHonors6004ResetTime(t *testing.T) {
 	if got != 48*time.Hour {
 		t.Fatalf("6004 far-future cooldown=%s want 48h clamp", got)
 	}
+
+	chatErr := errors.New("CodeBuddy chat completion failed with 429: 6004 rate-model will reset at 2099-01-01 00:00:00 UTC+8 [region=global site=global endpoint=https://www.codebuddy.ai/v2/chat/completions domain=www.codebuddy.ai model=DS-V4.1-Flash]")
+	got = svc.resolveFailureCooldown(context.Background(), accounts.Account{}, chatErr)
+	if got != 48*time.Hour {
+		t.Fatalf("6004 ChatError envelope cooldown=%s want 48h clamp, not 2m", got)
+	}
+
+	utc8BeforeRegion := errors.New("failed with 429: 6004 rate-model will reset at 2099-01-01 00:00:00 UTC+8 [region=global site=global]")
+	got = svc.resolveFailureCooldown(context.Background(), accounts.Account{}, utc8BeforeRegion)
+	if got != 48*time.Hour {
+		t.Fatalf("6004 UTC+8 before [region=] cooldown=%s want 48h clamp, not 2m", got)
+	}
 }
 
 func TestResolveFailureCooldown6004WithoutTimeStaysTwoMinutes(t *testing.T) {

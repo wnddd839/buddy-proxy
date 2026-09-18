@@ -131,3 +131,31 @@ func TestParseBillingTimeMillisUsesChinaLocal(t *testing.T) {
 		t.Fatalf("got=%d want=%d", got, want)
 	}
 }
+
+func TestModelRateLimitCooldownStripsChatErrorMetadata(t *testing.T) {
+	now := time.Date(2026, 9, 18, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		err  string
+	}{
+		{
+			name: "live ChatError envelope",
+			err:  "CodeBuddy chat completion failed with 429: 6004 rate-model will reset at 2099-01-01 00:00:00 UTC+8 [region=global site=global endpoint=https://www.codebuddy.ai/v2/chat/completions domain=www.codebuddy.ai model=DS-V4.1-Flash]",
+		},
+		{
+			name: "UTC+8 before region bracket",
+			err:  "failed with 429: 6004 rate-model will reset at 2099-01-01 00:00:00 UTC+8 [region=global site=global]",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, ok := ModelRateLimitCooldown(errors.New(tc.err), now)
+			if !ok {
+				t.Fatalf("ModelRateLimitCooldown ok=false, parse miss would fall back to 2m")
+			}
+			if d != 48*time.Hour {
+				t.Fatalf("cooldown=%s want 48h clamp", d)
+			}
+		})
+	}
+}
