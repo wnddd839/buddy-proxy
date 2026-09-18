@@ -5,6 +5,30 @@
 
 ---
 
+## v0.4.9.6 · 2026-09-18 · 6004 解析生产文案尾巴
+
+### 感谢
+
+- [@kouekikin24](https://github.com/kouekikin24) 在 [#26](https://github.com/wnddd839/buddy-proxy/pull/26) 用生产实收报文证伪：v0.4.9.5 仍会把 `will reset at … UTC+8, alternatively…` 整段送进解析器，冷却静默回落 2 分钟。
+
+### 解决了什么
+
+v0.4.9.5 已按 `will reset at` 对齐 6004 冷却，也切掉了 ChatError 的 `[region=…]` 信封。真实上游正文在时间戳后紧跟英文逗号和 `alternatively…`，逗号不在旧截断集里，解析失败后又打回固定 2 分钟——#22 的客户循环还在。
+
+### 改了什么
+
+- 旧 `extractWillResetAt` 保持不变。解析失败时按时间戳形状兜底（`YYYY-MM-DD[ T]HH:MM:SS` + 可选 `UTC+8` / RFC3339 偏移）。
+- 仍走 `ParseBillingTimeMillis`；`UTC+8` 剥掉后按 Asia/Shanghai。非 +8（`UTC-8` / `UTC+9`）不硬换算，回落 2 分钟。
+- 48 小时上限、没有合法时间仍 2 分钟、6004 不进额度探测：都不动。看日志 `cooldown_source=error_text` 还是 `fixed_2m`。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池不用迁移。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.4.9.6
+
+---
+
 ## v0.4.9.5 · 2026-09-18 · 钉号禁删自愈 · 6004 对齐 reset · Flush 合号 · 管理台按池
 
 ### 感谢
