@@ -102,11 +102,12 @@ type Service struct {
 	stats Stats
 	oauth *OAuthSession
 
-	modelsCacheMu sync.Mutex
-	modelsCache   map[string]modelsCacheEntry
-	modelsFlight  modelsFlight
-	Pins          *sessionpin.Table
-	Journal       *usagejournal.Journal
+	modelsCacheMu  sync.Mutex
+	modelsCache    map[string]modelsCacheEntry
+	modelsFlight   modelsFlight
+	Pins           *sessionpin.Table
+	Conversations *sessionpin.ConversationTable
+	Journal        *usagejournal.Journal
 
 	probeMu    sync.Mutex
 	probeCache map[string]provider.Reachability
@@ -131,15 +132,16 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 		logger.Info("usage journal persistence enabled", "path", cfg.UsagePath)
 	}
 	svc := &Service{
-		Pool:     accounts.NewPool(cfg.AccountsPath),
-		Provider: p,
-		OAuth:    oauth.NewClient(p.HTTP),
-		Models:   models.NewLister(),
-		Log:      logger,
-		Started:  time.Now(),
-		oauth:    &OAuthSession{Status: "idle"},
-		Pins:     sessionpin.New(0),
-		Journal:  journal,
+		Pool:          accounts.NewPool(cfg.AccountsPath),
+		Provider:      p,
+		OAuth:         oauth.NewClient(p.HTTP),
+		Models:        models.NewLister(),
+		Log:           logger,
+		Started:       time.Now(),
+		oauth:         &OAuthSession{Status: "idle"},
+		Pins:          sessionpin.New(0),
+		Conversations: sessionpin.NewConversationTable(0),
+		Journal:       journal,
 	}
 	svc.modelsCache = map[string]modelsCacheEntry{}
 	svc.probeCache = map[string]provider.Reachability{}
@@ -380,6 +382,9 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		s.Log.Debug("pool select bypassed cooldown (all accounts cooling)", "accountId", account.ID, "cooldownUntil", account.CooldownUntil)
 	}
 	chatOpts := s.chatOptionsFromAccount(account, opts)
+	if pinKey != "" {
+		chatOpts.ConversationID = s.Conversations.ID(pinKey+"\x1e"+chatOpts.Product, account.ID)
+	}
 	result, err := s.Provider.Complete(ctx, chatOpts)
 	if err != nil {
 		// 客户端主动断开 SSE/HTTP，不算账号或上游故障。
