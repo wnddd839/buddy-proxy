@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
+	"github.com/wnddd839/codebuddy-proxy/internal/admin"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/gateway"
 )
@@ -732,6 +734,112 @@ func TestGenerateAndDeleteBoundAPIKey(t *testing.T) {
 	if strings.Contains(string(envRaw), newKey) {
 		t.Fatalf("deleted key still in env: %s", envRaw)
 	}
+}
+
+func TestAdminStatusDoesNotHitBillingByDefault(t *testing.T) {
+	srv := testServer(t, false, "", "")
+	seedBothSites(t, srv)
+	transport := &adminCreditsTransport{}
+	srv.Svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/direct-admin/api/status", nil)
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if n := transport.billingCount(); n != 0 {
+		t.Fatalf("plain status must not hit billing, got %d calls", n)
+	}
+	if strings.Contains(rec.Body.String(), `"creditsRefreshed":true`) {
+		t.Fatalf("plain status must not claim credits refreshed: %s", rec.Body.String())
+	}
+}
+
+func TestAdminStatusFreshRefreshesCreditsFromUpstream(t *testing.T) {
+	srv := testServer(t, false, "", "")
+	seedBothSites(t, srv)
+	transport := &adminCreditsTransport{remaining: 88}
+	srv.Svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/direct-admin/api/status?fresh=1", nil)
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if n := transport.billingCount(); n == 0 {
+		t.Fatal("fresh=1 must hit upstream billing")
+	}
+	var payload struct {
+		CreditsRefreshed bool `json:"creditsRefreshed"`
+		AccountUsages    []struct {
+			OK        bool   `json:"ok"`
+			AccountID string `json:"accountId"`
+			Credits   *struct {
+				Remaining *float64 `json:"remaining"`
+			} `json:"credits"`
+		} `json:"accountUsages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if !payload.CreditsRefreshed {
+		t.Fatalf("creditsRefreshed missing: %s", rec.Body.String())
+	}
+	found := false
+	for _, item := range payload.AccountUsages {
+		if item.OK && item.Credits != nil && item.Credits.Remaining != nil && *item.Credits.Remaining == 88 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("fresh status missing live credits: %s", rec.Body.String())
+	}
+}
+
+func TestAdminPageRefreshButtonRequestsFreshCredits(t *testing.T) {
+	html := admin.PageHTML()
+	if !strings.Contains(html, "refreshStatus(true)") {
+		t.Fatal("refresh button must call refreshStatus(true)")
+	}
+	if !strings.Contains(html, "fresh ? '?fresh=1'") && !strings.Contains(html, `fresh ? "?fresh=1"`) {
+		t.Fatal("refreshStatus(true) must request status?fresh=1")
+	}
+	if strings.Contains(html, "setInterval(function(){ refreshStatus(true)") {
+		t.Fatal("15s poll must not pass fresh=true")
+	}
+}
+
+type adminCreditsTransport struct {
+	mu        sync.Mutex
+	billing   int
+	remaining float64
+}
+
+func (t *adminCreditsTransport) billingCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.billing
+}
+
+func (t *adminCreditsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+	if strings.Contains(req.URL.Path, "get-user-resource") {
+		t.mu.Lock()
+		t.billing++
+		remain := t.remaining
+		t.mu.Unlock()
+		body := fmt.Sprintf(`{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CapacityRemain":%g,"CapacitySize":1000,"CapacityUsed":0,"CapacityType":1}]}}}}`, remain)
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	}
+	if strings.Contains(req.URL.Path, "get-dosage-notify") {
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(`{"code":0,"data":{"dosageNotifyCode":0}}`)), Request: req}, nil
+	}
+	header.Set("Content-Type", "text/plain")
+	return &http.Response{StatusCode: http.StatusUnauthorized, Header: header, Body: io.NopCloser(strings.NewReader("Authorization Required")), Request: req}, nil
 }
 
 func envAPIKeysValue(envText string) string {

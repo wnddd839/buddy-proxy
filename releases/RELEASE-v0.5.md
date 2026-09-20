@@ -17,7 +17,7 @@
 
 - Codex CLI 可直连：`POST /v1/responses` 已按 OpenAI Responses API 做协议翻译（流式命名 SSE + 非流式 `response` 对象），打同一套号池。
 - 同会话复用上游 `X-Conversation-ID`，稳住 prompt cache 命中（[#27](https://github.com/wnddd839/buddy-proxy/pull/27)）。`request/message ID` 仍逐请求随机。
-- 管理台接入页可复制 Responses URL。`background` / 内置工具 / 服务端 `store` 仍不支持。
+- 管理台接入页可复制 Responses URL。点「刷新状态」会向上游拉当前号池最新 Credits；`background` / 内置工具 / 服务端 `store` 仍不支持。
 
 ### 感谢
 

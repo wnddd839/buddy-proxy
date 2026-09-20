@@ -24,6 +24,7 @@
 
 - **Responses API**：实现 `POST /v1/responses`（别名 `/responses`）。入口把 `input` / `instructions` / 扁平 `tools` 译成 Chat Completions，打同一套号池与会话钉；非流式回完整 `response` 对象，流式回命名 SSE（`response.created` → `*.delta` → `response.completed`）。`background` 明确 400；内置工具与图像输入丢弃；无服务端 `store`。Codex 配置见 README。
 - **同会话复用 `X-Conversation-ID`**：新增 `sessionpin.ConversationTable`（与账号钉同生命周期，45 分钟空闲过期；换号/站点/产品即轮换）。`request/message ID` 仍逐请求随机；无会话键的请求行为不变。
+- **管理台刷新状态拉最新额度**：点「刷新状态」会 `GET /direct-admin/api/status?fresh=1`，对当前号池已启用账号并行打官网套餐接口并回写快照。15 秒自动轮询仍只读缓存，不打 billing。
 - 管理台接入页增加 Responses URL 复制；架构/HTTP 文档同步。
 
 ### 升级注意

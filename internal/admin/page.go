@@ -1196,6 +1196,12 @@ function paintStatus(data){
     healthText = '服务正常 · 上游可达 · ' + siteLabel(poolSite) + '号池 · ' + productLabel(poolProduct);
   }
   setHealth(healthOk, healthText);
+  if (Array.isArray(data.accountUsages)) {
+    data.accountUsages.forEach(function(item){
+      if (!item || !item.accountId) return;
+      usageByAccount[item.accountId] = item;
+    });
+  }
   if (primary && primary.id && primary.hasCredentials && !usageByAccount[primary.id] && !paintStatus._usageKick) {
     paintStatus._usageKick = true;
     fetchAccountUsage(primary.id, true).catch(function(){});
@@ -1336,9 +1342,10 @@ async function generateApiKey(){
   if (data.note) showToast(data.note);
 }
 
-async function refreshStatus(){
-  const data = await api('/direct-admin/api/status');
+async function refreshStatus(fresh){
+  const data = await api('/direct-admin/api/status' + (fresh ? '?fresh=1' : ''));
   paintStatus(data);
+  if (fresh && data.creditsRefreshed) showToast('额度已从上游刷新');
 }
 
 function formatCheckinSummary(data){
@@ -1459,7 +1466,14 @@ if ($('btnPoolGlobal')) $('btnPoolGlobal').onclick = function(){ switchPoolSite(
 if ($('btnProductCodeBuddy')) $('btnProductCodeBuddy').onclick = function(){ switchPoolProduct('codebuddy').catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('btnProductWorkBuddy')) $('btnProductWorkBuddy').onclick = function(){ switchPoolProduct('workbuddy').catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('site')) $('site').addEventListener('change', function(){ $('site').dataset.userTouched = '1'; });
-$('btnRefresh').onclick = function(){ refreshStatus().catch(function(e){ $('statusRaw').textContent = e.message; setHealth(false, '刷新失败'); }); };
+$('btnRefresh').onclick = function(){
+  const btn = $('btnRefresh');
+  btn.disabled = true;
+  refreshStatus(true).catch(function(e){
+    $('statusRaw').textContent = e.message;
+    setHealth(false, '刷新失败');
+  }).finally(function(){ btn.disabled = false; });
+};
 if ($('btnRefreshUsage')) $('btnRefreshUsage').onclick = function(){ refreshUsage().catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('usageRangeSeg')) $('usageRangeSeg').querySelectorAll('button[data-range]').forEach(function(btn){
   btn.addEventListener('click', function(){

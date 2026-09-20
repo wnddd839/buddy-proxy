@@ -581,8 +581,16 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 	publicOrigin := httputil.PublicOrigin(r, s.Svc.Config().PublicBaseURL)
 	switch {
 	case path == "/direct-admin/api/status" && r.Method == http.MethodGet:
-		_ = s.Svc.ProbeUpstream(r.Context(), false)
-		httputil.WriteJSON(w, http.StatusOK, s.Svc.Status())
+		fresh := queryTruthy(r.URL.Query().Get("fresh"))
+		_ = s.Svc.ProbeUpstream(r.Context(), fresh)
+		payload := s.Svc.Status()
+		if fresh {
+			usages := s.Svc.RefreshPoolUsage(r.Context(), s.Svc.ActivePoolSite())
+			payload = s.Svc.Status()
+			payload["accountUsages"] = usages
+			payload["creditsRefreshed"] = true
+		}
+		httputil.WriteJSON(w, http.StatusOK, payload)
 		return
 	case path == "/direct-admin/api/usage" && r.Method == http.MethodGet:
 		rangeName := strings.TrimSpace(r.URL.Query().Get("range"))

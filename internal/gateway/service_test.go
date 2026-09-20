@@ -1245,6 +1245,78 @@ func TestSetPoolProductPersistsAndSwitchesUpstream(t *testing.T) {
 	}
 }
 
+func TestRefreshPoolUsageHitsBillingIncludingCooledAccounts(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: filepath.Join(dir, "accounts.json")}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	transport := &scriptedChatTransport{creditsByAuth: map[string]float64{
+		"token-live":  42,
+		"token-cool":  7,
+		"token-other": 99,
+	}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "live", Site: "domestic", BearerToken: "token-live", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "cool", Site: "domestic", BearerToken: "token-cool", Enabled: true,
+		CooldownUntil: time.Now().Add(time.Hour).UnixMilli(),
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "other", Site: "global", BearerToken: "token-other", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	items := svc.RefreshPoolUsage(context.Background(), "domestic")
+	_, billing := transport.snapshot()
+	if len(billing) != 2 {
+		t.Fatalf("must hit billing for current-pool accounts including cooled ones, got %v", billing)
+	}
+	seen := map[string]bool{}
+	for _, token := range billing {
+		seen[token] = true
+	}
+	if !seen["token-live"] || !seen["token-cool"] || seen["token-other"] {
+		t.Fatalf("billing tokens=%v", billing)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items=%d want 2: %+v", len(items), items)
+	}
+	got := map[string]float64{}
+	for _, item := range items {
+		if !item.OK || item.Credits.Remaining == nil {
+			t.Fatalf("item missing credits: %+v", item)
+		}
+		got[item.AccountID] = *item.Credits.Remaining
+	}
+	store, err := svc.Pool.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range store.Accounts {
+		switch account.BearerToken {
+		case "token-live":
+			if account.QuotaRemaining == nil || *account.QuotaRemaining != 42 {
+				t.Fatalf("live quota not applied: %+v", account.QuotaRemaining)
+			}
+		case "token-cool":
+			if account.QuotaRemaining == nil || *account.QuotaRemaining != 7 {
+				t.Fatalf("cooled quota not applied: %+v", account.QuotaRemaining)
+			}
+		case "token-other":
+			if account.QuotaRemaining != nil {
+				t.Fatalf("other-site account must not be refreshed, remaining=%v", account.QuotaRemaining)
+			}
+		}
+	}
+}
+
 func BenchmarkResolveProviderModel(b *testing.B) {
 	models := []string{"auto", "codebuddy:deepseek-v4", "codebuddy/deepseek-v4-flash", "deepseek-v4"}
 	b.ReportAllocs()
