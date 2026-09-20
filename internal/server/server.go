@@ -51,8 +51,8 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 	mux.HandleFunc("GET /model/info", s.handleModelInfoAuth)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatAuth)
 	mux.HandleFunc("POST /chat/completions", s.handleChatAuth)
-	mux.HandleFunc("POST /v1/responses", s.handleResponsesUnsupported)
-	mux.HandleFunc("POST /responses", s.handleResponsesUnsupported)
+	mux.HandleFunc("POST /v1/responses", s.handleResponsesAuth)
+	mux.HandleFunc("POST /responses", s.handleResponsesAuth)
 	mux.HandleFunc("GET /direct-admin", s.handleAdminPage)
 	mux.HandleFunc("GET /direct-admin/{$}", s.handleAdminPage)
 	mux.HandleFunc("HEAD /direct-admin", s.handleAdminPage)
@@ -149,17 +149,7 @@ func (s *Server) handleChatAuth(w http.ResponseWriter, r *http.Request) {
 	s.handleChatCompletions(w, r, keySite)
 }
 
-// handleResponsesUnsupported：本代理只实现 Chat Completions，不实现 OpenAI Responses API。
-func (s *Server) handleResponsesUnsupported(w http.ResponseWriter, r *http.Request) {
-	ok, _ := s.authorizeAPI(w, r)
-	if !ok {
-		return
-	}
-	httputil.WriteJSON(w, http.StatusBadRequest, openai.NewError(
-		"This proxy implements Chat Completions (POST /v1/chat/completions), not the OpenAI Responses API.",
-		"invalid_request_error",
-	))
-}
+// Responses API 的实现见 responses.go（handleResponsesAuth / handleResponses / streamResponses）。
 
 func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeAdmin(w, r) {
@@ -1054,6 +1044,7 @@ func (s *Server) clientConfigPayload(publicOrigin string) map[string]any {
 		"apiBase":            apiBase,
 		"apiBasePath":        "/v1",
 		"chatCompletionsUrl": apiBase + "/chat/completions",
+		"responsesUrl":       apiBase + "/responses",
 		"recommendedModel":   "auto",
 		"requireApiKey":      cfg.RequireAPIKey,
 		"apiKeyConfigured":   key != "",

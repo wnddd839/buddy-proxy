@@ -5,8 +5,8 @@
 把 CodeBuddy 上游 `protocol_direct` 能力封装为 OpenAI 兼容网关：
 
 ```text
-Client (OpenAI SDK / curl / NewAPI / ZCode)
-   │  /v1/chat/completions  (SSE or JSON)
+Client (OpenAI SDK / Codex CLI / curl / NewAPI / ZCode)
+   │  /v1/chat/completions  or  /v1/responses  (SSE or JSON)
    ▼
 server ──► gateway ──► accounts pool + oauth refresh
                  │
@@ -35,7 +35,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 | `server` | 路由、鉴权、流式写回 | 上游协议细节 |
 | `admin` | 管理台页面字符串 | 业务状态机 |
 | `billing` | Credits 查询（剩余 / 总额）与通知码解析 | 账号写入 |
-| `openai` | OpenAI chat/chunk/usage 结构与上游错误分类 | 上游映射 |
+| `openai` | OpenAI chat/chunk/usage 与 Responses 协议翻译、上游错误分类 | 上游映射 |
 | `strutil` | `First` / `Truncate` / `MaskSecret` / `RandomHex` / `Compact` | — |
 | `httputil` | JSON/SSE/Cookie/Origin/CSRF | — |
 
@@ -54,7 +54,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 3. 从账号池选号（按当前号池 site 过滤；`ExcludeIDs` 排除已试账号）。**同一会话钉在第一次成功的账号**上；无钉或钉已失效时，用缓存的剩余额度 `PreferQuota` 选最大者（无线额视为极大）。新会话会并行补探 **缺失或超过 5 分钟** 的额度快照（只打过期的号，整批最多 2.5s）；快照仍新鲜则不打 billing
 4. 必要时 refresh token（默认提前 10 分钟窗口，鉴权失败可强制刷新）
 5. 组装 protocol_direct headers + body（**端点以账号 site 为准**）。有会话钉时复用上游 `X-Conversation-ID`（账号不变即稳定，45 分钟空闲过期；换号/换站点/换产品即轮换），request/message ID 仍逐请求生成
-6. 非流式：聚合为 JSON；流式：立即开 SSE + keep-alive + 增量 chunk
+6. 非流式：聚合为 JSON；流式：立即开 SSE + keep-alive + 增量 chunk。`POST /v1/responses` 在入口把 input/tools 译成 chat messages，回写时再译成 Response 对象或命名 SSE 事件；号池与会话钉与 chat 共用
 7. 收尾写 usage chunk，回写账号统计、全局 stats，并追加 `usagejournal` 明细（可选落盘）
 
 **失败处理**：

@@ -521,7 +521,15 @@ pre{
               <input id="openAiChatUrl" readonly placeholder="加载中…"/>
               <button class="ghost" id="copyChatUrl" type="button">复制</button>
             </div>
-            <div class="secret-hint">Chat Completions 协议，不是 Responses API。</div>
+            <div class="secret-hint">ZCode / OpenCode / 多数 SDK 走这条。</div>
+          </div>
+          <div>
+            <label for="openAiResponsesUrl">Responses</label>
+            <div class="copyline">
+              <input id="openAiResponsesUrl" readonly placeholder="加载中…"/>
+              <button class="ghost" id="copyResponsesUrl" type="button">复制</button>
+            </div>
+            <div class="secret-hint">Codex CLI 走这条（wire_api = responses）。</div>
           </div>
           <div>
             <label for="openAiApiKey">API Key（网关层）</label>
@@ -1253,9 +1261,11 @@ function paintClientConfig(cfg){
   clientConfig = cfg || clientConfig;
   const base = cfg.baseUrl || cfg.apiBase || '';
   const chat = cfg.chatCompletionsUrl || (base ? (base.replace(/\/$/,'') + '/chat/completions') : '');
+  const responses = cfg.responsesUrl || (base ? (base.replace(/\/$/,'') + '/responses') : '');
   const model = bareModelId(cfg.recommendedModel || 'auto');
   $('openAiBaseUrl').value = base;
   $('openAiChatUrl').value = chat;
+  if ($('openAiResponsesUrl')) $('openAiResponsesUrl').value = responses;
   $('openAiModel').value = model;
   const configured = !!cfg.apiKeyConfigured || !!cfg.apiKey;
   $('openAiApiKey').value = configured ? (cfg.apiKeyPreview || '已配置 · 点击复制') : '';
@@ -1483,6 +1493,7 @@ $('btnGenerateKey').onclick = function(){ generateApiKey().catch(function(e){ sh
 if ($('btnNewBoundKey')) $('btnNewBoundKey').onclick = function(){ generateBoundKey().catch(function(e){ showToast(e.message, 'error'); }); };
 $('copyBaseUrl').onclick = function(){ copyText($('openAiBaseUrl').value, 'Base URL', $('copyBaseUrl')); };
 $('copyChatUrl').onclick = function(){ copyText($('openAiChatUrl').value, 'Chat Completions', $('copyChatUrl')); };
+if ($('copyResponsesUrl')) $('copyResponsesUrl').onclick = function(){ copyText($('openAiResponsesUrl').value, 'Responses', $('copyResponsesUrl')); };
 $('copyModel').onclick = function(){ copyText($('openAiModel').value, '模型', $('copyModel')); };
 $('copyApiKey').onclick = function(){
   refreshClientConfig().then(function(cfg){

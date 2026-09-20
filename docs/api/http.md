@@ -145,7 +145,24 @@ OpenCode 配置示例：
 
 别名：`POST /responses`
 
-**未实现** OpenAI Responses API。本代理是 Chat Completions 协议（`POST /v1/chat/completions`）。有鉴权的请求打到本路径返回 `400`。
+OpenAI **Responses API** 协议翻译层，主要面向 Codex CLI 等以 `/v1/responses` 接入的客户端。请求在入口翻译为 Chat Completions 打到上游号池，响应/流式事件再翻译回 Responses 形态。
+
+**已支持：**
+
+- `input`（字符串或 item 数组：`message` / `function_call` / `function_call_output`；`reasoning` item 接收但不回放）、`instructions`（→ system 消息）、`developer` role（→ `system`）
+- `tools`（Responses 扁平形态 `{type:"function", name, parameters}` 与 chat 嵌套形态均可）、`tool_choice`（`auto`/`none`/`required`/`{type:"function",name}`）
+- `reasoning.effort`、`max_output_tokens`、`temperature`、`top_p`、`prompt_cache_key`（→ 会话钉号；同会话同时复用上游 `X-Conversation-ID`）
+- 非流式：返回完整 `response` 对象（`output[]` 含 `reasoning` / `message` / `function_call` item + `usage`）
+- 流式：命名 SSE 事件（`event: response.output_text.delta` 等），完整生命周期 `response.created → output_item.added → *.delta → output_item.done → response.completed`，含 `response.reasoning_summary_text.delta`（思考）与 `response.function_call_arguments.delta/done`（工具调用），`sequence_number` 单调递增
+
+**不支持（明确降级）：**
+
+- `background: true` → `400`
+- `previous_response_id` / `item_reference` / `store`：无服务端状态存储，不回放历史 output；`previous_response_id` 在缺少 `prompt_cache_key` 时仅用作会话钉键（Codex `store:false` 本就不依赖服务端存储）
+- `web_search` / `file_search` 等内置工具：静默丢弃
+- 图像输入（`input_image`）：忽略
+
+错误形态为 Responses 风格 `{"error":{"code":"...","message":"..."}}`。
 
 ### `POST /v1/chat/completions`
 

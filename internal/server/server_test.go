@@ -51,7 +51,7 @@ func testServerCfg(t *testing.T, cfg config.Config) *Server {
 	return New(cfg, svc)
 }
 
-func TestResponsesAPIExplainsChatCompletionsOnly(t *testing.T) {
+func TestResponsesEmptyBodyReturnsResponsesError(t *testing.T) {
 	srv := testServer(t, true, "", "secret-key")
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/v1/responses", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer secret-key")
@@ -61,7 +61,23 @@ func TestResponsesAPIExplainsChatCompletionsOnly(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Chat Completions") || !strings.Contains(rec.Body.String(), "/v1/chat/completions") {
+	// Responses API 已实现：空 body 返回 Responses 形态错误 {error:{code,message}}。
+	if !strings.Contains(rec.Body.String(), `"error"`) || !strings.Contains(rec.Body.String(), `"code"`) {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestResponsesBackgroundRejected(t *testing.T) {
+	srv := testServer(t, true, "", "secret-key")
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/v1/responses", strings.NewReader(`{"model":"auto","input":"hi","background":true}`))
+	req.Header.Set("Authorization", "Bearer secret-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unsupported_parameter") || !strings.Contains(rec.Body.String(), "background") {
 		t.Fatalf("body=%s", rec.Body.String())
 	}
 }

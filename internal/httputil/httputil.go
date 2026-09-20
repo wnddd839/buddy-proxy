@@ -113,6 +113,30 @@ func (s *SSEStream) WriteEvent(payload any) error {
 	return s.maybeFlush(false)
 }
 
+// WriteNamedEvent 发送带 event: 命名的 SSE 帧（Responses API 需要
+// event: response.output_text.delta 这类命名事件，而非纯 data 帧）。
+func (s *SSEStream) WriteNamedEvent(event string, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if event != "" {
+		if _, err := s.buf.WriteString("event: "); err != nil {
+			return err
+		}
+		if _, err := s.buf.WriteString(event); err != nil {
+			return err
+		}
+		if _, err := s.buf.WriteString("\n"); err != nil {
+			return err
+		}
+	}
+	if err := s.writeDataFrame(raw); err != nil {
+		return err
+	}
+	return s.maybeFlush(false)
+}
+
 func (s *SSEStream) WriteDone() error {
 	if _, err := s.buf.WriteString("data: [DONE]\n\n"); err != nil {
 		return err
