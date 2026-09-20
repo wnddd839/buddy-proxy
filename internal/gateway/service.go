@@ -106,6 +106,8 @@ type Service struct {
 	modelsCache   map[string]modelsCacheEntry
 	modelsFlight  modelsFlight
 	Pins          *sessionpin.Table
+	// Conversations 让钉住的会话在账号不变时复用上游 X-Conversation-ID。
+	Conversations *sessionpin.ConversationTable
 	Journal       *usagejournal.Journal
 
 	probeMu    sync.Mutex
@@ -139,7 +141,9 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 		Started:  time.Now(),
 		oauth:    &OAuthSession{Status: "idle"},
 		Pins:     sessionpin.New(0),
-		Journal:  journal,
+		// 与账号钉相同 TTL（45 分钟空闲）；账号切换后 ID 会轮换。
+		Conversations: sessionpin.NewConversationTable(0),
+		Journal:       journal,
 	}
 	svc.modelsCache = map[string]modelsCacheEntry{}
 	svc.probeCache = map[string]provider.Reachability{}
@@ -380,6 +384,10 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		s.Log.Debug("pool select bypassed cooldown (all accounts cooling)", "accountId", account.ID, "cooldownUntil", account.CooldownUntil)
 	}
 	chatOpts := s.chatOptionsFromAccount(account, opts)
+	// 同会话复用上游会话 ID；仅在有账号钉（pinKey 非空）时注入，与钉号生命周期一致。
+	if pinKey != "" {
+		chatOpts.ConversationID = s.Conversations.ID(pinKey+"\x1e"+chatOpts.Product, account.ID)
+	}
 	result, err := s.Provider.Complete(ctx, chatOpts)
 	if err != nil {
 		// 客户端主动断开 SSE/HTTP，不算账号或上游故障。

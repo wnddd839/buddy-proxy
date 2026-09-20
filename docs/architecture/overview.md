@@ -25,7 +25,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 |----|------|----------|
 | `config` | 环境变量 / `.env` 解析，默认值与归一化 | 业务逻辑 |
 | `accounts` | 账号池（内存权威 + 异步刷盘）、按额度选号、统计 | HTTP |
-| `sessionpin` | 同会话钉在一个账号（进程内 TTL 表） | 号池轮询 |
+| `sessionpin` | 同会话钉在一个账号 + 复用上游会话 ID（进程内 TTL 表） | 号池轮询 |
 | `usagejournal` | 用量明细环形缓冲、按日汇总、可选 `proxy-usage.json` 落盘 | HTTP / 管理台 HTML |
 | `version` | 构建时 `-ldflags` 注入的发布号（`Makefile VERSION=`） | 业务逻辑 |
 | `oauth` | OAuth 发起 / 轮询 / refresh / JWT 解析 | 路由 |
@@ -53,7 +53,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 2. 解析 model → 上游 ID（剥离 `codebuddy/` · `codebuddy:` 前缀，空归一为 `auto`）
 3. 从账号池选号（按当前号池 site 过滤；`ExcludeIDs` 排除已试账号）。**同一会话钉在第一次成功的账号**上；无钉或钉已失效时，用缓存的剩余额度 `PreferQuota` 选最大者（无线额视为极大）。新会话会并行补探 **缺失或超过 5 分钟** 的额度快照（只打过期的号，整批最多 2.5s）；快照仍新鲜则不打 billing
 4. 必要时 refresh token（默认提前 10 分钟窗口，鉴权失败可强制刷新）
-5. 组装 protocol_direct headers + body（**端点以账号 site 为准**）
+5. 组装 protocol_direct headers + body（**端点以账号 site 为准**）。有会话钉时复用上游 `X-Conversation-ID`（账号不变即稳定，45 分钟空闲过期；换号/换站点/换产品即轮换），request/message ID 仍逐请求生成
 6. 非流式：聚合为 JSON；流式：立即开 SSE + keep-alive + 增量 chunk
 7. 收尾写 usage chunk，回写账号统计、全局 stats，并追加 `usagejournal` 明细（可选落盘）
 

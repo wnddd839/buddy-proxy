@@ -5,6 +5,19 @@
 
 ---
 
+## 未发布
+
+### 感谢
+
+- [@carter003](https://github.com/carter003) 在 [#27](https://github.com/wnddd839/buddy-proxy/pull/27) 提出同会话复用上游 `X-Conversation-ID`，并用直连对照实验给出了缓存波动数据。
+
+### 改了什么
+
+- 新增 `sessionpin.ConversationTable`：有会话钉的请求复用上游 `X-Conversation-ID`（与账号钉同生命周期，45 分钟空闲过期；换号/站点/产品即轮换新 ID）。`request/message ID` 仍逐请求随机；无会话键的请求行为不变。目标是稳住上游 prompt cache 命中（PR #27 观察到 `hy4-preview` 缓存率波动）。
+- 附带测试：会话键稳定性、UUID 形态、账号/会话/产品隔离、过期与容量淘汰、并发一致性、换号后轮换（网关级）。
+
+---
+
 ## v0.4.9.6 · 2026-09-18 · 6004 解析生产文案尾巴
 
 ### 感谢

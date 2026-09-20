@@ -59,7 +59,10 @@ func NewClient(cfg config.Config) *Client {
 }
 
 type ChatOptions struct {
-	Model               string
+	Model string
+	// ConversationID 非空时作为上游 X-Conversation-ID（同会话复用）；
+	// 空值回落为逐请求随机 UUID。
+	ConversationID      string
 	Messages            []map[string]any
 	Stream              bool
 	Tools               any
@@ -494,7 +497,10 @@ func randomUUID() string {
 func (c *Client) BuildProtocolDirectHeaders(opts ChatOptions) (http.Header, RequestTrace) {
 	requestID := strutil.RandomHex(16)
 	messageID := strutil.RandomHex(16)
-	conversationID := randomUUID()
+	conversationID := strings.TrimSpace(opts.ConversationID)
+	if conversationID == "" {
+		conversationID = randomUUID()
+	}
 	trace := RequestTrace{
 		ConversationID:        conversationID,
 		ConversationRequestID: requestID,
