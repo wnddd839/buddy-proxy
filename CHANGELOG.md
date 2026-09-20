@@ -7,14 +7,30 @@
 
 ## 未发布
 
+---
+
+## v0.5 · 2026-09-20 · Responses API · 同会话复用上游会话 ID
+
 ### 感谢
 
 - [@carter003](https://github.com/carter003) 在 [#27](https://github.com/wnddd839/buddy-proxy/pull/27) 提出同会话复用上游 `X-Conversation-ID`，并用直连对照实验给出了缓存波动数据。
 
+### 解决了什么
+
+1. Codex CLI 等只认 OpenAI Responses API 的客户端无法直连：旧版 `POST /v1/responses` 鉴权后直接 400。
+2. 同会话每次请求都换新的上游 `X-Conversation-ID`，prompt cache 命中不稳（PR #27 在 `hy4-preview` 上观察到波动）。
+
 ### 改了什么
 
-- 新增 `sessionpin.ConversationTable`：有会话钉的请求复用上游 `X-Conversation-ID`（与账号钉同生命周期，45 分钟空闲过期；换号/站点/产品即轮换新 ID）。`request/message ID` 仍逐请求随机；无会话键的请求行为不变。目标是稳住上游 prompt cache 命中（PR #27 观察到 `hy4-preview` 缓存率波动）。
-- 附带测试：会话键稳定性、UUID 形态、账号/会话/产品隔离、过期与容量淘汰、并发一致性、换号后轮换（网关级）。
+- **Responses API**：实现 `POST /v1/responses`（别名 `/responses`）。入口把 `input` / `instructions` / 扁平 `tools` 译成 Chat Completions，打同一套号池与会话钉；非流式回完整 `response` 对象，流式回命名 SSE（`response.created` → `*.delta` → `response.completed`）。`background` 明确 400；内置工具与图像输入丢弃；无服务端 `store`。Codex 配置见 README。
+- **同会话复用 `X-Conversation-ID`**：新增 `sessionpin.ConversationTable`（与账号钉同生命周期，45 分钟空闲过期；换号/站点/产品即轮换）。`request/message ID` 仍逐请求随机；无会话键的请求行为不变。
+- 管理台接入页增加 Responses URL 复制；架构/HTTP 文档同步。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池不用迁移。Codex CLI 把 `wire_api` 设为 `responses`，Base URL 填 `http://127.0.0.1:32126/v1`。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.5
 
 ---
 
