@@ -374,6 +374,43 @@ func TestEnsureUpstreamMessagesDropsEmpty(t *testing.T) {
 	}
 }
 
+func TestEnsureUpstreamMessagesKeepsAssistantToolCallsMapSlice(t *testing.T) {
+	out := provider.EnsureUpstreamMessages([]map[string]any{
+		{"role": "user", "content": "run ls"},
+		{
+			"role":    "assistant",
+			"content": nil,
+			"tool_calls": []map[string]any{{
+				"id":   "call_1",
+				"type": "function",
+				"function": map[string]any{
+					"name":      "shell",
+					"arguments": `{"cmd":"ls"}`,
+				},
+			}},
+		},
+		{"role": "tool", "tool_call_id": "call_1", "content": "file.txt"},
+	})
+	if len(out) != 3 {
+		t.Fatalf("assistant tool_calls must not be dropped, got %d: %+v", len(out), out)
+	}
+	roles := []string{fmt.Sprint(out[0]["role"]), fmt.Sprint(out[1]["role"]), fmt.Sprint(out[2]["role"])}
+	if roles[0] != "user" || roles[1] != "assistant" || roles[2] != "tool" {
+		t.Fatalf("roles=%v", roles)
+	}
+	calls, ok := out[1]["tool_calls"].([]any)
+	if !ok || len(calls) != 1 {
+		t.Fatalf("tool_calls must be []any after normalize, got %T %+v", out[1]["tool_calls"], out[1]["tool_calls"])
+	}
+	call, _ := calls[0].(map[string]any)
+	if call["id"] != "call_1" {
+		t.Fatalf("call id=%v", call["id"])
+	}
+	if out[2]["tool_call_id"] != "call_1" {
+		t.Fatalf("tool_call_id=%v", out[2]["tool_call_id"])
+	}
+}
+
 func TestEnsureUpstreamMessagesMapsDeveloper(t *testing.T) {
 	out := provider.EnsureUpstreamMessages([]map[string]any{
 		{"role": "developer", "content": "You are a coding agent."},

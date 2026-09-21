@@ -149,7 +149,7 @@ OpenAI **Responses API** 协议翻译层，主要面向 Codex CLI 等以 `/v1/re
 
 **已支持：**
 
-- `input`（字符串或 item 数组：`message` / `function_call` / `function_call_output`；`reasoning` item 接收但不回放）、`instructions`（→ system 消息）、`developer` role（→ `system`）
+- `input`（字符串或 item 数组：`message` / `function_call` / `function_call_output`；`reasoning` item 接收但不回放）、`instructions`（→ system 消息）、`developer` role（→ `system`）。历史 `function_call` / `function_call_output` 译成 chat 的 `assistant.tool_calls` + `tool`，与上游配对。
 - `tools`（Responses 扁平形态 `{type:"function", name, parameters}` 与 chat 嵌套形态均可）、`tool_choice`（`auto`/`none`/`required`/`{type:"function",name}`）
 - `reasoning.effort`、`max_output_tokens`、`temperature`、`top_p`、`prompt_cache_key`（→ 会话钉号；同会话同时复用上游 `X-Conversation-ID`）
 - 非流式：返回完整 `response` 对象（`output[]` 含 `reasoning` / `message` / `function_call` item + `usage`）

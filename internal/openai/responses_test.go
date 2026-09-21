@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -61,6 +62,49 @@ func TestResponsesRequestToMessages_ItemArray(t *testing.T) {
 	out := messages[3]
 	if out["role"] != "tool" || out["tool_call_id"] != "call_1" || out["content"] != "file.txt" {
 		t.Fatalf("function_call_output wrong: %+v", out)
+	}
+}
+
+func TestResponsesToolRoundTripSurvivesEnsureUpstreamMessages(t *testing.T) {
+	raw := `{
+		"model": "auto",
+		"instructions": "be brief",
+		"input": [
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"run ls"}]},
+			{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{\"cmd\":\"ls\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"file.txt"}
+		]
+	}`
+	var req ResponsesRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatal(err)
+	}
+	messages, _, _ := req.ToMessages()
+	out := provider.EnsureUpstreamMessages(messages)
+	var roles []string
+	var assistantCalls []any
+	var toolIDs []string
+	for _, msg := range out {
+		role := fmt.Sprint(msg["role"])
+		roles = append(roles, role)
+		if role == "assistant" {
+			if tc, ok := msg["tool_calls"].([]any); ok {
+				assistantCalls = tc
+			}
+		}
+		if role == "tool" {
+			toolIDs = append(toolIDs, fmt.Sprint(msg["tool_call_id"]))
+		}
+	}
+	if len(assistantCalls) != 1 {
+		t.Fatalf("assistant tool_calls dropped; roles=%v out=%+v", roles, out)
+	}
+	call, _ := assistantCalls[0].(map[string]any)
+	if call["id"] != "call_1" {
+		t.Fatalf("tool call id=%v", call["id"])
+	}
+	if len(toolIDs) != 1 || toolIDs[0] != "call_1" {
+		t.Fatalf("tool results=%v roles=%v", toolIDs, roles)
 	}
 }
 

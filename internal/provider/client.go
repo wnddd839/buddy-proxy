@@ -577,7 +577,9 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 		role := NormalizeMessageRole(fmt.Sprint(message["role"]))
 		item := map[string]any{"role": role}
 		if toolCalls, ok := message["tool_calls"]; ok {
-			item["tool_calls"] = toolCalls
+			if normalized := asAnySlice(toolCalls); len(normalized) > 0 {
+				item["tool_calls"] = normalized
+			}
 		}
 		if id, ok := message["tool_call_id"]; ok {
 			item["tool_call_id"] = id
@@ -586,10 +588,7 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 			item["name"] = name
 		}
 		item["content"] = flattenContent(message["content"])
-		hasToolCalls := false
-		if tc, ok := item["tool_calls"].([]any); ok && len(tc) > 0 {
-			hasToolCalls = true
-		}
+		hasToolCalls := len(asAnySlice(item["tool_calls"])) > 0
 		contentEmpty := false
 		switch v := item["content"].(type) {
 		case string:
@@ -838,7 +837,7 @@ func DescribeUpstreamBody(body map[string]any) map[string]any {
 		default:
 			detail["contentKind"] = fmt.Sprintf("%T", content)
 		}
-		if tc, ok := msg["tool_calls"].([]any); ok && len(tc) > 0 {
+		if tc := asAnySlice(msg["tool_calls"]); len(tc) > 0 {
 			detail["toolCallsCount"] = len(tc)
 			detail["toolCallNames"] = toolNames(tc)
 		}
@@ -874,12 +873,24 @@ func toMessageList(messages any) []map[string]any {
 	}
 }
 
-// toolNames 提取 tools / tool_calls 中的 function 名（只记名，不记参数）。
-func toolNames(items any) []string {
-	arr, ok := items.([]any)
-	if !ok {
+func asAnySlice(v any) []any {
+	switch x := v.(type) {
+	case []any:
+		return x
+	case []map[string]any:
+		out := make([]any, len(x))
+		for i, m := range x {
+			out[i] = m
+		}
+		return out
+	default:
 		return nil
 	}
+}
+
+// toolNames 提取 tools / tool_calls 中的 function 名（只记名，不记参数）。
+func toolNames(items any) []string {
+	arr := asAnySlice(items)
 	names := make([]string, 0, len(arr))
 	for _, raw := range arr {
 		m, ok := raw.(map[string]any)
