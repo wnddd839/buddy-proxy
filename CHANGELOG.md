@@ -9,6 +9,29 @@
 
 ---
 
+## v0.5.1 · 2026-09-21 · Responses 工具回传配对 11148
+
+### 感谢
+
+- [@carter003](https://github.com/carter003) 在 [#28](https://github.com/wnddd839/buddy-proxy/issues/28) 指出 Responses 回传工具结果时 `tool_calls` 的 Go 切片类型对不上过滤逻辑，上游打回 11148。
+
+### 解决了什么
+
+Codex 等客户端走 `POST /v1/responses`，第二轮把 `function_call` + `function_call_output` 再塞进 `input`。翻译层把 `tool_calls` 写成 `[]map[string]any`，上游过滤只认 `[]any`，assistant 被当空消息丢掉，只剩 `tool` 结果，上游回 `11148 tool calls and tool results do not match`。
+
+### 改了什么
+
+- `EnsureUpstreamMessages` 把 `tool_calls` 的 `[]map[string]any` 与 `[]any` 归一后再判断是否为空消息。Responses 第二轮的 `assistant.tool_calls` 不再被丢掉，工具结果能和调用配对。
+- 日志指纹同样走归一函数。附 `ToMessages` → `EnsureUpstreamMessages` 回归测试。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池不用迁移。v0.5 的 Codex 配置不用改。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.5.1
+
+---
+
 ## v0.5 · 2026-09-20 · Responses API · 同会话复用上游会话 ID
 
 ### 感谢
