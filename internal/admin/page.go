@@ -5,12 +5,18 @@ import (
 	"strings"
 )
 
+// UIRevision is the admin console markup/script stamp. Bump it on every
+// meaningful change to PageHTML so operators can tell the rebuilt binary
+// carries the new UI (independent of the release tag injected via ldflags).
+const UIRevision = "2026.09.22-chat-test"
+
 func PageHTML() string {
 	return `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="cbp-ui-revision" content="` + UIRevision + `"/>
 <title>CodeBuddy Proxy · Console</title>
 <style>
 :root{
@@ -127,6 +133,8 @@ h1{
 .lede{margin:0;color:var(--fg-60);font-size:13.5px;line-height:1.6;max-width:52ch}
 .checkin-hint{margin:12px 0 0;font-size:11.5px;line-height:1.5;color:var(--fg-40);max-width:58ch}
 .checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
+.test-model-label{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-60)}
+.test-model-label select{min-width:160px;font-size:13px}
 .metrics{
   display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:24px;
 }
@@ -407,10 +415,18 @@ pre{
         <div class="actions" style="margin-top:24px">
           <button class="primary" id="btnRefresh" type="button">刷新状态</button>
           <button class="ghost" id="btnCheckin" type="button" disabled aria-describedby="checkinHint">每日签到</button>
+          <button class="ghost" id="btnPoolTest" type="button" disabled aria-describedby="poolTestHint">批量测试</button>
+          <label class="test-model-label" for="testModelSelect">测试模型
+            <select id="testModelSelect" aria-label="账号测试使用的模型">
+              <option value="">自动（最低倍率）</option>
+            </select>
+          </label>
           <button class="ghost" id="btnModels" type="button">拉取模型</button>
         </div>
         <p class="checkin-hint" id="checkinHint">一键为当前号池全部已启用账号签到（国内站约 100 积分/天）。</p>
+        <p class="checkin-hint" id="poolTestHint">对当前号池已启用账号发最小 chat，验证可用性与延迟；默认选最低倍率模型。</p>
         <pre class="checkin-detail" id="checkinRaw" hidden></pre>
+        <pre class="checkin-detail" id="poolTestRaw" hidden></pre>
       </div>
     </section>
 
@@ -821,6 +837,7 @@ function renderAccounts(summary, activeSite) {
           '<span class="badge ' + (a.enabled?'on':'off') + '">' + (a.enabled?'enabled':'disabled') + '</span>' +
         '</div>' +
         '<div class="actions">' +
+          '<button class="ghost" data-act="test" data-id="' + escapeHtml(a.id) + '" type="button">测试</button>' +
           '<button class="ghost" data-act="usage" data-id="' + escapeHtml(a.id) + '" type="button">查余额</button>' +
           '<button class="ghost" data-act="toggle" data-id="' + escapeHtml(a.id) + '" data-enabled="' + (a.enabled?0:1) + '" type="button">' + (a.enabled?'禁用':'启用') + '</button>' +
           '<button class="ghost" data-act="refresh" data-id="' + escapeHtml(a.id) + '" type="button">刷新 Token</button>' +
@@ -850,6 +867,7 @@ function renderModels(data){
   const list = Array.isArray(data) ? data
     : (Array.isArray(data && data.models) ? data.models
     : (Array.isArray(data && data.data) ? data.data : []));
+  fillTestModelSelect(list);
   if (!list.length) {
     chips.innerHTML = '<div class="empty">暂无模型数据</div>';
     return;
@@ -868,6 +886,30 @@ function renderModels(data){
   chips.querySelectorAll('[data-copy]').forEach(function(btn){
     btn.addEventListener('click', function(){ copyText(btn.getAttribute('data-copy'), '模型', btn); });
   });
+}
+
+function fillTestModelSelect(list){
+  const sel = $('testModelSelect');
+  if (!sel) return;
+  const prev = sel.value;
+  const opts = ['<option value="">自动（最低倍率）</option>'];
+  const seen = {};
+  (list || []).forEach(function(m){
+    const raw = typeof m === 'string' ? m : (m && (m.id || m.modelId || m.upstreamId || m.name));
+    const id = bareModelId(raw);
+    if (!id || id === 'auto' || seen[id]) return;
+    seen[id] = true;
+    const credits = (typeof m === 'object' && m && m.credits) ? String(m.credits) : '';
+    const label = credits ? (id + ' · ' + credits.replace(/\s*credits$/i,'')) : id;
+    opts.push('<option value="' + escapeHtml(id) + '">' + escapeHtml(label) + '</option>');
+  });
+  sel.innerHTML = opts.join('');
+  if (prev && seen[prev]) sel.value = prev;
+}
+
+function selectedTestModel(){
+  const sel = $('testModelSelect');
+  return sel ? String(sel.value || '').trim() : '';
 }
 
 function normalizeSite(site){
@@ -892,6 +934,7 @@ let activeCheckinSite = '';
 let activeProduct = 'codebuddy';
 let lastPoolAccounts = null;
 let checkinBusy = false;
+let poolTestBusy = false;
 let usageRange = 'day';
 let usagePage = 1;
 let usageAccount = '';
@@ -1109,6 +1152,8 @@ function paintPoolSite(site, accounts){
   if (accounts) lastPoolAccounts = accounts;
   const checkinBtn = $('btnCheckin');
   if (checkinBtn && !checkinBusy) checkinBtn.disabled = false;
+  const poolTestBtn = $('btnPoolTest');
+  if (poolTestBtn && !poolTestBusy) poolTestBtn.disabled = false;
   const domesticBtn = $('btnPoolDomestic');
   const globalBtn = $('btnPoolGlobal');
   if (domesticBtn) domesticBtn.className = site === 'domestic' ? 'active' : '';
@@ -1120,6 +1165,11 @@ function paintPoolSite(site, accounts){
   if (checkinRaw && !checkinBusy) {
     checkinRaw.hidden = true;
     checkinRaw.textContent = '';
+  }
+  const poolTestRaw = $('poolTestRaw');
+  if (poolTestRaw && !poolTestBusy) {
+    poolTestRaw.hidden = true;
+    poolTestRaw.textContent = '';
   }
   if ($('checkinHint')) {
     $('checkinHint').textContent = activeCheckinSite === 'global'
@@ -1175,7 +1225,12 @@ function paintStatus(data){
     ? ('已登录' + (primary && (primary.userNickname || primary.userName || primary.userId) ? (' · ' + (primary.userNickname || primary.userName || primary.userId)) : ''))
     : '未登录';
   $('pillTransport').textContent = data.transport || 'protocol_direct';
-  if ($('pillVersion')) $('pillVersion').textContent = data.version || (data.build && data.build.version) || 'dev';
+  if ($('pillVersion')) {
+    const ver = data.version || (data.build && data.build.version) || 'dev';
+    const ui = document.querySelector('meta[name="cbp-ui-revision"]');
+    const uiRev = ui ? (ui.getAttribute('content') || '') : '';
+    $('pillVersion').textContent = uiRev ? (ver + ' · ui ' + uiRev) : ver;
+  }
   const poolSite = normalizeSite(data.poolSite || cfg.poolSite || cfg.site || 'global');
   const poolProduct = normalizeProduct(data.poolProduct || data.product || cfg.poolProduct || cfg.product || 'codebuddy');
   $('pillSite').textContent = siteLabel(poolSite);
@@ -1398,6 +1453,65 @@ async function runPoolCheckin(){
   }
 }
 
+function formatPoolTestSummary(data){
+  const s = data.summary || {};
+  const parts = [];
+  if (s.passed > 0) parts.push('通过 ' + s.passed);
+  if (s.failed > 0) parts.push('失败 ' + s.failed);
+  if (s.skipped > 0) parts.push('跳过 ' + s.skipped);
+  const model = data.model ? (' · ' + data.model) : '';
+  if (!parts.length) return (data.note || '当前号池没有可测试的账号') + model;
+  return parts.join(' · ') + model;
+}
+
+async function runPoolChatTest(){
+  if (!activeCheckinSite) {
+    showToast('号池状态尚未加载，请稍后再试', 'error');
+    return;
+  }
+  const btn = $('btnPoolTest');
+  poolTestBusy = true;
+  if (btn) { btn.disabled = true; btn.textContent = '测试中…'; }
+  try {
+    const body = {site: activeCheckinSite};
+    const model = selectedTestModel();
+    if (model) body.model = model;
+    const data = await api('/direct-admin/api/codebuddy/test', {method:'POST', body: JSON.stringify(body)});
+    showToast(formatPoolTestSummary(data), data.ok ? undefined : 'error');
+    const results = data.results || [];
+    if (results.length && $('poolTestRaw')) {
+      const lines = results.map(function(item){
+        const name = item.label || item.accountId || '账号';
+        if (item.ok) return name + '：ok · ' + (item.latencyMs || 0) + 'ms · ' + (item.model || '');
+        return name + '：' + (item.message || '失败');
+      });
+      $('poolTestRaw').textContent = lines.join('\n');
+      $('poolTestRaw').hidden = false;
+    }
+  } catch (e) {
+    showToast('批量测试失败：' + (e.message || e), 'error');
+  } finally {
+    poolTestBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = '批量测试'; }
+  }
+}
+
+async function testAccountChat(accountId){
+  const body = {};
+  const model = selectedTestModel();
+  if (model) body.model = model;
+  const data = await api('/direct-admin/api/codebuddy/accounts/'+encodeURIComponent(accountId)+'/test', {
+    method:'POST',
+    body: JSON.stringify(body)
+  });
+  if (data.ok) {
+    showToast((data.label || data.accountId || '账号') + ' · ' + (data.latencyMs || 0) + 'ms · ' + (data.model || ''));
+  } else {
+    showToast('测试失败：' + (data.message || 'unknown'), 'error');
+  }
+  return data;
+}
+
 async function refreshModels(){
   const data = await api('/direct-admin/api/codebuddy/models?fresh=1');
   const raw = JSON.stringify(data, null, 2);
@@ -1446,6 +1560,17 @@ async function onAccountAction(ev){
   const act = btn.getAttribute('data-act');
   if (act === 'usage') {
     await fetchAccountUsage(id, false);
+    return;
+  }
+  if (act === 'test') {
+    btn.disabled = true;
+    try {
+      await testAccountChat(id);
+    } catch (e) {
+      showToast('测试失败：' + (e.message || e), 'error');
+    } finally {
+      btn.disabled = false;
+    }
     return;
   }
   if (act === 'delete') {
@@ -1499,6 +1624,7 @@ function onUsageFilterChange(){
 if ($('usageAccountFilter')) $('usageAccountFilter').onchange = onUsageFilterChange;
 if ($('usageModelFilter')) $('usageModelFilter').onchange = onUsageFilterChange;
 if ($('btnCheckin')) $('btnCheckin').onclick = function(){ runPoolCheckin().catch(function(e){ showToast(e.message, 'error'); }); };
+if ($('btnPoolTest')) $('btnPoolTest').onclick = function(){ runPoolChatTest().catch(function(e){ showToast(e.message, 'error'); }); };
 $('btnModels').onclick = function(){ refreshModels().catch(function(e){ $('modelsRaw').textContent = e.message; $('modelChips').innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>'; }); };
 $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 $('btnPoll').onclick = function(){ pollOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };

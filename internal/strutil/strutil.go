@@ -8,6 +8,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // First 返回第一个非空（trim 后）字符串，基于 cmp.Or（Go 1.22+）。
@@ -31,16 +32,21 @@ func Compact(value string) string {
 	return strings.TrimSpace(value)
 }
 
-// Truncate 返回 trim 后最多 n 字节的子串。
+// Truncate 返回 trim 后最多 n 个 rune 的子串，不切断 UTF-8。
 func Truncate(value string, n int) string {
 	value = strings.TrimSpace(value)
-	if n < 0 {
-		n = 0
+	if n <= 0 || value == "" {
+		return ""
 	}
-	if len(value) <= n {
+	if utf8.RuneCountInString(value) <= n {
 		return value
 	}
-	return value[:n]
+	i := 0
+	for range n {
+		_, size := utf8.DecodeRuneInString(value[i:])
+		i += size
+	}
+	return value[:i]
 }
 
 // RandomHex 生成 n 字节随机数的十六进制串（2n 个字符）。

@@ -260,6 +260,108 @@ func TestAdminOpenWithoutPassword(t *testing.T) {
 	}
 }
 
+func TestAdminChatTestRoutes(t *testing.T) {
+	srv := testServer(t, false, "", "")
+	acc, _, err := srv.Svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "probe", Site: "domestic", BearerToken: "token-probe", Enabled: true,
+		AuthStatus: accounts.AuthStatus{UserID: "u-probe"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Svc.Provider.HTTP = &http.Client{Transport: roundTripOKChat{}}
+
+	t.Run("batch empty-ish ok with model", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/direct-admin/api/codebuddy/test", strings.NewReader(`{"model":"auto"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://127.0.0.1:32126")
+		req.Host = "127.0.0.1:32126"
+		rec := httptest.NewRecorder()
+		srv.HTTP.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			OK       bool   `json:"ok"`
+			PoolSite string `json:"poolSite"`
+			Model    string `json:"model"`
+			Summary  struct {
+				Total  int `json:"total"`
+				Passed int `json:"passed"`
+			} `json:"summary"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !payload.OK || payload.PoolSite != "domestic" || payload.Model != "auto" || payload.Summary.Total != 1 || payload.Summary.Passed != 1 {
+			t.Fatalf("payload=%s", rec.Body.String())
+		}
+	})
+
+	t.Run("single account", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/direct-admin/api/codebuddy/accounts/"+acc.ID+"/test", strings.NewReader(`{"model":"auto"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://127.0.0.1:32126")
+		req.Host = "127.0.0.1:32126"
+		rec := httptest.NewRecorder()
+		srv.HTTP.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			OK        bool   `json:"ok"`
+			AccountID string `json:"accountId"`
+			Model     string `json:"model"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !payload.OK || payload.AccountID != acc.ID || payload.Model != "auto" {
+			t.Fatalf("payload=%s", rec.Body.String())
+		}
+	})
+
+	t.Run("batch path not swallowed by accounts prefix", func(t *testing.T) {
+		// POST /codebuddy/test must not be treated as accounts/{id}=test.
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:32126/direct-admin/api/codebuddy/test", strings.NewReader(`{"model":"auto","site":"global"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://127.0.0.1:32126")
+		req.Host = "127.0.0.1:32126"
+		rec := httptest.NewRecorder()
+		srv.HTTP.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload struct {
+			PoolSite string `json:"poolSite"`
+			Summary  struct {
+				Total int `json:"total"`
+			} `json:"summary"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.PoolSite != "global" || payload.Summary.Total != 0 {
+			t.Fatalf("payload=%s", rec.Body.String())
+		}
+	})
+}
+
+type roundTripOKChat struct{}
+
+func (roundTripOKChat) RoundTrip(req *http.Request) (*http.Response, error) {
+	header := make(http.Header)
+	header.Set("Content-Type", "text/event-stream")
+	body := "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     http.StatusText(http.StatusOK),
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}, nil
+}
+
 func TestAdminCheckinRouteUsesActivePoolSiteByDefault(t *testing.T) {
 	cases := []struct {
 		name     string

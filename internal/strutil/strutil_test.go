@@ -3,6 +3,7 @@ package strutil
 import (
 	"encoding/json"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestFirst(t *testing.T) {
@@ -20,6 +21,18 @@ func TestTruncate(t *testing.T) {
 	}
 	if got := Truncate("ab", 5); got != "ab" {
 		t.Fatalf("short Truncate=%q", got)
+	}
+	if got := Truncate("", 4); got != "" {
+		t.Fatalf("empty Truncate=%q", got)
+	}
+	got := Truncate("你好世界", 2)
+	if got != "你好" || !utf8.ValidString(got) {
+		t.Fatalf("rune Truncate=%q valid=%v", got, utf8.ValidString(got))
+	}
+	// 4 bytes splits the second Han character; rune limit must stay valid UTF-8.
+	cut := Truncate("你好", 4)
+	if cut != "你好" || !utf8.ValidString(cut) {
+		t.Fatalf("byte-boundary Truncate=%q valid=%v", cut, utf8.ValidString(cut))
 	}
 }
 

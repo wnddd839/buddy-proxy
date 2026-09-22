@@ -5,7 +5,29 @@
 
 ---
 
-## 未发布
+## v0.5.2 · 2026-09-22 · 账号 Chat 测试
+
+### 感谢
+
+- [@kouekikin24](https://github.com/kouekikin24) 在 [#29](https://github.com/wnddd839/buddy-proxy/issues/29) 建议管理台对齐 New API 渠道测试：钉死账号发一条最小 chat，看可用性与延迟。
+
+### 解决了什么
+
+管理台账号池只能启用、禁用、查用量、刷新令牌、删除，没有办法单独验证某个账号能不能聊天。
+
+### 改了什么
+
+- 单账号 `POST /direct-admin/api/codebuddy/accounts/{id}/test`，批量 `POST /direct-admin/api/codebuddy/test`（与 checkin 同级，避免被 `accounts/{id}` 吞掉）。
+- 钉死目标账号后直接 `Provider.Complete`，不走换号，不写 cooldown / 选号。默认模型取缓存目录最低倍率，可在 body 里覆盖 `model`。
+- 批量串行，间隔 350ms；单账号 20s，批次上限 5 分钟。只读探测不会先刷新过期 token，401 时先点「刷新 Token」。
+- 错误摘要按 rune 截断，中文不再在 UTF-8 边界被切成乱码。
+- 管理台账号行「测试」、顶部「批量测试」和共享模型下拉。顶栏版本旁显示 UI 修订号 `2026.09.22-chat-test`。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池不用迁移。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.5.2
 
 ---
 

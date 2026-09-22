@@ -836,6 +836,23 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		result := billing.RunPoolCheckin(r.Context(), s.Svc.Provider, store, s.Svc.Config(), poolSite)
 		httputil.WriteJSON(w, http.StatusOK, result)
 		return
+	// Batch chat test for enabled accounts. Same-level path as checkin so it is not
+	// swallowed by /accounts/{id}. Optional body: {"site":"...","model":"..."}.
+	case path == "/direct-admin/api/codebuddy/test" && r.Method == http.MethodPost:
+		var body struct {
+			Site  string `json:"site"`
+			Model string `json:"model"`
+		}
+		_ = httputil.ReadJSON(r, &body)
+		poolSite := config.NormalizeSite(strutil.First(body.Site, s.Svc.ActivePoolSite()))
+		model, err := s.Svc.ResolveChatTestModel(r.Context(), poolSite, body.Model)
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		result := s.Svc.RunPoolChatTest(r.Context(), poolSite, model, gateway.RunPoolChatTestOptions{})
+		httputil.WriteJSON(w, http.StatusOK, result)
+		return
 	}
 
 	if strings.HasPrefix(path, "/direct-admin/api/codebuddy/accounts/") {
@@ -977,6 +994,42 @@ func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, pat
 			"account":  accounts.SummarizeAccount(saved),
 			"accounts": accounts.SummarizeStore(store, s.Svc.Pool.Path()),
 		})
+		return
+	case r.Method == http.MethodPost && action == "test":
+		store, err := s.Svc.Pool.Read()
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		var selected accounts.Account
+		found := false
+		for _, item := range store.Accounts {
+			if item.ID == id {
+				selected = item
+				found = true
+				break
+			}
+		}
+		if !found {
+			httputil.WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "account not found"})
+			return
+		}
+		if !accounts.HasCredentials(selected) {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "account has no credentials"})
+			return
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = httputil.ReadJSON(r, &body)
+		site := config.NormalizeSite(strutil.First(selected.Site, s.Svc.ActivePoolSite()))
+		model, err := s.Svc.ResolveChatTestModel(r.Context(), site, body.Model)
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		result := s.Svc.TestAccountChat(r.Context(), selected, model)
+		httputil.WriteJSON(w, http.StatusOK, result)
 		return
 	default:
 		httputil.WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "unknown account action"})
