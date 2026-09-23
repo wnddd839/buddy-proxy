@@ -411,6 +411,104 @@ func TestEnsureUpstreamMessagesKeepsAssistantToolCallsMapSlice(t *testing.T) {
 	}
 }
 
+func assistantToolCallIDs(msg map[string]any) []string {
+	calls, _ := msg["tool_calls"].([]any)
+	ids := make([]string, 0, len(calls))
+	for _, raw := range calls {
+		m, _ := raw.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if id := fmt.Sprint(m["id"]); id != "" && id != "<nil>" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func TestEnsureUpstreamMessagesMergesConsecutiveEmptyToolAssistants(t *testing.T) {
+	out := provider.EnsureUpstreamMessages([]map[string]any{
+		{"role": "user", "content": "hi"},
+		{
+			"role": "assistant", "content": nil,
+			"tool_calls": []any{map[string]any{"id": "c1", "type": "function", "function": map[string]any{"name": "read", "arguments": "{}"}}},
+		},
+		{
+			"role": "assistant", "content": nil,
+			"tool_calls": []any{map[string]any{"id": "c2", "type": "function", "function": map[string]any{"name": "bash", "arguments": "{}"}}},
+		},
+		{"role": "tool", "tool_call_id": "c1", "content": "o1"},
+		{"role": "tool", "tool_call_id": "c2", "content": "o2"},
+		{"role": "user", "content": "go"},
+	})
+	if len(out) != 5 {
+		t.Fatalf("T2 must collapse two empty tool assistants into one, got %d: %+v", len(out), out)
+	}
+	if fmt.Sprint(out[1]["role"]) != "assistant" {
+		t.Fatalf("merged role=%v", out[1]["role"])
+	}
+	ids := assistantToolCallIDs(out[1])
+	if len(ids) != 2 || ids[0] != "c1" || ids[1] != "c2" {
+		t.Fatalf("merged tool_calls ids=%v", ids)
+	}
+	if fmt.Sprint(out[2]["role"]) != "tool" || fmt.Sprint(out[3]["role"]) != "tool" {
+		t.Fatalf("tool results must stay after merged assistant: %+v", out)
+	}
+}
+
+func TestEnsureUpstreamMessagesDoesNotMergeInterleavedToolTurns(t *testing.T) {
+	out := provider.EnsureUpstreamMessages([]map[string]any{
+		{"role": "user", "content": "hi"},
+		{
+			"role": "assistant", "content": nil,
+			"tool_calls": []any{map[string]any{"id": "c1", "type": "function", "function": map[string]any{"name": "read", "arguments": "{}"}}},
+		},
+		{"role": "tool", "tool_call_id": "c1", "content": "o1"},
+		{
+			"role": "assistant", "content": nil,
+			"tool_calls": []any{map[string]any{"id": "c2", "type": "function", "function": map[string]any{"name": "bash", "arguments": "{}"}}},
+		},
+		{"role": "tool", "tool_call_id": "c2", "content": "o2"},
+	})
+	if len(out) != 5 {
+		t.Fatalf("T4 interleaved turns must stay split, got %d: %+v", len(out), out)
+	}
+	if got := assistantToolCallIDs(out[1]); len(got) != 1 || got[0] != "c1" {
+		t.Fatalf("first assistant ids=%v", got)
+	}
+	if got := assistantToolCallIDs(out[3]); len(got) != 1 || got[0] != "c2" {
+		t.Fatalf("second assistant ids=%v", got)
+	}
+}
+
+func TestEnsureUpstreamMessagesDoesNotMergeAssistantWithText(t *testing.T) {
+	out := provider.EnsureUpstreamMessages([]map[string]any{
+		{"role": "user", "content": "hi"},
+		{
+			"role": "assistant", "content": "let me look",
+			"tool_calls": []any{map[string]any{"id": "c1", "type": "function", "function": map[string]any{"name": "read", "arguments": "{}"}}},
+		},
+		{
+			"role": "assistant", "content": nil,
+			"tool_calls": []any{map[string]any{"id": "c2", "type": "function", "function": map[string]any{"name": "bash", "arguments": "{}"}}},
+		},
+		{"role": "tool", "tool_call_id": "c1", "content": "o1"},
+		{"role": "tool", "tool_call_id": "c2", "content": "o2"},
+	})
+	if len(out) != 5 {
+		t.Fatalf("assistant with text must not merge, got %d: %+v", len(out), out)
+	}
+	if out[1]["content"] != "let me look" {
+		t.Fatalf("text assistant content=%v", out[1]["content"])
+	}
+	if got := assistantToolCallIDs(out[1]); len(got) != 1 || got[0] != "c1" {
+		t.Fatalf("text assistant ids=%v", got)
+	}
+	if got := assistantToolCallIDs(out[2]); len(got) != 1 || got[0] != "c2" {
+		t.Fatalf("following empty assistant ids=%v", got)
+	}
+}
+
 func TestEnsureUpstreamMessagesMapsDeveloper(t *testing.T) {
 	out := provider.EnsureUpstreamMessages([]map[string]any{
 		{"role": "developer", "content": "You are a coding agent."},

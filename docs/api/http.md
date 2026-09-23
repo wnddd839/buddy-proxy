@@ -199,7 +199,7 @@ JSON 请求体上限 **64MiB**（`httputil.MaxJSONBodyBytes`）。超过时返�
 {"error":{"message":"Request body exceeds 64MB. 1M-context requests need a larger JSON body.","type":"invalid_request_error"}}
 ```
 
-非法 JSON 仍为 `400` `Invalid JSON body`。
+非法 JSON 仍为 `400` `Invalid JSON body`。出站前会把**连续的空正文** `assistant.tool_calls` 合成一条（flash 系上游拒收分散形状，11148）；已交错的 A/T 与带正文的 assistant 不合并。
 
 **流式行为**：
 

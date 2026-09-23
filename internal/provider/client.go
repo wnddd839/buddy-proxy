@@ -589,14 +589,7 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 		}
 		item["content"] = flattenContent(message["content"])
 		hasToolCalls := len(asAnySlice(item["tool_calls"])) > 0
-		contentEmpty := false
-		switch v := item["content"].(type) {
-		case string:
-			contentEmpty = strings.TrimSpace(v) == ""
-		case nil:
-			contentEmpty = true
-		}
-		if contentEmpty && !hasToolCalls && item["tool_call_id"] == nil {
+		if messageContentEmpty(item["content"]) && !hasToolCalls && item["tool_call_id"] == nil {
 			continue
 		}
 		if role == "system" {
@@ -607,12 +600,48 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 		}
 		rest = append(rest, item)
 	}
+	rest = mergeConsecutiveToolAssistants(rest)
 	if len(instructions) == 0 {
 		return rest
 	}
 	out := make([]map[string]any, 0, len(rest)+2)
 	out = append(out, map[string]any{"role": "system", "content": canonicalUpstreamSystem})
 	out = append(out, foldClientInstructions(rest, strings.Join(instructions, "\n\n"))...)
+	return out
+}
+
+func messageContentEmpty(content any) bool {
+	switch v := content.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(v) == ""
+	default:
+		return false
+	}
+}
+
+func isEmptyToolAssistant(msg map[string]any) bool {
+	return fmt.Sprint(msg["role"]) == "assistant" &&
+		messageContentEmpty(msg["content"]) &&
+		len(asAnySlice(msg["tool_calls"])) > 0
+}
+
+// mergeConsecutiveToolAssistants 把连续的空正文 assistant.tool_calls 合成一条。
+// flash 系上游拒收「多条空 assistant + 后置集中 tool」（11148）；交错 A/T 与带正文的 assistant 不动。
+func mergeConsecutiveToolAssistants(msgs []map[string]any) []map[string]any {
+	if len(msgs) < 2 {
+		return msgs
+	}
+	out := make([]map[string]any, 0, len(msgs))
+	for _, msg := range msgs {
+		if len(out) > 0 && isEmptyToolAssistant(out[len(out)-1]) && isEmptyToolAssistant(msg) {
+			prev := out[len(out)-1]
+			prev["tool_calls"] = append(asAnySlice(prev["tool_calls"]), asAnySlice(msg["tool_calls"])...)
+			continue
+		}
+		out = append(out, msg)
+	}
 	return out
 }
 

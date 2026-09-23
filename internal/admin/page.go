@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.09.22-chat-test"
+const UIRevision = "2026.09.23-status-pills"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -64,11 +64,11 @@ a{color:inherit;text-decoration:none}
 }
 .mark{display:none}
 .pillrow{
-  display:flex;align-items:center;gap:0;
+  display:flex;align-items:center;gap:0;flex-wrap:nowrap;flex-shrink:0;
   font-family:var(--sans);font-size:11px;letter-spacing:.15em;text-transform:uppercase;
   color:var(--fg-60);
 }
-.pill{display:inline-flex;align-items:center;gap:6px}
+.pill{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap}
 .pill + .pill::before{content:"·";margin:0 10px;color:var(--fg-40)}
 .pill .dot{
   width:6px;height:6px;background:var(--fg);border:1px solid var(--fg);

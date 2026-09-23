@@ -914,6 +914,22 @@ func TestAdminPageRefreshButtonRequestsFreshCredits(t *testing.T) {
 	}
 }
 
+func TestAdminPageStatusPillsDoNotWrapInternally(t *testing.T) {
+	html := admin.PageHTML()
+	if !strings.Contains(html, ".pill{") || !strings.Contains(html, "white-space:nowrap") {
+		t.Fatal("status pills must keep white-space:nowrap so long health text cannot break each label")
+	}
+	if !strings.Contains(html, "flex-shrink:0") && !strings.Contains(html, "flex:0 0 auto") {
+		t.Fatal("pillrow/pills must not shrink into per-character wrapping")
+	}
+	if !strings.Contains(html, `content="`+admin.UIRevision+`"`) {
+		t.Fatalf("cbp-ui-revision meta must match UIRevision %q", admin.UIRevision)
+	}
+	if admin.UIRevision == "2026.09.22-chat-test" {
+		t.Fatal("UIRevision must bump when status-bar CSS changes")
+	}
+}
+
 type adminCreditsTransport struct {
 	mu        sync.Mutex
 	billing   int
