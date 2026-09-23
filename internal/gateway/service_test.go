@@ -50,6 +50,7 @@ type scriptedChatTransport struct {
 	mu            sync.Mutex
 	calls         []string
 	chatCalls     []string
+	chatBodies    []string
 	billingCalls  []string
 	byAuth        map[string]int
 	creditsByAuth map[string]float64
@@ -91,6 +92,13 @@ func (t *scriptedChatTransport) RoundTrip(req *http.Request) (*http.Response, er
 		}, nil
 	}
 	t.chatCalls = append(t.chatCalls, token)
+	// Guard: this is a catch-all branch; GET probes (models lister, OAuth poll)
+	// arrive here with a nil Body and io.ReadAll(nil) panics.
+	if req.Body != nil {
+		if raw, err := io.ReadAll(req.Body); err == nil {
+			t.chatBodies = append(t.chatBodies, string(raw))
+		}
+	}
 	status := t.byAuth[token]
 	t.mu.Unlock()
 	if status == 0 {
@@ -118,6 +126,13 @@ func (t *scriptedChatTransport) snapshot() (chat, billing []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]string{}, t.chatCalls...), append([]string{}, t.billingCalls...)
+}
+
+// snapshotBodies returns the captured chat request bodies, in call order.
+func (t *scriptedChatTransport) snapshotBodies() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string{}, t.chatBodies...)
 }
 
 func TestCompleteFromPoolRetriesNextAccountAfter429(t *testing.T) {

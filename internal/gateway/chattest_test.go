@@ -199,3 +199,53 @@ func TestRunPoolChatTestSerialSummaryAndSkip(t *testing.T) {
 		t.Fatalf("expected skipped when deadline exhausted: %+v", skipped)
 	}
 }
+
+func TestTestAccountChatSendsSystemFirst(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "global", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+
+	acc, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "g", Site: "global", BearerToken: "token-g", Enabled: true,
+		AuthStatus: accounts.AuthStatus{UserID: "ug"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	transport := &scriptedChatTransport{byAuth: map[string]int{"token-g": http.StatusOK}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	out := svc.TestAccountChat(context.Background(), acc, "auto")
+	if !out.OK {
+		t.Fatalf("expected ok: %+v", out)
+	}
+
+	bodies := transport.snapshotBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("expected 1 chat body, got %d", len(bodies))
+	}
+	var payload struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(bodies[0]), &payload); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, bodies[0])
+	}
+	if len(payload.Messages) != 2 {
+		t.Fatalf("expected exactly 2 messages, got %d: %s", len(payload.Messages), bodies[0])
+	}
+	if payload.Messages[0].Role != "system" {
+		t.Fatalf("first message role=%q want system: %s", payload.Messages[0].Role, bodies[0])
+	}
+	if payload.Messages[1].Role != "user" {
+		t.Fatalf("second message role=%q want user: %s", payload.Messages[1].Role, bodies[0])
+	}
+	// The upstream filter folds the client system into the first user message
+	// (see provider.EnsureUpstreamMessages); the probe payload must survive.
+	if !strings.Contains(payload.Messages[1].Content, chatTestPrompt) {
+		t.Fatalf("user message lost the probe payload: %s", bodies[0])
+	}
+}

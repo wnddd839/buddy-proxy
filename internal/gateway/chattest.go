@@ -13,7 +13,11 @@ import (
 )
 
 const (
-	chatTestPrompt         = "ping"
+	chatTestPrompt = "ping"
+	// A non-empty system message makes provider.EnsureUpstreamMessages emit its
+	// canonical system slot; the text itself is folded into the first user turn
+	// as client instructions (see provider/client.go).
+	chatTestSystemPrompt   = "You are a helpful coding assistant."
 	chatTestMaxTokens      = 8
 	chatTestRequestTimeout = 20 * time.Second
 	chatTestBatchMax       = 5 * time.Minute
@@ -91,8 +95,11 @@ func (s *Service) TestAccountChat(ctx context.Context, account accounts.Account,
 	defer cancel()
 
 	chatOpts := s.chatOptionsFromAccount(account, CompleteOptions{
-		Model:               model,
-		Messages:            []map[string]any{{"role": "user", "content": chatTestPrompt}},
+		Model: model,
+		Messages: []map[string]any{
+			{"role": "system", "content": chatTestSystemPrompt},
+			{"role": "user", "content": chatTestPrompt},
+		},
 		MaxCompletionTokens: chatTestMaxTokens,
 	})
 	started := time.Now()
