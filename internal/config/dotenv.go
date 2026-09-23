@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/wnddd839/codebuddy-proxy/internal/atomicwrite"
 )
 
 // LoadDotEnv 从就近 env 文件加载 KEY=VALUE 到进程环境。
@@ -236,11 +238,7 @@ func UpsertEnvFile(path string, values map[string]string) error {
 	}
 
 	content := strings.Join(out, "\n") + "\n"
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return atomicwrite.Write(path, []byte(content), 0o600)
 }
 
 func escapeEnvValue(value string) string {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wnddd839/codebuddy-proxy/internal/atomicwrite"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 )
@@ -239,11 +240,7 @@ func (p *Pool) writeDisk(store Store) error {
 		return err
 	}
 	payload = append(payload, '\n')
-	tmp := p.path + ".tmp"
-	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, p.path)
+	return atomicwrite.Write(p.path, payload, 0o600)
 }
 
 func (p *Pool) markDirtyLocked() {
