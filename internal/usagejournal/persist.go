@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/wnddd839/codebuddy-proxy/internal/atomicwrite"
 )
 
 const (
@@ -201,11 +203,7 @@ func (j *Journal) writeDisk(snap fileSnapshot) error {
 		return err
 	}
 	payload = append(payload, '\n')
-	tmp := j.path + ".tmp"
-	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, j.path)
+	return atomicwrite.Write(j.path, payload, 0o600)
 }
 
 func (j *Journal) pruneRetention(now time.Time) {
