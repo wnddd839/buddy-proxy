@@ -5,6 +5,35 @@
 
 ---
 
+## 未发布
+
+---
+
+## v0.5.3 · 2026-09-23 · flash 11148 合并分散 tool_calls · 顶栏不再逐字折行
+
+### 感谢
+
+- [@carter003](https://github.com/carter003) 在 [#30](https://github.com/wnddd839/buddy-proxy/issues/30) 用对照矩阵证伪：flash 系拒收连续分散的空 `assistant.tool_calls` + 后置集中 `tool` 结果（11148），合并成一条即过。
+- [@kouekikin24](https://github.com/kouekikin24) 在 [#33](https://github.com/wnddd839/buddy-proxy/issues/33) 指出切号池后探测文案变长，顶栏每个标签内部逐字折行。
+
+### 解决了什么
+
+1. `deepseek-v4.1-flash` / `deepseek-v4-flash` 在「两条空 assistant 各带 1 个 tool_call + 后置集中 tool 结果」时稳定 11148；同请求换 hy4/auto/glm 则过。v0.5.1 的类型归一挡不住这个形状。
+2. 切国内/国际号池后几秒，探测文案变长，顶栏 5 个标签各自内部折行，中文逐字断开。
+
+### 改了什么
+
+- `EnsureUpstreamMessages` 合并**连续的空正文** `assistant.tool_calls`（T2/T7 → T1）。已交错的 A/T（T4）和带正文的 assistant 不合并。孤儿 `tool`（T5）仍透传。
+- 管理台顶栏 `.pill` / `.pillrow` 禁止内部折行、禁止被压窄；过宽时整条状态条换到品牌下一行。UI 修订号改为 `2026.09.23-status-pills`。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池不用迁移。管理台顶栏版本旁应看到 `ui 2026.09.23-status-pills`。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.5.3
+
+---
+
 ## v0.5.2 · 2026-09-22 · 账号 Chat 测试
 
 ### 感谢
