@@ -9,6 +9,31 @@
 
 ---
 
+## v0.5.4 · 2026-09-23 · 国际站账号测试不再误报 11128 · 断电不再把账号文件写成全 0
+
+### 感谢
+
+- [@kouekikin24](https://github.com/kouekikin24) 在 [#31](https://github.com/wnddd839/buddy-proxy/pull/31) 指出管理台国际站「测试」对健康账号恒报 `11128 first message is not system prompt`。
+- [@kouekikin24](https://github.com/kouekikin24) 在 [#32](https://github.com/wnddd839/buddy-proxy/pull/32) 用一次非正常关机证明：NTFS 上 temp+rename 未 fsync 时，账号池和用量文件会留下正确长度、内容全 0x00。
+
+### 解决了什么
+
+1. v0.5.2 的账号 Chat 测试只发一条 `user: ping`。国际站要求首条为 system，健康号会被判失败，同时段生产流量却正常。国内站不受影响。
+2. 账号池、用量、`.env` 三处 `WriteFile(tmp)` → `Rename` 在 rename 前不刷盘。断电窗口内目录项和长度已提交、数据还在写缓存，恢复后文件全 0，看起来像「池里本来没号」。
+
+### 改了什么
+
+- `TestAccountChat` 先发一条非空 system，再发 `ping`。`EnsureUpstreamMessages` 因此补上 canonical system 槽，探测不再误踩 11128。仍钉死目标账号，不写 cooldown / 选号。
+- 新增 `internal/atomicwrite.Write`：temp + write + chmod + Sync + close + rename。三处持久化都走它。失败清临时文件、保留原文件。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池不用迁移。已损坏的全 0 文件救不回来，需要从备份或重新登录恢复。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.5.4
+
+---
+
 ## v0.5.3 · 2026-09-23 · flash 11148 合并分散 tool_calls · 顶栏不再逐字折行
 
 ### 感谢
