@@ -639,6 +639,241 @@ func containsID(ids []string, want string) bool {
 	return false
 }
 
+func TestImageGenerationReturnsURL(t *testing.T) {
+	srv := testServer(t, true, "", "cbp_test")
+	seedBothSites(t, srv)
+	upstream := &imageUpstream{status: http.StatusOK, body: `{"code":0,"msg":"OK","data":{"created":11,"data":[{"url":"https://example.test/a.png"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`}
+	srv.Svc.Provider.HTTP = &http.Client{Transport: upstream}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"hunyuan-image-alpha","prompt":"a red circle"}`))
+	req.Header.Set("Authorization", "Bearer cbp_test")
+	req.Header.Set("Content-Type", "application/json")
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("cors=%q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+	var payload struct {
+		Data []struct {
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Data) != 1 || payload.Data[0].URL != "https://example.test/a.png" {
+		t.Fatalf("payload=%s", rec.Body.String())
+	}
+	if !strings.HasSuffix(upstream.lastPath(), "/v2/images/generations") {
+		t.Fatalf("path=%s", upstream.lastPath())
+	}
+	if strings.Contains(upstream.lastBody(), "image_url") || strings.Contains(upstream.lastBody(), "image_data") {
+		t.Fatalf("generate body=%s", upstream.lastBody())
+	}
+}
+
+func TestImageGenerationAliasAndRejectsInput(t *testing.T) {
+	srv := testServer(t, true, "", "cbp_test")
+	seedBothSites(t, srv)
+	srv.Svc.Provider.HTTP = &http.Client{Transport: &imageUpstream{status: http.StatusOK, body: `{"code":0,"data":{"created":1,"data":[{"url":"https://example.test/a.png"}]}}`}}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/images/generations", strings.NewReader(`{"model":"hunyuan-image-alpha","prompt":"a red circle"}`))
+	req.Header.Set("Authorization", "Bearer cbp_test")
+	req.Header.Set("Content-Type", "application/json")
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("alias status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"hunyuan-image-alpha","prompt":"x","image":"https://example.test/in.png"}`))
+	req.Header.Set("Authorization", "Bearer cbp_test")
+	req.Header.Set("Content-Type", "application/json")
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("image on generate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"hunyuan-image-alpha","prompt":"x","n":2}`))
+	req.Header.Set("Authorization", "Bearer cbp_test")
+	req.Header.Set("Content-Type", "application/json")
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("n=2 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"hunyuan-image-alpha","prompt":"x","response_format":"b64_json"}`))
+	req.Header.Set("Authorization", "Bearer cbp_test")
+	req.Header.Set("Content-Type", "application/json")
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("b64_json status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImageEditRequiresInput(t *testing.T) {
+	srv := testServer(t, true, "", "cbp_test")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{"model":"hunyuan-image-alpha","prompt":"make it blue"}`))
+	req.Header.Set("Authorization", "Bearer cbp_test")
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestImageEditRoutesURLAndBase64(t *testing.T) {
+	srv := testServer(t, true, "", "cbp_test")
+	seedBothSites(t, srv)
+	upstream := &imageUpstream{status: http.StatusOK, body: `{"code":0,"msg":"OK","data":{"created":11,"data":[{"url":"https://example.test/out.png"}]}}`}
+	srv.Svc.Provider.HTTP = &http.Client{Transport: upstream}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{"model":"hunyuan-image-alpha","prompt":"make it blue","image":"https://example.test/in.png"}`))
+	req.Header.Set("Authorization", "Bearer cbp_test")
+	req.Header.Set("Content-Type", "application/json")
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("url edit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.HasSuffix(upstream.lastPath(), "/v2/images/edits") {
+		t.Fatalf("path=%s", upstream.lastPath())
+	}
+	if !strings.Contains(upstream.lastBody(), `"image_url"`) || strings.Contains(upstream.lastBody(), `"image_data"`) {
+		t.Fatalf("url edit body=%s", upstream.lastBody())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{"model":"hunyuan-image-alpha","prompt":"make it blue","image":"data:image/png;base64,abcd"}`))
+	req.Header.Set("Authorization", "Bearer cbp_test")
+	req.Header.Set("Content-Type", "application/json")
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("b64 edit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(upstream.lastBody(), `"image_data"`) || !strings.Contains(upstream.lastBody(), `"abcd"`) {
+		t.Fatalf("b64 edit body=%s", upstream.lastBody())
+	}
+}
+
+func TestImageGenerationMaps14401(t *testing.T) {
+	srv := testServer(t, true, "", "cbp_test")
+	seedBothSites(t, srv)
+	srv.Svc.Provider.HTTP = &http.Client{Transport: &imageUpstream{status: http.StatusOK, body: `{"code":14401,"msg":"route config not found"}`}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"hunyuan-image-alpha","prompt":"x"}`))
+	req.Header.Set("Authorization", "Bearer cbp_test")
+	req.Header.Set("Content-Type", "application/json")
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "14401") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestModelsCatalogMarksImageGeneration(t *testing.T) {
+	srv := testServer(t, false, "", "")
+	seedBothSites(t, srv)
+	srv.Svc.Provider.HTTP = &http.Client{Transport: catalogWithImageTransport{}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	srv.HTTP.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Data []struct {
+			ID   string   `json:"id"`
+			Mode string   `json:"mode"`
+			Tags []string `json:"tags"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range payload.Data {
+		if item.ID == "hunyuan-image-alpha" {
+			found = true
+			if item.Mode != "image_generation" {
+				t.Fatalf("mode=%q tags=%v", item.Mode, item.Tags)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("missing hunyuan-image-alpha in %s", rec.Body.String())
+	}
+}
+
+type imageUpstream struct {
+	mu     sync.Mutex
+	status int
+	body   string
+	paths  []string
+	bodies []string
+}
+
+func (t *imageUpstream) RoundTrip(req *http.Request) (*http.Response, error) {
+	raw, _ := io.ReadAll(req.Body)
+	t.mu.Lock()
+	t.paths = append(t.paths, req.URL.Path)
+	t.bodies = append(t.bodies, string(raw))
+	t.mu.Unlock()
+	header := make(http.Header)
+	header.Set("Content-Type", "text/event-stream")
+	return &http.Response{
+		StatusCode: t.status,
+		Status:     http.StatusText(t.status),
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(t.body)),
+		Request:    req,
+	}, nil
+}
+
+func (t *imageUpstream) lastPath() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.paths) == 0 {
+		return ""
+	}
+	return t.paths[len(t.paths)-1]
+}
+
+func (t *imageUpstream) lastBody() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.bodies) == 0 {
+		return ""
+	}
+	return t.bodies[len(t.bodies)-1]
+}
+
+type catalogWithImageTransport struct{}
+
+func (catalogWithImageTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
+	rows := []map[string]any{
+		{"id": "deepseek-v4.1-flash", "name": "flash"},
+		{"id": "hunyuan-image-alpha", "name": "Hunyuan", "tags": []any{"text-to-image"}},
+	}
+	body, _ := json.Marshal(map[string]any{"models": rows})
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     http.StatusText(http.StatusOK),
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(string(body))),
+		Request:    req,
+	}, nil
+}
+
 type recordingUpstreamTransport struct {
 	mu    sync.Mutex
 	chats []string

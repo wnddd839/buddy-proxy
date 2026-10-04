@@ -209,6 +209,17 @@ func TestToAdminModelsConsoleSourceIsVerified(t *testing.T) {
 	}
 }
 
+func TestToAdminModelsKeepsTextToImageTag(t *testing.T) {
+	out := ToAdminModels([]map[string]any{{
+		"id":   "hunyuan-image-alpha",
+		"name": "Hunyuan Image Alpha",
+		"tags": []any{"text-to-image"},
+	}}, "console")
+	if len(out) != 1 || !IsImageModel(out[0].Tags) {
+		t.Fatalf("tags=%v", out)
+	}
+}
+
 func TestWithCLIIdentityDoesNotMutateCallerHeaders(t *testing.T) {
 	orig := map[string]string{"X-Product-Version": "keep-me", "X-IDE-Type": "VSCode"}
 	in := provider.ChatOptions{ExtraHeaders: orig}

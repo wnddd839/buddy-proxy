@@ -9,6 +9,17 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 )
 
+func TestResolveProtocolDirectImageEndpoint(t *testing.T) {
+	got := provider.ResolveProtocolDirectImageEndpoint(provider.ChatOptions{
+		Site:        "domestic",
+		Product:     "workbuddy",
+		APIEndpoint: "https://copilot.tencent.com/v2/chat/completions",
+	}, "/v2/images/generations")
+	if got != "https://copilot.tencent.com/v2/images/generations" {
+		t.Fatalf("endpoint=%s", got)
+	}
+}
+
 func TestResolveProtocolDirectBillingEndpoint(t *testing.T) {
 	opts := provider.ChatOptions{
 		Site:        "domestic",
@@ -201,6 +212,26 @@ func TestNormalizeModelsPreservesReasoning(t *testing.T) {
 	reasoning, ok := rows[0]["reasoning"].(map[string]any)
 	if !ok || reasoning["defaultEffort"] != "high" {
 		t.Fatalf("reasoning=%v", rows[0]["reasoning"])
+	}
+}
+
+func TestNormalizeModelsPreservesTags(t *testing.T) {
+	rows := provider.NormalizeModels(map[string]any{
+		"data": map[string]any{
+			"models": []any{
+				map[string]any{
+					"id": "hunyuan-image-alpha", "name": "Hunyuan",
+					"tags": []any{"text-to-image"},
+				},
+			},
+		},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(rows))
+	}
+	tags, ok := rows[0]["tags"].([]any)
+	if !ok || len(tags) != 1 || tags[0] != "text-to-image" {
+		t.Fatalf("tags=%v", rows[0]["tags"])
 	}
 }
 

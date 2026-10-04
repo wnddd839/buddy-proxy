@@ -60,7 +60,7 @@
 | 能力 | 说明 |
 | :--- | :--- |
 | **协议直连** | OAuth 登录后直连上游，不依赖 `codebuddy --serve` 等本地中间进程 |
-| **标准 OpenAI 形状** | `GET /v1/models` · `POST /v1/chat/completions` · `POST /v1/responses`（Responses API，Codex CLI 可直连），流式与非流式都支持 |
+| **标准 OpenAI 形状** | `GET /v1/models` · `POST /v1/chat/completions` · `POST /v1/responses`（Responses API，Codex CLI 可直连）· `POST /v1/images/generations` · `POST /v1/images/edits`，流式与非流式都支持 |
 | **多账号调度** | 同会话钉在同一账号；钉号被禁用/删除会换号。新会话按额度快照选最大（缺快照或超过 5 分钟才探活）；失败换号前再探活拿最大。6004 按错误文案 `will reset at` 长冷却。凭据以 `0600` 权限落盘 |
 | **真实余额** | 管理台直读官网 Credits，显示「剩余 / 总额」 |
 | **国内 / 国际** | 同一进程可同时持有两区账号。默认区域可在管理台切换；单请求用 Key 绑定、`X-Site` 或 `cn:` / `global:` 前缀选区。**端点以账号自身区域为准** |

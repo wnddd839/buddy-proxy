@@ -20,6 +20,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/gateway"
 	"github.com/wnddd839/codebuddy-proxy/internal/httputil"
+	modelspkg "github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
 	"github.com/wnddd839/codebuddy-proxy/internal/openai"
 	"github.com/wnddd839/codebuddy-proxy/internal/opencode"
@@ -53,6 +54,10 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 	mux.HandleFunc("POST /chat/completions", s.handleChatAuth)
 	mux.HandleFunc("POST /v1/responses", s.handleResponsesAuth)
 	mux.HandleFunc("POST /responses", s.handleResponsesAuth)
+	mux.HandleFunc("POST /v1/images/generations", s.handleImagesAuth)
+	mux.HandleFunc("POST /images/generations", s.handleImagesAuth)
+	mux.HandleFunc("POST /v1/images/edits", s.handleImageEditsAuth)
+	mux.HandleFunc("POST /images/edits", s.handleImageEditsAuth)
 	mux.HandleFunc("GET /direct-admin", s.handleAdminPage)
 	mux.HandleFunc("GET /direct-admin/{$}", s.handleAdminPage)
 	mux.HandleFunc("HEAD /direct-admin", s.handleAdminPage)
@@ -271,6 +276,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request, keySite st
 		}
 		if model.OnlyReasoning {
 			item["onlyReasoning"] = true
+		}
+		if len(model.Tags) > 0 {
+			item["tags"] = model.Tags
+		}
+		if modelspkg.IsImageModel(model.Tags) {
+			item["mode"] = "image_generation"
 		}
 		for key, value := range opencode.ModelListFields(model) {
 			item[key] = value

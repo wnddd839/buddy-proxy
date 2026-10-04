@@ -4,7 +4,8 @@ import "strings"
 
 // LowestMultiplierID returns the public model id with the smallest creditMultiplier.
 // Models without a known multiplier are ignored when any known multiplier exists;
-// otherwise the first non-blank id wins. Ties keep list order.
+// otherwise the first non-blank id wins. Ties keep list order. Text-to-image
+// models are skipped so chat probes never pick an image-only catalog row.
 func LowestMultiplierID(list []Model) (string, bool) {
 	bestID := ""
 	var bestMult float64
@@ -12,7 +13,7 @@ func LowestMultiplierID(list []Model) (string, bool) {
 
 	for _, m := range list {
 		id := strings.TrimSpace(m.ID)
-		if id == "" {
+		if id == "" || IsImageModel(m.Tags) {
 			continue
 		}
 		if m.CreditMultiplier == nil {

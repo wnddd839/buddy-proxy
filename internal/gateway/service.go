@@ -265,6 +265,26 @@ type CompleteOptions struct {
 	RetryDepth          int // 内部递归计数，调用方勿手动设置
 }
 
+// ImageOptions is one pooled image generation or edit.
+type ImageOptions struct {
+	Site         string
+	Model        string
+	Prompt       string
+	ImageURLs    []string
+	ImageData    []string
+	AccountID    string
+	ExcludeIDs   []string
+	RefreshRetry bool
+	RetryDepth   int
+}
+
+// ImageResult is a pooled upstream image response plus the account that served it.
+type ImageResult struct {
+	provider.ImageResult
+	Account   accounts.Summary `json:"account"`
+	AccountID string           `json:"accountId"`
+}
+
 // chatOptionsFromAccount 以账号为区域真源构建上游请求。
 // 反代进程所在位置 / 全局 CODEBUDDY_BASE_URL 不得把国内账号打到海外（反之亦然）。
 func (s *Service) chatOptionsFromAccount(account accounts.Account, opts CompleteOptions) provider.ChatOptions {

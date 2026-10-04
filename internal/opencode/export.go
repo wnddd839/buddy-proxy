@@ -152,9 +152,13 @@ func VariantsForModel(model models.Model) map[string]map[string]any {
 
 // LiteLLMModelInfoEntry is one row for GET /v1/model/info (opencode-models-discovery litellm enricher).
 func LiteLLMModelInfoEntry(model models.Model) map[string]any {
+	mode := "chat"
+	if models.IsImageModel(model.Tags) {
+		mode = "image_generation"
+	}
 	info := map[string]any{
 		"key":  model.ID,
-		"mode": "chat",
+		"mode": mode,
 	}
 	if n := model.ContextLength(); n > 0 {
 		info["max_input_tokens"] = n

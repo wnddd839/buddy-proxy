@@ -17,3 +17,6 @@ releases/*.exe
 .agents/
 docs/review/
 .local/
+
+# local-only agent scratch (never publish)
+.tmp/

@@ -5,7 +5,25 @@
 
 ---
 
-## 未发布
+## v0.5.5 · 2026-10-04 · 上游图片生成 / 编辑
+
+### 解决了什么
+
+1. 上游目录出现 `tags: ["text-to-image"]` 的出图模型（实测：控制台 `hunyuan-image-alpha`，`/v3/config` 的 `hunyuan-image-v3.0-art`）。打 chat 走不通，网关之前也没有 Images 端点。
+2. 管理台账号 Chat 测试按目录最低倍率选模。出图模型若被选中，探测会打到错端点。
+
+### 改了什么
+
+- 新增 `POST /v1/images/generations` 与 `POST /v1/images/edits`（别名去 `/v1`），转上游 `/v2/images/*`。成功回 OpenAI Images 形状 `data[].url` + `usage`。上游只回一张 COS 链接，`n!=1` 与 `response_format=b64_json` 在入口 400。
+- edits 必须带参考图：`image_url` 与 `http(s)` 走上游 `image_url`，裸 base64 / `data:` URL 走 `image_data`。generations 带图规范 400。
+- 图片选号对齐 chat：鉴权失败 refresh 同号一次，429/502/503/504 换号；**不钉会话**。记账走 `BeginRequest` / `usagejournal`。
+- 目录 `text-to-image` 模型标 `mode=image_generation`（`GET /v1/models` 与 LiteLLM `/v1/model/info`）。`LowestMultiplierID` 跳过它们。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池不用迁移。客户端走 OpenAI Images API，不要把出图模型打到 `/v1/chat/completions`。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.5.5
 
 ---
 

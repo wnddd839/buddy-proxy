@@ -164,6 +164,33 @@ OpenAI **Responses API** 协议翻译层，主要面向 Codex CLI 等以 `/v1/re
 
 错误形态为 Responses 风格 `{"error":{"code":"...","message":"..."}}`。
 
+### `POST /v1/images/generations`
+
+别名：`POST /images/generations`
+
+上游 `POST /v2/images/generations`。目录里 `tags` 含 `text-to-image` 的模型（当前实测：控制台 `hunyuan-image-alpha`，`/v3/config` 的 `hunyuan-image-v3.0-art`）走这里，不要打 chat。
+
+```json
+{
+  "model": "hunyuan-image-alpha",
+  "prompt": "a red circle",
+  "n": 1
+}
+```
+
+成功返回 OpenAI Images 形状：`data[].url`（上游 COS 链接）加 `usage`。上游始终只回一张图，且不接受 `b64_json`。`n` 缺省或 `1`；其他值与 `response_format=b64_json` 返回 `400`。`size` 上游会忽略，代理不转发。
+
+### `POST /v1/images/edits`
+
+别名：`POST /images/edits`
+
+上游 `POST /v2/images/edits`。必须带参考图：
+
+- `image`：URL、base64，或 `data:` URL（只取逗号后的 base64）。可以是字符串或数组。
+- `image_url`：字符串或字符串数组。上游字段是 `[]string`，代理会把单值包成数组。
+
+缺参考图返回 `400`。响应形状与 generations 相同。
+
 ### `POST /v1/chat/completions`
 
 别名：`POST /chat/completions`

@@ -93,3 +93,14 @@ func TestLiteLLMModelInfoEntry(t *testing.T) {
 		t.Fatalf("output limits=%v", info)
 	}
 }
+
+func TestLiteLLMModelInfoEntryImageMode(t *testing.T) {
+	entry := opencode.LiteLLMModelInfoEntry(models.Model{
+		ID:   "hunyuan-image-alpha",
+		Tags: []string{"text-to-image"},
+	})
+	info := entry["model_info"].(map[string]any)
+	if info["mode"] != "image_generation" {
+		t.Fatalf("mode=%v", info["mode"])
+	}
+}

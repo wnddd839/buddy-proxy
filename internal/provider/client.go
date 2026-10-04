@@ -1538,6 +1538,9 @@ func NormalizeModels(input any) []map[string]any {
 			"supportsTools":  truthy(m["supportsToolCall"]) || truthy(m["supportsTools"]),
 			"supportsImages": truthy(m["supportsImages"]) || truthy(m["supportsImage"]),
 		}
+		if tags, ok := m["tags"]; ok && tags != nil {
+			item["tags"] = tags
+		}
 		if truthy(m["supportsReasoning"]) {
 			item["supportsReasoning"] = true
 		}

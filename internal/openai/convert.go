@@ -54,6 +54,8 @@ func ClassifyUpstream(err error) (typ string, code any) {
 		return "invalid_request_error", 11101
 	case strings.Contains(msg, "11102"):
 		return "invalid_request_error", 11102
+	case strings.Contains(msg, "14401"):
+		return "invalid_request_error", 14401
 	case strings.Contains(msg, "11140"), strings.Contains(strings.ToLower(msg), "request illegal"):
 		return "invalid_request_error", 11140
 	default:

@@ -7,6 +7,7 @@
 ```text
 Client (OpenAI SDK / Codex CLI / curl / NewAPI / ZCode)
    │  /v1/chat/completions  or  /v1/responses  (SSE or JSON)
+   │  /v1/images/generations  or  /v1/images/edits
    ▼
 server ──► gateway ──► accounts pool + oauth refresh
                  │
@@ -16,6 +17,8 @@ server ──► gateway ──► accounts pool + oauth refresh
                  ▼
          CodeBuddy upstream
          POST /v2/chat/completions
+         POST /v2/images/generations
+         POST /v2/images/edits
          GET  /v3/config
 ```
 
@@ -64,6 +67,14 @@ server ──► gateway ──► accounts pool + oauth refresh
 - 同区域**全部账号冷却** → 降级选 `cooldownUntil` 最小者（避免整体不可用）
 - `11140` / `11128` / `11101` / `11102` → **不换号**；失败仍写入冷却
 - 客户端主动取消 → 按正常结束计，不计失败
+
+## 请求生命周期（images）
+
+1. API Key 校验（与 chat 相同）
+2. `POST /v1/images/generations` 只接受 `prompt`；带 `image` / `image_url` 返回 400。`POST /v1/images/edits` 必须带参考图：`http(s)` / `image_url` 走上游 `image_url`，base64 与 `data:` URL 走 `image_data`
+3. 选号、refresh、429/5xx 换号与 chat 相同，**不钉会话**、不复用 `X-Conversation-ID`
+4. 上游始终只回一张 COS `url`；`n!=1` 与 `response_format=b64_json` 在入口拒绝。目录 `tags` 含 `text-to-image` 的模型标 `mode=image_generation`，chat 探活跳过这些模型
+5. 收尾写 `usagejournal` 与全局 stats，与 chat 共用 `BeginRequest` / `RecordChat`
 
 ## 并发模型
 

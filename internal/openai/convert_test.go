@@ -128,6 +128,17 @@ func TestClassifyCause(t *testing.T) {
 	}
 }
 
+func TestClassifyUpstreamImageRoute(t *testing.T) {
+	typ, code := ClassifyUpstream(errors.New("route config not found (code 14401)"))
+	if typ != "invalid_request_error" {
+		t.Fatalf("type=%s", typ)
+	}
+	n, ok := code.(int)
+	if !ok || n != 14401 {
+		t.Fatalf("code=%v", code)
+	}
+}
+
 func TestRetryAfterUnwrapsWrappedChatError(t *testing.T) {
 	inner := &provider.ChatError{Status: 429, RetryAfter: "8", Msg: "failed with 429"}
 	wrapped := fmt.Errorf("retry: %w", inner)

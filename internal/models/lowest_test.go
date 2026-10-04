@@ -70,4 +70,24 @@ func TestLowestMultiplierID(t *testing.T) {
 			t.Fatalf("got %q ok=%v", id, ok)
 		}
 	})
+
+	t.Run("skips text-to-image models", func(t *testing.T) {
+		t.Parallel()
+		id, ok := LowestMultiplierID([]Model{
+			{ID: "hunyuan-image-alpha", Tags: []string{"text-to-image"}, CreditMultiplier: ptr(0)},
+			{ID: "chat", CreditMultiplier: ptr(0.1)},
+		})
+		if !ok || id != "chat" {
+			t.Fatalf("got %q ok=%v", id, ok)
+		}
+	})
+
+	t.Run("image-only list is empty", func(t *testing.T) {
+		t.Parallel()
+		if _, ok := LowestMultiplierID([]Model{
+			{ID: "hunyuan-image-alpha", Tags: []string{"text-to-image"}, CreditMultiplier: ptr(0)},
+		}); ok {
+			t.Fatal("expected false when every model is text-to-image")
+		}
+	})
 }

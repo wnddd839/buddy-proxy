@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
@@ -34,6 +35,7 @@ type Model struct {
 	OwnedBy           string         `json:"owned_by"`
 	SupportsTools     bool           `json:"supportsTools"`
 	SupportsImages    bool           `json:"supportsImages"`
+	Tags              []string       `json:"tags,omitempty"`
 	SupportsReasoning bool           `json:"supportsReasoning"`
 	OnlyReasoning     bool           `json:"onlyReasoning,omitempty"`
 	Reasoning         map[string]any `json:"reasoning,omitempty"`
@@ -119,6 +121,7 @@ func ToAdminModels(rows []map[string]any, source string) []Model {
 			OwnedBy:           "codebuddy",
 			SupportsTools:     truthy(row["supportsTools"]) || truthy(row["supportsToolCall"]),
 			SupportsImages:    truthy(row["supportsImages"]) || truthy(row["supportsImage"]),
+			Tags:              stringTags(row["tags"]),
 			SupportsReasoning: truthy(row["supportsReasoning"]),
 			OnlyReasoning:     truthy(row["onlyReasoning"]),
 			Credits:           credits,
@@ -533,4 +536,36 @@ func truthy(value any) bool {
 	default:
 		return false
 	}
+}
+
+func stringTags(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			text := strings.TrimSpace(fmt.Sprint(item))
+			if text != "" && text != "<nil>" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// IsImageModel reports whether the catalog row is a text-to-image model.
+// Upstream marks these with tags:["text-to-image"] and omits chat capability fields.
+func IsImageModel(tags []string) bool {
+	return slices.ContainsFunc(tags, func(tag string) bool {
+		return strings.EqualFold(strings.TrimSpace(tag), "text-to-image")
+	})
 }
