@@ -266,6 +266,32 @@ func mergeModelsByPublicID(batches ...[]map[string]any) []map[string]any {
 	}, batches...)
 }
 
+// mergeSupplementByPublicID 只补缺：base 里已出现的 public id 一律保留 base 那一整行。
+// 不能用 mergeModelsByPublicID：它按 catalogRowRank 让后一批覆盖前一批，
+// CLI /v3/config 的 auto 行会顶掉 console 的 default 行，连带丢掉 console 独有的 credits。
+func mergeSupplementByPublicID(base, supplement []map[string]any) []map[string]any {
+	seen := make(map[string]struct{}, len(base))
+	out := make([]map[string]any, 0, len(base)+len(supplement))
+	for _, row := range base {
+		if id := PublicModelID(modelRowID(row)); id != "" {
+			seen[id] = struct{}{}
+		}
+		out = append(out, row)
+	}
+	for _, row := range supplement {
+		id := PublicModelID(modelRowID(row))
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, row)
+	}
+	return out
+}
+
 func mergeModelsByKey(keyFn func(map[string]any) string, batches ...[]map[string]any) []map[string]any {
 	index := make(map[string]int)
 	out := make([]map[string]any, 0)
@@ -346,8 +372,11 @@ func (c *Lister) fetchV3(ctx context.Context, client *provider.Client, opts prov
 }
 
 // fetchConsole 拉控制台对话目录（可打 /v2/chat/completions 的那一份，带 credits）。
-// 国际站与 fetchV3 一样合并多个 host；CodeBuddy 产品再套 IDE /v3/config 的 reasoning enrich。
-// /v3/config 单独当目录会混进 codewise-*（请求即 11102）并漏掉 hy4-preview 等。
+// 国际站与 fetchV3 一样合并多个 host；成功后再用同一套 CLI 头拉 /v3/config 补缺
+// （glm-5.0-turbo / minimax-m2.7 / hunyuan-image-alpha-edit 等只出现在 CLI 目录）。
+// console 行元数据优先，v3 仅补新 id；v3 失败按最佳努力忽略。
+// CodeBuddy 产品再套 IDE /v3/config 的 reasoning enrich。
+// 单独把 IDE /v3/config 当目录会混进 codewise-*（请求即 11102）并漏掉 hy4-preview 等。
 // 失败则 List 回落到 fetchV3，并在 Message 里带上控制台错误。
 func (c *Lister) fetchConsole(ctx context.Context, client *provider.Client, opts provider.ChatOptions) (fetchResult, error) {
 	candidates := v3ConfigCandidateBases(opts)
@@ -382,6 +411,10 @@ func (c *Lister) fetchConsole(ctx context.Context, client *provider.Client, opts
 		}
 		return fetchResult{}, lastErr
 	}
+	cliV3 := c.fetchCLIV3Supplement(ctx, client, cliOpts, candidates)
+	if len(cliV3) > 0 {
+		merged = mergeSupplementByPublicID(merged, cliV3)
+	}
 	for _, row := range merged {
 		ensureCanDisableThinking(row)
 	}
@@ -411,6 +444,22 @@ func withCLIIdentity(opts provider.ChatOptions) provider.ChatOptions {
 	delete(out.ExtraHeaders, "X-Product-Version")
 	delete(out.ExtraHeaders, "X-Env-ID")
 	return out
+}
+
+// fetchCLIV3Supplement 用 CLI 身份拉 /v3/config，给 console 目录补缺。
+// 不用 IDE 头：VSCode/WorkBuddy 目录会混入 codewise-* / completion-gf。
+func (c *Lister) fetchCLIV3Supplement(ctx context.Context, client *provider.Client, cliOpts provider.ChatOptions, bases []string) []map[string]any {
+	headers, _ := client.BuildProtocolDirectHeaders(cliOpts)
+	headers.Set("Accept", "application/json")
+	var batches [][]map[string]any
+	for _, base := range bases {
+		rows, err := c.fetchJSONModels(ctx, client.HTTP, provider.NormalizeBaseURL(base)+upstreamConfigPath, headers)
+		if err != nil || len(rows) == 0 {
+			continue
+		}
+		batches = append(batches, rows)
+	}
+	return mergeModelsByPublicID(batches...)
 }
 
 func (c *Lister) fetchIDECatalog(ctx context.Context, client *provider.Client, opts provider.ChatOptions, bases []string) []map[string]any {

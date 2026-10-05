@@ -5,6 +5,30 @@
 
 ---
 
+## v0.5.5.1 · 2026-10-05 · 目录补缺不再顶掉 console 的 credits
+
+### 解决了什么
+
+v0.5.5 起的模型目录把「控制台目录」和「CLI 身份 `/v3/config`」拼在一起（`/v3/config` 里有 `glm-5.0-turbo` / `minimax-m2.7` / `hunyuan-image-alpha-edit` 等控制台没有的模型）。两批数据按 public id 合并时，用的是“后一批可覆盖前一批”的规则（`auto` 的行优先级高于 `default`）。
+
+但当控制台目录把兜底模型记为 `default`、CLI 目录把它记为 `auto` 时，两者对外都是同一个 id `auto`，于是 CLI 那一行整行顶掉了控制台那一行。而 `credits` 只有控制台目录会给 —— 结果就是：
+
+- `GET /v1/models` 里 `auto` 的 `credits` / `credit_multiplier` / `free` 字段空掉；
+- `creditMultiplier` 变 nil，账号 Chat 测试按最低倍率选号时选不到它。
+
+### 改了什么
+
+- 新增 `mergeSupplementByPublicID`：补缺只加**新** id，已存在的 public id 一律保留 console 那一行，不做覆盖。控制台元数据（`credits` / `name`）始终优先。
+- `docs/api/http.md` 补上“补缺只加新 id，不覆盖 console 已有行”。`hy4-preview-f` 改回描述事实（上游 Console 目录里就没有），不再读成本代理的过滤规则。
+
+### 升级注意
+
+覆盖旧二进制后重启。账号池不用迁移。
+
+下载：https://github.com/wnddd839/buddy-proxy/releases/tag/v0.5.5.1
+
+---
+
 ## v0.5.5 · 2026-10-04 · 上游图片生成 / 编辑
 
 ### 解决了什么

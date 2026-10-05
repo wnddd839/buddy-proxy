@@ -291,6 +291,154 @@ func TestFetchConsoleDualHostPartialFailureInMessage(t *testing.T) {
 	}
 }
 
+func TestFetchConsoleMergesCLIV3Supplement(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case consoleModelsPath:
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{
+				{"id": "auto", "name": "Auto", "credits": "1"},
+				{"id": "hunyuan-2.0-thinking", "name": "HY2", "credits": "1"},
+			}})
+		case upstreamConfigPath:
+			if r.Header.Get("X-IDE-Type") == "VSCode" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{
+					{"id": "codewise-default-model-v2", "name": "codewise"},
+					{"id": "hunyuan-2.0-thinking", "name": "HY2-ide"},
+				}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{
+				{"id": "glm-5.0-turbo", "name": "GLM 5.0 Turbo"},
+				{"id": "minimax-m2.7", "name": "MiniMax M2.7"},
+				{"id": "hunyuan-image-alpha-edit", "name": "Hunyuan Edit", "tags": []any{"text-to-image"}},
+				{"id": "auto", "name": "Auto-v3"},
+				{"id": "hunyuan-2.0-thinking", "name": "HY2-v3", "credits": "9"},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	got := listDomesticViaHost(t, srv)
+	if got.ModelsSource != "console" {
+		t.Fatalf("modelsSource=%q want console; message=%q", got.ModelsSource, got.Message)
+	}
+	ids := modelIDSet(got)
+	for _, id := range []string{"auto", "hunyuan-2.0-thinking", "glm-5.0-turbo", "minimax-m2.7", "hunyuan-image-alpha-edit"} {
+		if _, ok := ids[id]; !ok {
+			t.Fatalf("missing %s: %v", id, ids)
+		}
+	}
+	if _, ok := ids["codewise-default-model-v2"]; ok {
+		t.Fatalf("IDE-only codewise leaked into catalog: %v", ids)
+	}
+	if len(ids) != 5 {
+		t.Fatalf("id set=%v want 5", ids)
+	}
+	var hy2, edit Model
+	for _, m := range got.Models {
+		switch m.ID {
+		case "hunyuan-2.0-thinking":
+			hy2 = m
+		case "hunyuan-image-alpha-edit":
+			edit = m
+		}
+	}
+	if hy2.Name != "HY2" {
+		t.Fatalf("console metadata should win, name=%q", hy2.Name)
+	}
+	if hy2.Credits != "1" {
+		t.Fatalf("console credits should win, credits=%q", hy2.Credits)
+	}
+	if !IsImageModel(edit.Tags) {
+		t.Fatalf("edit tags=%v", edit.Tags)
+	}
+}
+
+// 回归：console 目录里 default 与 CLI /v3/config 的 auto 是同一个 public id。
+// 合并必须保留 console 那一整行（credits 只存在于 console），不能被 CLI 行覆盖。
+func TestFetchConsoleCLIV3SupplementDoesNotOverrideConsoleRow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case consoleModelsPath:
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{
+				{"id": "default", "name": "Auto", "credits": "1"},
+				{"id": "hy4-preview", "name": "HY4", "credits": "2"},
+			}})
+		case upstreamConfigPath:
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{
+				{"id": "auto", "name": "Auto-v3"},
+				{"id": "hy4-preview", "name": "HY4-v3", "credits": "9"},
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	got := listDomesticViaHost(t, srv)
+	if got.ModelsSource != "console" {
+		t.Fatalf("modelsSource=%q want console; message=%q", got.ModelsSource, got.Message)
+	}
+	var auto Model
+	for _, m := range got.Models {
+		if m.ID == "auto" {
+			auto = m
+		}
+		if m.ID == "hy4-preview" && m.Credits != "2" {
+			t.Fatalf("console credits must win for hy4-preview, got %q", m.Credits)
+		}
+	}
+	if auto.Credits != "1" {
+		t.Fatalf("console default row must keep credits, got %q (model=%+v)", auto.Credits, auto)
+	}
+	if auto.Name != "Auto" {
+		t.Fatalf("console default row must win, name=%q", auto.Name)
+	}
+}
+
+func TestFetchConsoleIgnoresCLIV3Failure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != consoleModelsPath {
+			http.Error(w, "v3 down", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": []map[string]any{
+			{"id": "hy4-preview", "name": "HY4"},
+		}})
+	}))
+	defer srv.Close()
+
+	got := listDomesticViaHost(t, srv)
+	if !got.OK || got.ModelsSource != "console" {
+		t.Fatalf("v3 failure should be best-effort, got source=%q ok=%v message=%q", got.ModelsSource, got.OK, got.Message)
+	}
+	ids := modelIDSet(got)
+	if _, ok := ids["hy4-preview"]; !ok {
+		t.Fatalf("missing hy4-preview: %v", ids)
+	}
+}
+
+func listDomesticViaHost(t *testing.T, srv *httptest.Server) ListResult {
+	t.Helper()
+	client := &provider.Client{
+		HTTP: &http.Client{Transport: rewriteHostsTransport{
+			hosts: map[string]*httptest.Server{
+				"copilot.tencent.com": srv,
+			},
+		}},
+	}
+	return NewLister().List(context.Background(), client, ListOptions{
+		BearerToken: "test-token",
+		Site:        "domestic",
+		BaseURL:     "https://copilot.tencent.com",
+	})
+}
+
 func listConsoleViaHosts(t *testing.T, primary, secondary *httptest.Server) ListResult {
 	t.Helper()
 	client := &provider.Client{
@@ -358,4 +506,30 @@ func (t rewriteHostsTransport) RoundTrip(req *http.Request) (*http.Response, err
 		}, nil
 	}
 	return http.DefaultTransport.RoundTrip(clone)
+}
+
+func TestMergeSupplementByPublicIDKeepsBaseRow(t *testing.T) {
+	// CLI auto 行不能顶掉 console default 行（丢 credits）。
+	out := mergeSupplementByPublicID(
+		[]map[string]any{{"id": "default", "credits": "1"}},
+		[]map[string]any{{"id": "auto", "name": "Auto-v3"}},
+	)
+	if len(out) != 1 {
+		t.Fatalf("supplement must not add duplicate public id: %+v", out)
+	}
+	if modelRowID(out[0]) != "default" {
+		t.Fatalf("base row replaced: %+v", out[0])
+	}
+	if got, _ := out[0]["credits"].(string); got != "1" {
+		t.Fatalf("credits=%v", out[0]["credits"])
+	}
+
+	// 新 id 仍然补进来。
+	out = mergeSupplementByPublicID(
+		[]map[string]any{{"id": "auto", "credits": "1"}},
+		[]map[string]any{{"id": "glm-5.0-turbo", "name": "GLM"}},
+	)
+	if len(out) != 2 || modelRowID(out[1]) != "glm-5.0-turbo" {
+		t.Fatalf("want glm appended: %+v", out)
+	}
 }

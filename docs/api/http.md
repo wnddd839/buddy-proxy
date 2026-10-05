@@ -61,7 +61,7 @@ Query：
 |------|------|
 | `fresh` | `1` / `true` / `yes` / `on` 强制回源，忽略 60s 缓存 |
 
-返回 OpenAI `list` 形状。模型来源优先级：上游控制台目录 `/console/enterprises/personal/models`（对话可用模型，带 `credits`）→ `/v3/config`（IDE 插件目录，失败时回落）→ 配置中的 `CODEBUDDY_PROXY_MODELS`（默认 `auto`）。
+返回 OpenAI `list` 形状。模型来源优先级：上游控制台目录 `/console/enterprises/personal/models`（对话可用模型，带 `credits`）拼合 **CLI 身份** `/v3/config` 补缺（console 元数据优先，例如 `glm-5.0-turbo` / `minimax-m2.7` / `hunyuan-image-alpha-edit` 只出现在 CLI 目录）→ console 失败时回落 `/v3/config` → 配置中的 `CODEBUDDY_PROXY_MODELS`（默认 `auto`）。不并 IDE/WorkBuddy 目录，避免混入 `codewise-*`。补缺只加新 id，不覆盖 console 已有行（`default` 与 CLI `auto` 同为对外 `auto` 时保留 console 行，避免丢 `credits`）。Desktop 试用别名（如 `hy4-preview-f`）在上游 Console 目录里就没有，因此也不出现在结果里。
 
 ```json
 {
@@ -168,7 +168,7 @@ OpenAI **Responses API** 协议翻译层，主要面向 Codex CLI 等以 `/v1/re
 
 别名：`POST /images/generations`
 
-上游 `POST /v2/images/generations`。目录里 `tags` 含 `text-to-image` 的模型（当前实测：控制台 `hunyuan-image-alpha`，`/v3/config` 的 `hunyuan-image-v3.0-art`）走这里，不要打 chat。
+上游 `POST /v2/images/generations`。目录里 `tags` 含 `text-to-image` 的模型（当前实测：控制台 `hunyuan-image-alpha`，CLI `/v3/config` 补进的 `hunyuan-image-alpha-edit` / `hunyuan-image-v3.0-art`）走这里，不要打 chat。
 
 ```json
 {
