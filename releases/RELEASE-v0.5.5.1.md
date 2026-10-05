@@ -15,9 +15,14 @@
 
 ### 改了什么
 
-- 修模型目录：控制台目录与 CLI `/v3/config` 合并时，CLI 的 `auto` 行不再顶掉控制台的 `default` 行（两者对外都是 `auto`）。之前这一覆盖会把 `credits` / `credit_multiplier` 抹空，账号 Chat 测试的选号也会漏掉它。
-- 补缺只加控制台里没有的新 id（`glm-5.0-turbo` / `minimax-m2.7` / `hunyuan-image-alpha-edit` 等照常补进），控制台已有行原样保留。
+- 模型目录补上 `glm-5.0-turbo` / `minimax-m2.7` / `hunyuan-image-alpha-edit`：console 目录成功后，再用同一套 CLI 身份头拉 `/v3/config` 补缺（失败按最佳努力忽略）。
+- 修目录合并：CLI 的 `auto` 行不再顶掉 console 的 `default` 行（两者对外都是 `auto`）。之前这一覆盖会把 `credits` / `credit_multiplier` 抹空，账号 Chat 测试的选号也会漏掉它。
+- 补缺只加 console 里没有的新 id，console 已有行元数据（`credits` / `name`）原样保留。
 - `docs/api/http.md` 同步规则说明。
+
+### 感谢
+
+- [@240xu](https://github.com/240xu) · [#35](https://github.com/wnddd839/buddy-proxy/issues/35) · 6 身份 × 6 端点 × 3 host 探测矩阵
 
 ### 升级
 

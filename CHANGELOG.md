@@ -7,6 +7,10 @@
 
 ## v0.5.5.1 · 2026-10-05 · 目录补缺不再顶掉 console 的 credits
 
+### 感谢
+
+- [@240xu](https://github.com/240xu) 在 [#35](https://github.com/wnddd839/buddy-proxy/issues/35) 用 6 身份 × 6 端点 × 3 host 的探测矩阵证伪：console 目录漏了 `glm-5.0-turbo` / `minimax-m2.7` / `hunyuan-image-alpha-edit` 三个实测可请求的模型，并证明目录由 `X-IDE-*` 头驱动、与 host 无关。
+
 ### 解决了什么
 
 v0.5.5 起的模型目录把「控制台目录」和「CLI 身份 `/v3/config`」拼在一起（`/v3/config` 里有 `glm-5.0-turbo` / `minimax-m2.7` / `hunyuan-image-alpha-edit` 等控制台没有的模型）。两批数据按 public id 合并时，用的是“后一批可覆盖前一批”的规则（`auto` 的行优先级高于 `default`）。
