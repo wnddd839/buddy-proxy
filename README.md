@@ -24,7 +24,7 @@
 </p>
 
 ---
-
+kiro-proxy 已发布
 感谢这些同学用 issue 把真实问题送上门，按编号：
 
 - [@dyed-fanxing](https://github.com/dyed-fanxing) · [#2](https://github.com/wnddd839/buddy-proxy/issues/2) ZCode 把 git status 写进上下文触发 11128 · [#4](https://github.com/wnddd839/buddy-proxy/issues/4) DeepSeek Flash 1M 上下文卡在约 70%
