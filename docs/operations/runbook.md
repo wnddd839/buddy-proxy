@@ -77,6 +77,9 @@ curl -fsS http://127.0.0.1:32126/readyz
 - **会话粘滞**：同一会话钉在第一次成功的账号；该号 429 / 额度耗尽时松钉再换号
 - **上游会话 ID**：有会话钉的请求复用上游 `X-Conversation-ID`（45 分钟空闲过期，随换号/站点/产品轮换）；request/message ID 仍逐请求随机。利于上游 prompt cache 命中；无会话键的请求行为不变
 - **换号重试**：429/5xx/rate limit / 额度耗尽等可恢复错误会排除当前号。换号前对未冷却候选**并行刷新额度**（2.5s 超时，失败保留缓存），再选剩余额度最大者；单请求最多尝试 16 个账号。新会话只补探 **没有快照或超过 5 分钟** 的号（中途新登录的号、只查过部分 Credits 的号也会被补上），快照新鲜则不打 billing。全部失败时把最后一次上游错误返回给客户端，不会变成「重试深度超限」
+- **传输层重放预算**：`transport error`（建连失败）与 `stream reset before first content` 共用 `maxResetReplays=2` 的预算，两类失败都计数；耗尽即停止换号。排查时注意：日志 `retrying codebuddy request with next account` 对**所有**换号重试都会打印（16 账号 429 链正常会有 15 条），不能只看条数；应筛同一请求内的 `transport error` / `stream reset before first content` 计数是否超过 2
+- **空回合重放**：`empty completed turn` 只允许一次换号重放，且用独立计数器（429/流重置/OAuth 刷新不消耗它）；但全局「单请求最多 16 个账号」上限仍优先。若客户端收到空正文，先看 WARN 里的 `finish=`——`stop` 才是软截断，`length`/`max_tokens` 是合法的输出预算耗尽
+- **不重放已交付内容**：只有真的写进客户端响应的内容才算已交付（chat 流式的 `tool_call_delta` 不下发、非流式无回调，均不计入）；`ToolUses` 为空可能只是截断工具被丢弃，不代表客户端没收到过正文或完整工具调用
 - **全冷却降级**：同区域全部冷却时仍选最快恢复账号（debug 日志），避免短时整体不可用
 - 250ms 合并异步落盘，去掉每请求多次同步 IO
 - OAuth / Upsert / Delete / Replace / SetEnabled **同步刷盘**（凭据不可丢）

@@ -239,3 +239,25 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestFinishReasonFromTurn(t *testing.T) {
+	cases := []struct {
+		name string
+		turn provider.Turn
+		want string
+	}{
+		{"length passthrough", provider.Turn{StopReason: "length"}, "length"},
+		{"max_tokens maps to length", provider.Turn{StopReason: "max_tokens"}, "length"},
+		{"content_filter passthrough", provider.Turn{StopReason: "content_filter"}, "content_filter"},
+		{"tools win over stop", provider.Turn{StopReason: "end_turn", ToolUses: []provider.ToolUse{{ID: "c"}}}, "tool_calls"},
+		{"end_turn to stop", provider.Turn{StopReason: "end_turn"}, "stop"},
+		{"empty to stop", provider.Turn{}, "stop"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FinishReasonFromTurn(tc.turn); got != tc.want {
+				t.Fatalf("FinishReasonFromTurn(%+v) = %q, want %q", tc.turn, got, tc.want)
+			}
+		})
+	}
+}

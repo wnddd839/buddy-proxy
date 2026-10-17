@@ -599,10 +599,7 @@ func (s *Server) streamChat(
 				}, nil))
 			}
 		}
-		finishReason := "stop"
-		if len(result.Turn.ToolUses) > 0 {
-			finishReason = "tool_calls"
-		}
+		finishReason := openai.FinishReasonFromTurn(result.Turn)
 		_ = sse.WriteEvent(openai.StreamChunkOf(id, providerModel.PublicModel, openai.Delta{}, &finishReason))
 		// OpenAI stream_options.include_usage：空 choices + usage。
 		// 显式 false 时跳过，避免严格客户端对 choices[0] 越界。

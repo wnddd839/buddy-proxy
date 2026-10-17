@@ -242,6 +242,22 @@ type StreamChunk struct {
 	Usage   *Usage   `json:"usage,omitempty"`
 }
 
+// FinishReasonFromTurn 把 provider 回合的真实终止原因映射为 OpenAI finish_reason，
+// 而不是按内容形状反推：length（被 max_tokens 截断）与 content_filter（安全
+// 拦截）如实透传。改写成 "stop" 会让截断与完整回答无法区分——等于替上游撒谎。
+func FinishReasonFromTurn(turn provider.Turn) string {
+	switch strings.ToLower(turn.StopReason) {
+	case "content_filter":
+		return "content_filter"
+	case "length", "max_tokens":
+		return "length"
+	}
+	if len(turn.ToolUses) > 0 {
+		return "tool_calls"
+	}
+	return "stop"
+}
+
 func FromTurn(turn provider.Turn, id, model string) ChatCompletion {
 	if id == "" {
 		id = fmt.Sprintf("chatcmpl_%d", time.Now().UnixMilli())
@@ -257,10 +273,7 @@ func FromTurn(turn provider.Turn, id, model string) ChatCompletion {
 			},
 		})
 	}
-	finish := "stop"
-	if len(toolCalls) > 0 {
-		finish = "tool_calls"
-	}
+	finish := FinishReasonFromTurn(turn)
 	var content any = turn.Text
 	if turn.Text == "" {
 		content = nil

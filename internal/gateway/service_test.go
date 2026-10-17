@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -54,7 +55,34 @@ type scriptedChatTransport struct {
 	billingCalls  []string
 	byAuth        map[string]int
 	creditsByAuth map[string]float64
+	// resetBodyByAuth 按 token 映射"流被掐断前先发出的字节"（空=任何帧之前就 reset）。
+	// 响应为 200 + SSE 头。
+	resetBodyByAuth map[string]string
+	// rawBodyByAuth 按 token 映射完整 SSE 响应体（200 + SSE 头），用于复现上游
+	// "体面收尾"：finish 帧、空正文、全零 usage。
+	rawBodyByAuth map[string]string
 }
+
+// resetReader 先吐出 `data` 再以 `reset` 失败：模拟上游连接在响应中途被掐断
+// （收到响应头后的传输层 RST）。
+type resetReader struct {
+	data  string
+	off   int
+	reset error
+}
+
+func (r *resetReader) Read(p []byte) (int, error) {
+	if r.off < len(r.data) {
+		n := copy(p, r.data[r.off:])
+		r.off += n
+		return n, nil
+	}
+	return 0, r.reset
+}
+
+func (r *resetReader) Close() error { return nil }
+
+var errUpstreamReset = errors.New("read tcp 10.0.0.2:52352->43.160.158.125:443: wsarecv: An existing connection was forcibly closed by the remote host.")
 
 func (t *scriptedChatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	token := strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
@@ -100,7 +128,31 @@ func (t *scriptedChatTransport) RoundTrip(req *http.Request) (*http.Response, er
 		}
 	}
 	status := t.byAuth[token]
+	resetData, reset := t.resetBodyByAuth[token]
+	raw, rawOK := t.rawBodyByAuth[token]
 	t.mu.Unlock()
+	if rawOK {
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(raw)),
+			Request:    req,
+		}, nil
+	}
+	if reset {
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Header:     header,
+			Body:       &resetReader{data: resetData, reset: errUpstreamReset},
+			Request:    req,
+		}, nil
+	}
 	if status == 0 {
 		status = http.StatusOK
 	}
@@ -297,6 +349,237 @@ func TestCompleteFromPoolPinnedAccountSwitchesAfter429(t *testing.T) {
 	}
 	if _, still := svc.Pins.Lookup(SessionPinKey("conv-sticky", "domestic")); still && result.AccountID == a.ID {
 		t.Fatal("failed pin must not keep the exhausted account")
+	}
+}
+
+func TestCompleteFromPoolReplaysAfterResetBeforeFirstFrame(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	a, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "a", Site: "domestic", BearerToken: "token-a", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "b", Site: "domestic", BearerToken: "token-b", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID == b.ID {
+		t.Fatal("fixture accounts must differ")
+	}
+	// token-a：任何数据帧之前就被掐断（边缘空闲回收）；token-b：健康。
+	// 客户端从 a 没收到任何内容（反代聚合整轮），换号重放不可见。
+	transport := &scriptedChatTransport{resetBodyByAuth: map[string]string{"token-a": ""}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-reset-replay",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("expected replay success, got %v", err)
+	}
+	if result.AccountID != b.ID {
+		t.Fatalf("AccountID=%s want %s after pre-frame reset", result.AccountID, b.ID)
+	}
+	chat, _ := transport.snapshot()
+	if len(chat) != 2 || chat[0] != "token-a" || chat[1] != "token-b" {
+		t.Fatalf("chat calls=%v want [token-a token-b]", chat)
+	}
+}
+
+func TestNoReplayAfterResetWithDeliveredFrame(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "a", Site: "domestic", BearerToken: "token-a", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "b", Site: "domestic", BearerToken: "token-b", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	// token-a：已下发一帧正文后 reset。不属于"首帧前重放"范畴；必须以错误
+	// 收场，且不得消耗 token-b。
+	transport := &scriptedChatTransport{resetBodyByAuth: map[string]string{
+		"token-a": "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+	}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-partial-reset",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for post-frame reset")
+	}
+	if strings.Contains(err.Error(), "stream reset before first content") {
+		t.Fatalf("post-content reset must not carry the replay marker: %v", err)
+	}
+	chat, _ := transport.snapshot()
+	if len(chat) != 1 || chat[0] != "token-a" {
+		t.Fatalf("chat calls=%v want exactly [token-a] (no account switch)", chat)
+	}
+}
+
+func TestCompleteFromPoolReplaysAfterThinkingStreamThenReset(t *testing.T) {
+	// 生产证据类：思考流了几分钟，随后硬重置，零正文/零工具下发。思考对 agent
+	// 客户端属辅助展示，重放不可见，必须允许。
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "a", Site: "domestic", BearerToken: "token-a", Enabled: true,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "b", Site: "domestic", BearerToken: "token-b", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &scriptedChatTransport{resetBodyByAuth: map[string]string{
+		"token-a": "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking...\"}}]}\n\n",
+	}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-thinking-reset",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("expected replay success after thinking-only reset, got %v", err)
+	}
+	if result.AccountID != b.ID {
+		t.Fatalf("AccountID=%s want %s", result.AccountID, b.ID)
+	}
+	chat, _ := transport.snapshot()
+	if len(chat) != 2 || chat[0] != "token-a" || chat[1] != "token-b" {
+		t.Fatalf("chat calls=%v want [token-a token-b]", chat)
+	}
+}
+
+func TestCompleteFromPoolResetsReplayBudget(t *testing.T) {
+	// 所有账号都在首内容前 reset。重放链必须在 maxResetReplays（2 次）后停止
+	// ——总共 3 发上游请求——而不是按每发 15+ 分钟遍历整个号池
+	// （实测一个 33 分钟回合烧掉两次静默重放）。
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	for _, tok := range []string{"token-a", "token-b", "token-c", "token-d"} {
+		if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+			Label: tok, Site: "domestic", BearerToken: tok, Enabled: true,
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := &scriptedChatTransport{resetBodyByAuth: map[string]string{
+		"token-a": "", "token-b": "", "token-c": "", "token-d": "",
+	}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-reset-budget",
+		Messages: []map[string]any{{"role": "user", "content": "hello"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stream reset before first content") {
+		t.Fatalf("expected reset loud fail, got %v", err)
+	}
+	chat, _ := transport.snapshot()
+	if len(chat) != 3 {
+		t.Fatalf("reset chain must stop at 1 original + %d replays, calls=%v", maxResetReplays, chat)
+	}
+}
+
+// sseEmptyFinish 是软截断的指纹：上游"体面"收尾（finish_reason=stop +
+// [DONE]）但零内容。
+const sseEmptyFinish = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+
+func TestCompleteFromPoolReplaysOnceAfterEmptyCompletedTurn(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	a, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "a", Site: "domestic", BearerToken: "token-a", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "b", Site: "domestic", BearerToken: "token-b", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID == b.ID {
+		t.Fatal("fixture accounts must differ")
+	}
+	// token-a：空 completed 回合（软截断）；token-b：健康。
+	transport := &scriptedChatTransport{rawBodyByAuth: map[string]string{"token-a": sseEmptyFinish}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-empty-replay",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("expected replay success after empty turn, got %v", err)
+	}
+	if result.AccountID != b.ID {
+		t.Fatalf("AccountID=%s want %s after empty-turn replay", result.AccountID, b.ID)
+	}
+	chat, _ := transport.snapshot()
+	if len(chat) != 2 || chat[0] != "token-a" || chat[1] != "token-b" {
+		t.Fatalf("chat calls=%v want [token-a token-b]", chat)
+	}
+}
+
+func TestEmptyCompletedTurnReplayIsBoundedToOne(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+	for _, tok := range []string{"token-a", "token-b", "token-c"} {
+		if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+			Label: tok, Site: "domestic", BearerToken: tok, Enabled: true,
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 所有账号都返回空 completed 回合：只允许一次换号重放，随后错误上抛
+	// （空回合会复发，连环换号只是烧时间）。
+	transport := &scriptedChatTransport{rawBodyByAuth: map[string]string{
+		"token-a": sseEmptyFinish,
+		"token-b": sseEmptyFinish,
+		"token-c": sseEmptyFinish,
+	}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto", SessionKey: "conv-empty-bounded",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error after bounded replay")
+	}
+	if !strings.Contains(err.Error(), "empty completed turn") {
+		t.Fatalf("error must carry the empty-turn marker, got %v", err)
+	}
+	// 回归守卫：错误串会喂给 Contains 型分类器（11101/11140/429/502...）。
+	// 任何 3 位以上数字串都可能伪造命中，诊断计数只能进日志、绝不进错误串。
+	if m := regexp.MustCompile(`\d{3,}`).FindString(err.Error()); m != "" {
+		t.Fatalf("empty-turn error must not embed numeric runs (classifier substring hazard): %q in %v", m, err)
+	}
+	chat, _ := transport.snapshot()
+	if len(chat) != 2 {
+		t.Fatalf("chat calls=%v want exactly 2 attempts (one switch, no cascade)", chat)
 	}
 }
 
