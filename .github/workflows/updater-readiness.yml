@@ -1,0 +1,40 @@
+name: Updater native readiness
+
+on:
+  push:
+    branches: [mission/updater-readiness-20261019]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-readiness:
+    name: Native readiness (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      GOMAXPROCS: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.4'
+          cache: false
+      - name: Actual native platform
+        run: |
+          go version
+          go env GOOS GOARCH
+      - name: Unix kernel architecture
+        if: runner.os != 'Windows'
+        run: uname -s -m
+      - name: Build native packages
+        run: go build ./...
+      - name: Execute native tests
+        run: go test -p 2 ./internal/version ./internal/accounts
