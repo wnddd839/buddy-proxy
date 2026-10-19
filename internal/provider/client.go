@@ -89,6 +89,9 @@ type ChatOptions struct {
 	OnDelta             func(string)
 	OnThinkingDelta     func(string)
 	OnEvent             func(Event)
+	// DeliverToolDeltas 表示调用方真的会把 tool_call_delta 转发给客户端。
+	// 只有 Responses 流式入口为 true；chat 流式只转发 tool_use，非流式无回调。
+	DeliverToolDeltas bool
 }
 
 type Event struct {
@@ -112,6 +115,34 @@ type Turn struct {
 	Errors     []string
 	StopReason string
 	Usage      Usage
+	// Delivered 表示正文或工具增量**真的下发给了客户端**（回调非空且该事件
+	// 会被转发）。重放判定必须看它：snapshot 过滤掉截断工具后 ToolUses 为空，
+	// 不代表客户端没收到过 tool_call_delta。非流式无回调、chat 流式忽略
+	// tool_call_delta，均不计为已交付（2026-10-17 复核 P0）。
+	Delivered bool
+}
+
+// isEmptyCompletedTurn 判定"体面收尾的废回合"：流正常结束（无错误帧、有终止
+// 信号）但既无正文也无工具调用。安全拦截/拒绝属合法噤声，不判废。
+func isEmptyCompletedTurn(t Turn) bool {
+	// 已交付过内容的回合不判废：snapshot 可能因丢弃截断工具而变空，但客户端
+	// 已经收到过增量，重放会产生重复/错乱的工具调用（作者 P1）。
+	if t.Delivered {
+		return false
+	}
+	if strings.TrimSpace(t.Text) != "" || len(t.ToolUses) > 0 {
+		return false
+	}
+	switch strings.ToLower(t.StopReason) {
+	case "content_filter", "refusal":
+		return false
+	// 输出预算耗尽（length/max_tokens）且无正文是合法完成：推理模型可能把
+	// max_completion_tokens 全部用于 reasoning_content，换号只会让相同预算
+	// 再烧一遍，并丢失原始 reasoning/usage/length（作者 P2）。
+	case "length", "max_tokens":
+		return false
+	}
+	return true
 }
 
 type ToolUse struct {
@@ -782,6 +813,20 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 		c.logUpstreamFailure(result.Turn.Errors[0], resp.StatusCode, body, opts, endpoint, domain, region, model)
 		return Result{}, fmt.Errorf("%s", result.Turn.Errors[0])
 	}
+	// 上游软截断：生成中途被中止，但流以合成的 finish_reason=stop + [DONE]
+	// 收尾——零正文、零工具调用、usage 全零。反代视角是"成功完成"，agent 收到
+	// 的却是空回合，会话无声停死。判废标准沿用 OpenAI Agents SDK 的空回合校验
+	// 一族（SDK 本身仍放行 stop 形态的空回合，这里补上）；content_filter /
+	// refusal 属合法噤声，不判废。
+	if isEmptyCompletedTurn(result.Turn) {
+		// 诊断计数只进 WARN 日志，绝不进错误串：下游的重试/冷却判定是
+		// Contains 型子串匹配（11101/11140/429/502...），裸数字可能伪造命中。
+		c.logUpstreamFailure(fmt.Sprintf("empty completed turn (finish=%q thinking_len=%d usage_prompt=%d)",
+			result.Turn.StopReason, len(result.Turn.Thinking), result.Turn.Usage.PromptTokens),
+			resp.StatusCode, body, opts, endpoint, domain, region, model)
+		return Result{}, fmt.Errorf("CodeBuddy chat completion upstream aborted with empty completed turn (finish=%q) [region=%s site=%s endpoint=%s domain=%s model=%s]",
+			result.Turn.StopReason, region, config.NormalizeSite(opts.Site), endpoint, domain, model)
+	}
 	result.DurationMs = time.Since(started).Milliseconds()
 	result.Status = resp.StatusCode
 	result.Model = model
@@ -967,8 +1012,16 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 	var (
 		eventCount int
 		deltaCount int
-		bytesRead  int64
-		dataBuf    strings.Builder
+		// sawContent：正文或工具增量是否解析到过。思考（thinking）不算——
+		// agent 客户端只消费正文+工具，思考属辅助展示，思考流被掐后重放
+		// 不会让用户看到重复内容。用途=断流重放的保守判定。
+		// 用途=断流重放的保守判定（沿用原语义）。
+		sawContent bool
+		// delivered: 内容是否**真的下发给了客户端**（回调非空且该事件会被转发）。
+		// 空回合判定用它；与 sawContent 分开，避免把"解析到但没下发"当成已交付。
+		delivered bool
+		bytesRead int64
+		dataBuf   strings.Builder
 	)
 	flush := func() {
 		data := strings.TrimSpace(dataBuf.String())
@@ -990,6 +1043,31 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 			events = MapSSEEvent(payload)
 		}
 		for _, event := range events {
+			// sawContent 有两个消费者，语义不同，必须分开记：
+			//   1) 断流重放（readSSE 错误分支）：保守——只要解析到正文/工具就
+			//      不重放，避免客户端看到重复内容（沿用原语义）。
+			//   2) 空回合判定（Turn.Delivered）：严格——只有事件**真的下发给
+			//      客户端**才算已交付。非流式无回调、chat 流式忽略 tool_call_delta，
+			//      若用宽松口径会把截断工具导致的空回合放行成 200 空响应。
+			switch event.Type {
+			case "text_delta":
+				if event.Text != "" {
+					sawContent = true
+					if opts.OnDelta != nil || opts.OnEvent != nil {
+						delivered = true
+					}
+				}
+			case "tool_use":
+				sawContent = true
+				if opts.OnEvent != nil {
+					delivered = true
+				}
+			case "tool_call_delta":
+				sawContent = true
+				if opts.DeliverToolDeltas && opts.OnEvent != nil {
+					delivered = true
+				}
+			}
 			if event.Type == "text_delta" && event.Text != "" {
 				event.Text = fixer.Feed(event.Text)
 			}
@@ -1028,14 +1106,24 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 			break
 		}
 		if err != nil {
+			// 上游流在任何正文/工具增量之前被传输层掐断（边缘空闲回收/连接重置）。
+			// 此刻客户端最多只收到 role 起始帧、心跳注释与思考流（思考重复无害），
+			// 重放不可见，交给服务层换号重试（见 reRetryNextAccount）。
+			// 正文/工具已下发则不标记：重放会让客户端看到重复内容。
+			if !sawContent {
+				return Result{}, fmt.Errorf("CodeBuddy chat completion stream reset before first content: %w", err)
+			}
 			return Result{}, err
 		}
 	}
+	turn := acc.snapshot(func() string {
+		return estimatePromptText(opts.Messages)
+	})
+	// 已交付状态必须带出 readSSE：即使 snapshot 过滤掉截断工具后为空，
+	// 客户端也可能已经收到过增量。
+	turn.Delivered = delivered
 	return Result{
-		// 上游已给 usage 时跳过整段 messages 估算，避免长上下文白烧 CPU。
-		Turn: acc.snapshot(func() string {
-			return estimatePromptText(opts.Messages)
-		}),
+		Turn:       turn,
 		Bytes:      bytesRead,
 		EventCount: eventCount,
 		DeltaCount: deltaCount,
@@ -1300,6 +1388,14 @@ func (a *accumulator) snapshot(promptFn func() string) Turn {
 	for _, frag := range a.fragments {
 		input := map[string]any{}
 		if args, ok := frag.Input["__args"].(string); ok && args != "" {
+			// 上游流断在工具参数中途：把半截 JSON 包成 {"input":原文} 外发，
+			// 等于伪造一个参数残缺的"合法"工具调用，agent 会拿它去执行。
+			// 丢弃并记 WARN；若因此整轮变空，由空回合守卫接管。
+			if looksTruncatedToolArgs(args) {
+				slog.Default().Warn("dropping truncated tool call arguments",
+					"tool", strutil.First(frag.Name, "?"), "args_len", len(args))
+				continue
+			}
 			input = normalizeToolInput(args)
 		} else {
 			for k, v := range frag.Input {
@@ -1675,6 +1771,23 @@ func firstText(values ...any) string {
 		}
 	}
 	return ""
+}
+
+// looksTruncatedToolArgs 判定参数是否被截断：形似 JSON（对象/数组起手）但解析
+// 失败于意外的输入结束——上游流断在参数中途的指纹。完整但格式非法的载荷
+// （尾逗号、单引号、尾部垃圾）不算截断，沿用 {"input": ...} 兜底；
+// 非 JSON 的字符串参数同样走兜底。
+func looksTruncatedToolArgs(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" || (!strings.HasPrefix(t, "{") && !strings.HasPrefix(t, "[")) {
+		return false
+	}
+	var v any
+	err := json.Unmarshal([]byte(t), &v)
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "unexpected end of JSON input")
 }
 
 func normalizeToolInput(values ...any) map[string]any {

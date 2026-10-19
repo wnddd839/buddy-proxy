@@ -41,10 +41,20 @@ const (
 var (
 	errRetryDepthExceeded = errors.New("CodeBuddy 请求重试深度超限")
 	// 包级预编译，避免热路径（每个 chat 请求）重复编译正则。
-	reProviderModel    = regexp.MustCompile(`(?i)^codebuddy(?:(?:/|:)(.*))?$`)
-	reAuthFailure      = regexp.MustCompile(`(?i)(?:\b401\b|\b403\b|unauthori[sz]ed|forbidden|token|credential|auth|login|not authenticated|未登录|登录|凭证)`)
-	reRetryNextAccount = regexp.MustCompile(`(?i)\b429\b|\b502\b|\b503\b|\b504\b|rate.?limit|too many requests|site mismatch|invalid request`)
+	reProviderModel = regexp.MustCompile(`(?i)^codebuddy(?:(?:/|:)(.*))?$`)
+	reAuthFailure   = regexp.MustCompile(`(?i)(?:\b401\b|\b403\b|unauthori[sz]ed|forbidden|token|credential|auth|login|not authenticated|未登录|登录|凭证)`)
+	// "transport error" = Do 阶段（响应头之前）的连接层失败；"stream reset before
+	// first content" = 已收到 200 头但上游在任何正文/工具增量之前掐断流
+	// （provider.readSSE 标记，思考流不算增量）。两者客户端都尚未收到可消费的
+	// 内容，重放不可见，换号重拨即可自愈。
+	reRetryNextAccount = regexp.MustCompile(`(?i)\b429\b|\b502\b|\b503\b|\b504\b|rate.?limit|too many requests|site mismatch|invalid request|transport error|stream reset before first content`)
 )
+
+// maxResetReplays 慢掐重放预算：最多 2 次重放（共 3 发）。每次重放都会让思考
+// 阶段从头再来（实测 15-20 分钟墙钟），并对冷缓存重烧全量 prompt（实测一条链
+// 把缓存命中率从 99% 打到 6.5%）。遍历所有账号能把单个请求拼成数小时；超预算
+// 即把最后一次错误交还客户端。
+const maxResetReplays = 2
 
 type Stats struct {
 	TotalRequests         int64  `json:"totalRequests"`
@@ -262,8 +272,16 @@ type CompleteOptions struct {
 	OnDelta             func(string)
 	OnThinkingDelta     func(string)
 	OnEvent             func(provider.Event)
-	RefreshRetry        bool
-	RetryDepth          int // 内部递归计数，调用方勿手动设置
+	// DeliverToolDeltas 透传给 provider：调用方真的会转发 tool_call_delta 时为 true。
+	DeliverToolDeltas bool
+	RefreshRetry      bool
+	RetryDepth        int // internal recursion counter; callers must not set
+	ResetReplays      int // internal: reset-before-first-content replays consumed (see maxResetReplays)
+	// TransportReplays 建连/传输失败已消耗的重放次数（与 ResetReplays 共用预算）。
+	TransportReplays int
+	// EmptyTurnReplays 空 completed 回合已重放次数（独立于 RetryDepth，
+	// 避免 429/流重置/OAuth 刷新等无关失败提前耗尽）。
+	EmptyTurnReplays int
 }
 
 // ImageOptions is one pooled image generation or edit.
@@ -326,6 +344,7 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		OnDelta:            opts.OnDelta,
 		OnThinkingDelta:    opts.OnThinkingDelta,
 		OnEvent:            opts.OnEvent,
+		DeliverToolDeltas:  opts.DeliverToolDeltas,
 	}
 }
 
@@ -432,6 +451,19 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			opts.ExcludeIDs = next
 			opts.AccountID = ""
 			opts.RetryDepth++
+			// 传输层失败（建连/响应头前断开）与慢掐共用重放预算：
+			// 否则四个账号全部 connection refused 会实际发出四次请求（而非最多三次）。
+			if isTransportReplayError(err.Error()) {
+				if strings.Contains(strings.ToLower(err.Error()), "stream reset before first content") {
+					opts.ResetReplays++
+				} else {
+					opts.TransportReplays++
+				}
+			}
+			// 空 completed 回合用独立预算，避免 429 等无关失败提前耗尽。
+			if strings.Contains(strings.ToLower(err.Error()), "empty completed turn") {
+				opts.EmptyTurnReplays++
+			}
 			retried, retryErr := s.CompleteFromPool(ctx, opts)
 			if retryErr != nil {
 				// 不要用「无可用账号 / 重试深度超限」掩盖真实上游错误（429/503 等）。
@@ -550,10 +582,39 @@ func (s *Service) shouldRetryNextAccount(err error, selection accounts.Selection
 	if strings.Contains(msg, "11140") || strings.Contains(msg, "request illegal") {
 		return false
 	}
+	// 空 completed 回合（软截断）：只允许一次换号重放。推理退化型空回合会复发
+	// （公开实测 ~29%），连环换号只是烧客户端耐心；第二次仍空即 loud fail。
+	// 不罚号——说谎的是上游的收尾帧，不是账号。
+	if strings.Contains(msg, "empty completed turn") {
+		return opts.RetryDepth == 0
+	}
 	if billing.IsQuotaExhaustedError(err) {
 		return true
 	}
+	// 限制慢掐重放链：每次重放可烧 15-20 分钟墙钟（思考从头再来），超预算即
+	// 停止换号、把最后一次错误交给客户端。
+	// 传输层失败（transport error）与慢掐同属"传输层重放"，共用同一预算：
+	// 否则四个账号全部 connection refused 会实际发出四次请求（而非最多三次）。
+	if isTransportReplayError(msg) {
+		if opts.ResetReplays+opts.TransportReplays >= maxResetReplays {
+			return false
+		}
+	}
+	// 空 completed 回合：只允许一次换号重放。预算独立计数，429/流重置/
+	// OAuth 刷新等无关失败不得提前耗尽它。
+	if strings.Contains(msg, "empty completed turn") {
+		return opts.EmptyTurnReplays == 0
+	}
 	return reRetryNextAccount.MatchString(err.Error())
+}
+
+// isTransportReplayError 判断是否属于"传输层可重放"失败：建连失败
+// （transport error）与流在首内容前被重置（stream reset before first content）。
+// 两类共同消耗 maxResetReplays 预算——否则多账号场景会按账号数放大请求数。
+func isTransportReplayError(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "transport error") ||
+		strings.Contains(lower, "stream reset before first content")
 }
 
 func isSiteMismatchError(err error) bool {
