@@ -13,9 +13,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
+	"github.com/wnddd839/codebuddy-proxy/internal/egress"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 )
 
@@ -24,6 +26,36 @@ type Client struct {
 	IDEVersion string
 	// Log 上游失败排障日志；为空时回退 slog.Default()。网关 New 时注入进程 logger。
 	Log *slog.Logger
+
+	// base 是直连用的 Transport，各出口按需 Clone（连接池互不干扰）。
+	base    *http.Transport
+	clients sync.Map // 出口 URL → *http.Client
+}
+
+// For 返回走指定出口的 http.Client。空串或非法出口回落到直连客户端。
+// 同一出口的 client 会被缓存复用（连接池、TLS 会话都在里面）。
+func (c *Client) For(proxyURL string) *http.Client {
+	raw := strings.TrimSpace(proxyURL)
+	if c == nil || c.HTTP == nil || raw == "" {
+		if c == nil {
+			return nil
+		}
+		return c.HTTP
+	}
+	if cached, ok := c.clients.Load(raw); ok {
+		return cached.(*http.Client)
+	}
+	proxy, err := egress.Parse(raw)
+	if err != nil || proxy == nil {
+		return c.HTTP
+	}
+	transport, err := proxy.Transport(c.base)
+	if err != nil || transport == nil {
+		return c.HTTP
+	}
+	client := &http.Client{Transport: transport}
+	actual, _ := c.clients.LoadOrStore(raw, client)
+	return actual.(*http.Client)
 }
 
 func NewClient(cfg config.Config) *Client {
@@ -53,6 +85,7 @@ func NewClient(cfg config.Config) *Client {
 			Timeout:   0,
 			Transport: transport,
 		},
+		base:       transport,
 		IDEVersion: strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
 		Log:        slog.Default(),
 	}
@@ -85,10 +118,12 @@ type ChatOptions struct {
 	EnterpriseID        string
 	TenantID            string
 	DepartmentFullName  string
-	ExtraHeaders        map[string]string
-	OnDelta             func(string)
-	OnThinkingDelta     func(string)
-	OnEvent             func(Event)
+	// Proxy 是该请求使用的出口（账号级绑定）。空 = 直连。
+	Proxy           string
+	ExtraHeaders    map[string]string
+	OnDelta         func(string)
+	OnThinkingDelta func(string)
+	OnEvent         func(Event)
 }
 
 type Event struct {
@@ -757,7 +792,7 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	headers, trace := c.BuildProtocolDirectHeaders(opts)
 	req.Header = headers
 
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.For(opts.Proxy).Do(req)
 	if err != nil {
 		return Result{}, fmt.Errorf("CodeBuddy chat completion transport error: %w [region=%s site=%s endpoint=%s domain=%s model=%s]", err, region, config.NormalizeSite(opts.Site), endpoint, domain, model)
 	}

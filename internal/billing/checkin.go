@@ -86,7 +86,7 @@ func FetchCheckinActivity(ctx context.Context, client *provider.Client, account 
 	if err != nil {
 		return CheckinActivity{}, endpoint, err
 	}
-	payload, err := postJSON(ctx, client.HTTP, endpoint, headers, map[string]any{})
+	payload, err := postJSON(ctx, client.For(account.Proxy), endpoint, headers, map[string]any{})
 	if err != nil {
 		return CheckinActivity{}, endpoint, fmt.Errorf("checkin status failed: %w", err)
 	}
@@ -144,7 +144,7 @@ func DailyCheckinForAccount(ctx context.Context, client *provider.Client, accoun
 		result.Message = err.Error()
 		return result
 	}
-	payload, err := postJSON(ctx, client.HTTP, actionEndpoint, headers, map[string]any{})
+	payload, err := postJSON(ctx, client.For(account.Proxy), actionEndpoint, headers, map[string]any{})
 	if err != nil {
 		if isCheckinAlreadyDone(payload) {
 			result.OK = true

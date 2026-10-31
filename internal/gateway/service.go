@@ -315,6 +315,8 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		Site:                site,
 		Product:             product,
 		InternetEnvironment: internet,
+		// 账号级出口：同一账号始终走同一个代理，不随请求轮换。
+		Proxy: account.Proxy,
 		// 仅使用账号级 APIEndpoint，进程级 endpoint 可能指向错误区域。
 		// 切到 WorkBuddy 时丢掉 codebuddy/copilot 上的账号级 endpoint，否则请求仍打旧域。
 		APIEndpoint:         provider.AlignAPIEndpoint(product, account.APIEndpoint),

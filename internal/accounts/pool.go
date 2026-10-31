@@ -15,6 +15,7 @@ import (
 
 	"github.com/wnddd839/codebuddy-proxy/internal/atomicwrite"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
+	"github.com/wnddd839/codebuddy-proxy/internal/egress"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 )
 
@@ -54,41 +55,44 @@ type AuthStatus struct {
 }
 
 type Account struct {
-	ID                  string     `json:"id"`
-	Provider            string     `json:"provider"`
-	Label               string     `json:"label"`
-	Enabled             bool       `json:"enabled"`
-	enabledSet          bool       `json:"-"`
-	Source              string     `json:"source"`
-	Site                string     `json:"site"`
-	BaseURL             string     `json:"baseUrl"`
-	InternetEnvironment string     `json:"internetEnvironment"`
-	APIEndpoint         string     `json:"apiEndpoint,omitempty"`
-	ChatCompletionsPath string     `json:"chatCompletionsPath,omitempty"`
-	Domain              string     `json:"domain,omitempty"`
-	EnterpriseID        string     `json:"enterpriseId,omitempty"`
-	TenantID            string     `json:"tenantId,omitempty"`
-	DepartmentFullName  string     `json:"departmentFullName,omitempty"`
-	Transport           string     `json:"transport"`
-	AuthType            string     `json:"authType"`
-	APIKey              string     `json:"apiKey,omitempty"`
-	BearerToken         string     `json:"bearerToken,omitempty"`
-	RefreshToken        string     `json:"refreshToken,omitempty"`
-	TokenExpiresAt      int64      `json:"tokenExpiresAt,omitempty"`
-	CredentialHash      string     `json:"credentialHash,omitempty"`
-	AuthStatus          AuthStatus `json:"authStatus"`
-	CreatedAt           int64      `json:"createdAt"`
-	UpdatedAt           int64      `json:"updatedAt"`
-	LastUsedAt          int64      `json:"lastUsedAt,omitempty"`
-	LastSelectedAt      int64      `json:"lastSelectedAt,omitempty"`
-	SuccessRequests     int64      `json:"successRequests"`
-	FailedRequests      int64      `json:"failedRequests"`
-	LastError           string     `json:"lastError,omitempty"`
-	CooldownUntil       int64      `json:"cooldownUntil,omitempty"`
-	QuotaRemaining      *float64   `json:"quotaRemaining,omitempty"`
-	QuotaUnlimited      bool       `json:"quotaUnlimited,omitempty"`
-	QuotaResetAt        int64      `json:"quotaResetAt,omitempty"`
-	QuotaCheckedAt      int64      `json:"quotaCheckedAt,omitempty"`
+	ID                  string `json:"id"`
+	Provider            string `json:"provider"`
+	Label               string `json:"label"`
+	Enabled             bool   `json:"enabled"`
+	enabledSet          bool   `json:"-"`
+	Source              string `json:"source"`
+	Site                string `json:"site"`
+	BaseURL             string `json:"baseUrl"`
+	InternetEnvironment string `json:"internetEnvironment"`
+	APIEndpoint         string `json:"apiEndpoint,omitempty"`
+	ChatCompletionsPath string `json:"chatCompletionsPath,omitempty"`
+	Domain              string `json:"domain,omitempty"`
+	EnterpriseID        string `json:"enterpriseId,omitempty"`
+	TenantID            string `json:"tenantId,omitempty"`
+	DepartmentFullName  string `json:"departmentFullName,omitempty"`
+	Transport           string `json:"transport"`
+	// Proxy 是该账号的专用出口（空 = 直连）。形如 socks5h://user:pass@host:port。
+	// 绑死后不随请求漂移：同号换 IP 比同 IP 多号更容易触发风控。
+	Proxy           string     `json:"proxy,omitempty"`
+	AuthType        string     `json:"authType"`
+	APIKey          string     `json:"apiKey,omitempty"`
+	BearerToken     string     `json:"bearerToken,omitempty"`
+	RefreshToken    string     `json:"refreshToken,omitempty"`
+	TokenExpiresAt  int64      `json:"tokenExpiresAt,omitempty"`
+	CredentialHash  string     `json:"credentialHash,omitempty"`
+	AuthStatus      AuthStatus `json:"authStatus"`
+	CreatedAt       int64      `json:"createdAt"`
+	UpdatedAt       int64      `json:"updatedAt"`
+	LastUsedAt      int64      `json:"lastUsedAt,omitempty"`
+	LastSelectedAt  int64      `json:"lastSelectedAt,omitempty"`
+	SuccessRequests int64      `json:"successRequests"`
+	FailedRequests  int64      `json:"failedRequests"`
+	LastError       string     `json:"lastError,omitempty"`
+	CooldownUntil   int64      `json:"cooldownUntil,omitempty"`
+	QuotaRemaining  *float64   `json:"quotaRemaining,omitempty"`
+	QuotaUnlimited  bool       `json:"quotaUnlimited,omitempty"`
+	QuotaResetAt    int64      `json:"quotaResetAt,omitempty"`
+	QuotaCheckedAt  int64      `json:"quotaCheckedAt,omitempty"`
 
 	ModelCooldowns map[string]int64 `json:"modelCooldowns,omitempty"`
 }
@@ -439,6 +443,14 @@ func NormalizeAccount(raw Account, now int64) Account {
 		transport = config.DefaultTransport
 	}
 
+	// 出口：非法 URL 直接丢弃（宁可直连，也不要把请求打到半截配置上）。
+	proxy := strings.TrimSpace(raw.Proxy)
+	if proxy != "" {
+		if _, err := egress.Parse(proxy); err != nil {
+			proxy = ""
+		}
+	}
+
 	expiresAt := raw.TokenExpiresAt
 	account := Account{
 		ID:                  id,
@@ -456,6 +468,7 @@ func NormalizeAccount(raw Account, now int64) Account {
 		TenantID:            strutil.First(strutil.Compact(raw.TenantID), strutil.Compact(raw.EnterpriseID)),
 		DepartmentFullName:  strutil.Compact(raw.DepartmentFullName),
 		Transport:           transport,
+		Proxy:               proxy,
 		AuthType:            authType,
 		APIKey:              apiKey,
 		BearerToken:         bearer,
@@ -905,6 +918,65 @@ func (p *Pool) SetEnabled(id string, enabled bool) (Account, Store, error) {
 	return Account{}, out, fmt.Errorf("%w: %s", ErrAccountNotFound, id)
 }
 
+// SetProxy 给单个账号绑定出口（空字符串 = 改回直连）。
+func (p *Pool) SetProxy(id, proxy string) (Account, Store, error) {
+	return p.AssignProxies(map[string]string{id: proxy})
+}
+
+// AssignProxies 批量绑定出口，只落一次盘。proxy 为空表示改回直连；
+// 未出现在 map 里的账号保持原状。
+func (p *Pool) AssignProxies(proxies map[string]string) (Account, Store, error) {
+	p.mu.Lock()
+	if err := p.ensureLoadedLocked(); err != nil {
+		p.mu.Unlock()
+		return Account{}, Store{}, err
+	}
+	now := time.Now().UnixMilli()
+	target := map[string]string{}
+	for id, raw := range proxies {
+		proxy := strings.TrimSpace(raw)
+		if proxy != "" {
+			if _, err := egress.Parse(proxy); err != nil {
+				p.mu.Unlock()
+				return Account{}, cloneStore(p.mem), err
+			}
+		}
+		target[id] = proxy
+	}
+	var first Account
+	changed := 0
+	found := false
+	for i := range p.mem.Accounts {
+		proxy, ok := target[p.mem.Accounts[i].ID]
+		if !ok {
+			continue
+		}
+		if !found {
+			first = p.mem.Accounts[i]
+			found = true
+		}
+		p.mem.Accounts[i].Proxy = proxy
+		p.mem.Accounts[i].UpdatedAt = now
+		first = p.mem.Accounts[i]
+		changed++
+	}
+	if changed == 0 {
+		out := cloneStore(p.mem)
+		p.mu.Unlock()
+		return Account{}, out, fmt.Errorf("%w: %s", ErrAccountNotFound, "no matching account")
+	}
+	p.dirty = false
+	snap := cloneStore(p.mem)
+	p.mu.Unlock()
+	if err := p.writeDisk(snap); err != nil {
+		p.mu.Lock()
+		p.dirty = true
+		p.mu.Unlock()
+		return Account{}, Store{}, err
+	}
+	return first, cloneStore(snap), nil
+}
+
 func (p *Pool) ReplaceAccount(account Account) (Account, Store, error) {
 	p.mu.Lock()
 	if err := p.ensureLoadedLocked(); err != nil {
@@ -935,17 +1007,19 @@ func (p *Pool) ReplaceAccount(account Account) (Account, Store, error) {
 }
 
 type Summary struct {
-	ID                  string   `json:"id"`
-	Provider            string   `json:"provider"`
-	Label               string   `json:"label"`
-	Enabled             bool     `json:"enabled"`
-	Source              string   `json:"source"`
-	Site                string   `json:"site"`
-	BaseURL             string   `json:"baseUrl"`
-	InternetEnvironment string   `json:"internetEnvironment"`
-	APIEndpoint         string   `json:"apiEndpoint,omitempty"`
-	ChatCompletionsPath string   `json:"chatCompletionsPath,omitempty"`
-	Transport           string   `json:"transport"`
+	ID                  string `json:"id"`
+	Provider            string `json:"provider"`
+	Label               string `json:"label"`
+	Enabled             bool   `json:"enabled"`
+	Source              string `json:"source"`
+	Site                string `json:"site"`
+	BaseURL             string `json:"baseUrl"`
+	InternetEnvironment string `json:"internetEnvironment"`
+	APIEndpoint         string `json:"apiEndpoint,omitempty"`
+	ChatCompletionsPath string `json:"chatCompletionsPath,omitempty"`
+	Transport           string `json:"transport"`
+	// Proxy 回显为打码后的 URL（密码替换成 ***），前端据此显示「已绑出口」。
+	Proxy               string   `json:"proxy,omitempty"`
 	AuthType            string   `json:"authType"`
 	HasCredentials      bool     `json:"hasCredentials"`
 	LoggedIn            bool     `json:"loggedIn"`
@@ -992,6 +1066,7 @@ func SummarizeAccount(account Account) Summary {
 		APIEndpoint:         account.APIEndpoint,
 		ChatCompletionsPath: account.ChatCompletionsPath,
 		Transport:           account.Transport,
+		Proxy:               egress.Mask(account.Proxy),
 		AuthType:            account.AuthType,
 		HasCredentials:      HasCredentials(account),
 		LoggedIn:            loggedIn,

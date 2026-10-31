@@ -188,6 +188,9 @@ type RefreshOptions struct {
 	AccessToken     string
 	RefreshToken    string
 	RefreshEndpoint string
+	// HTTPClient 可指定账号自己的出口（nil 用默认客户端）。
+	// 绑了出口的账号连刷新令牌也走同一 IP，避免同一账号在两个 IP 之间跳。
+	HTTPClient *http.Client
 }
 
 func (c *Client) Refresh(ctx context.Context, opts RefreshOptions) (*TokenData, error) {
@@ -208,7 +211,11 @@ func (c *Client) Refresh(ctx context.Context, opts RefreshOptions) (*TokenData, 
 		return nil, err
 	}
 	req.Header = buildRefreshHeaders(endpoint, opts.AccessToken, refreshToken)
-	resp, err := c.HTTP.Do(req)
+	httpClient := c.HTTP
+	if opts.HTTPClient != nil {
+		httpClient = opts.HTTPClient
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/openai"
 	"github.com/wnddd839/codebuddy-proxy/internal/opencode"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
+	"github.com/wnddd839/codebuddy-proxy/internal/proxies"
 	"github.com/wnddd839/codebuddy-proxy/internal/sessionpin"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 	"github.com/wnddd839/codebuddy-proxy/internal/update"
@@ -38,10 +40,16 @@ type Server struct {
 	Svc     *gateway.Service
 	HTTP    *http.Server
 	Updater *update.Manager
+	// Proxies 是候选出口清单（proxies.json），账号绑定仍以 Account.Proxy 为准。
+	Proxies *proxies.File
 }
 
 func New(cfg config.Config, svc *gateway.Service) *Server {
-	s := &Server{Svc: svc, Updater: update.New(version.Version)}
+	s := &Server{
+		Svc:     svc,
+		Updater: update.New(version.Version),
+		Proxies: proxies.Open(filepath.Join(filepath.Dir(cfg.AccountsPath), "proxies.json")),
+	}
 	mux := http.NewServeMux()
 	// Go 1.22+ 方法感知路由（http_servemux_patterns）
 	// 避免与方法相关的尾斜杠子树与更深层精确路由冲突。
@@ -921,6 +929,18 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		result := s.Svc.RunPoolChatTest(r.Context(), poolSite, model, gateway.RunPoolChatTestOptions{})
 		httputil.WriteJSON(w, http.StatusOK, result)
 		return
+	case path == "/direct-admin/api/codebuddy/proxies" && r.Method == http.MethodGet:
+		s.handleProxiesList(w, r)
+		return
+	case path == "/direct-admin/api/codebuddy/proxies/check" && r.Method == http.MethodPost:
+		s.handleProxyCheck(w, r)
+		return
+	case path == "/direct-admin/api/codebuddy/proxies/candidates" && (r.Method == http.MethodPost || r.Method == http.MethodDelete):
+		s.handleProxyCandidate(w, r)
+		return
+	case path == "/direct-admin/api/codebuddy/proxies/balance" && r.Method == http.MethodPost:
+		s.handleProxyBalance(w, r)
+		return
 	}
 
 	if strings.HasPrefix(path, "/direct-admin/api/codebuddy/accounts/") {
@@ -955,6 +975,36 @@ func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, pat
 		account, store, err := s.Svc.Pool.SetEnabled(id, action == "enable")
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"account":  accounts.SummarizeAccount(account),
+			"accounts": accounts.SummarizeStore(store, s.Svc.Pool.Path()),
+		})
+		return
+	case r.Method == http.MethodPost && action == "proxy":
+		var body struct {
+			Proxy       string `json:"proxy"`
+			CandidateID string `json:"candidateId"`
+			Clear       bool   `json:"clear"`
+		}
+		if err := httputil.ReadJSON(r, &body); err != nil {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		proxyURL := ""
+		if !body.Clear {
+			resolved, err := s.resolveProxyRef(body.Proxy, body.CandidateID)
+			if err != nil {
+				httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+			proxyURL = resolved
+		}
+		account, store, err := s.Svc.Pool.SetProxy(id, proxyURL)
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
@@ -1034,6 +1084,7 @@ func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, pat
 			BaseURL:      strutil.First(selected.BaseURL, s.Svc.Config().BaseURL),
 			AccessToken:  selected.BearerToken,
 			RefreshToken: selected.RefreshToken,
+			HTTPClient:   s.Svc.Provider.For(selected.Proxy),
 		})
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})

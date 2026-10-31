@@ -73,7 +73,10 @@ func (c *Client) Image(ctx context.Context, opts ChatOptions, req ImageRequest) 
 	headers.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header = headers
 
-	httpClient := c.httpClient()
+	httpClient := c.For(opts.Proxy)
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return ImageResult{}, fmt.Errorf("CodeBuddy image request transport error: %w [region=%s site=%s endpoint=%s domain=%s model=%s]", err, region, config.NormalizeSite(opts.Site), endpoint, domain, model)
