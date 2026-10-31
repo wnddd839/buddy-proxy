@@ -76,6 +76,16 @@ CODEBUDDY_PROXY_WATCH_SMTP_MODE=implicit   # implicit（465）| starttls（587�
 
 ## 观测
 
+### 管理台
+
+开启后，概览页（`01 概览与监控`）指标区下方会出现一条「波动监测」：
+`状态`（正常 / 异常 + 原因）、`错误率`、`推理缺失`（比例 · 缺失数/请求数）、`耗时 P50`、`样本数`。
+未开启时不渲染，不会留下空位。
+
+数据来自同一个 `watch` 状态对象，由 `/direct-admin/api/status` 携带。
+
+### HTTP
+
 `GET /health` 在开启后会多出一段：
 
 ```json

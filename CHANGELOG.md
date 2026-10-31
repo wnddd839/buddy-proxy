@@ -11,6 +11,7 @@
 - 只统计客户端**明确要求推理**的请求（`reasoning_effort` / `reasoning` / `thinking`），避免客户端本就不需要思考时误报「思考消失」。
 - 告警节奏为状态机：进入异常发 1 次、持续异常按 `REMINDER`（默认 6h）提醒、恢复发 1 次；正常流量不产生任何通知。
 - 通知通道支持 webhook（POST JSON）与 SMTP 邮件（`implicit` / `starttls` / `none`），可同时启用；都不配置时只写进程日志。
+- 管理台概览新增「波动监测」条：状态 + 错误率 / 推理缺失 / 耗时 P50 / 样本数，未启用时不占位。
 - `/health` 增加 `watch` 段（`enabled` / `ok` / `reasons` / `metrics`）。该段**不改变 HTTP 状态码**——进程存活与业务退化分开表达，避免负载均衡把网关整体摘除。
 - 默认关闭，用 `CODEBUDDY_PROXY_WATCH=on` 开启；参数、载荷格式与排查建议见 `docs/operations/monitoring.md`。
 

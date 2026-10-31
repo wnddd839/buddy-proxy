@@ -1234,6 +1234,7 @@ func (s *Service) Status() map[string]any {
 		"product":     product,
 		"poolProduct": product,
 		"upstream":    upstream,
+		"watch":       s.WatchStatus(),
 		"config": map[string]any{
 			"host":                host,
 			"port":                port,

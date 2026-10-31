@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.10.20-attention-account-menu"
+const UIRevision = "2026.10.31-watch-monitor"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -156,6 +156,21 @@ h1{
   letter-spacing:-.02em;color:var(--fg);text-align:right;
 }
 .metric .v.sm{font-size:13.5px;line-height:1.4}
+/* 概览：波动监测条（默认隐藏，未启用时不出现） */
+.watchbar{
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  margin-top:16px;padding:12px 16px;border:1px solid var(--fg-10);
+  font-family:var(--sans);font-size:11px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--fg-40);
+}
+.watchbar[hidden]{display:none}
+.watchbar .state{color:var(--fg);letter-spacing:.16em}
+.watchbar .state.bad{color:var(--fg);text-decoration:underline;text-underline-offset:3px}
+.watchbar .num{color:var(--fg-40)}
+.watchbar .num b{
+  font-family:var(--mono);font-size:12px;font-weight:400;letter-spacing:0;
+  color:var(--fg);margin-left:6px;
+}
 .section-head{
   display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;
   margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid var(--fg-10);
@@ -463,6 +478,13 @@ pre{
           <div class="metric"><div class="k">启用账号</div><div class="v" id="mEnabled">0</div></div>
           <div class="metric"><div class="k">成功 / 失败</div><div class="v sm" id="mSF">0 / 0</div></div>
           <div class="metric"><div class="k">总 Tokens</div><div class="v sm" id="mTokens">0</div></div>
+        </div>
+        <div class="watchbar" id="watchBar" hidden>
+          <span class="state" id="watchState">波动监测</span>
+          <span class="num">错误率<b id="watchErr">—</b></span>
+          <span class="num">推理缺失<b id="watchMiss">—</b></span>
+          <span class="num">耗时 P50<b id="watchP50">—</b></span>
+          <span class="num">样本<b id="watchSamples">—</b></span>
         </div>
         <div class="actions" style="margin-top:24px">
           <button class="primary" id="btnRefresh" type="button">刷新状态</button>
@@ -1461,6 +1483,28 @@ function paintPoolProduct(product){
   paintPoolHint(activeCheckinSite || 'global', product, lastPoolAccounts);
 }
 
+function watchPercent(v){
+  if (v == null) return '—';
+  return (Number(v) * 100).toFixed(1) + '%';
+}
+
+function paintWatch(w){
+  const bar = $('watchBar');
+  if (!bar) return;
+  if (!w || !w.enabled) { bar.hidden = true; return; }
+  bar.hidden = false;
+  const m = w.metrics || {};
+  const state = $('watchState');
+  state.textContent = w.ok ? '波动监测 · 正常' : ('波动监测 · ' + (w.reason || '异常'));
+  state.classList.toggle('bad', !w.ok);
+  $('watchErr').textContent = watchPercent(m.errorRate);
+  $('watchMiss').textContent = (m.reasoningAsked > 0)
+    ? (watchPercent(m.reasoningMissRate) + ' · ' + (m.reasoningMissed||0) + '/' + m.reasoningAsked)
+    : '无样本';
+  $('watchP50').textContent = (m.latencyP50 || 0) + 'ms';
+  $('watchSamples').textContent = String(m.samples || 0);
+}
+
 function paintStatus(data){
   const stats = data.stats || {};
   const accounts = data.accounts || {};
@@ -1473,6 +1517,7 @@ function paintStatus(data){
   $('mTokens').textContent = cachedTokens > 0
     ? (totalTokens + ' · cache ' + cachedTokens)
     : String(totalTokens);
+  paintWatch(data.watch);
   const loggedIn = !!accounts.loggedIn;
   const primary = accounts.primary || ((accounts.accounts||[])[0] || null);
   $('mLogin').textContent = loggedIn
