@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.10.31-account-import"
+const UIRevision = "2026.10.31-account-import-modal"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -142,14 +142,27 @@ h1{
 .lede{margin:0;color:var(--fg-60);font-size:13.5px;line-height:1.6;max-width:52ch}
 .checkin-hint{margin:12px 0 0;font-size:11.5px;line-height:1.5;color:var(--fg-40);max-width:58ch}
 .checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
-/* 批量导入：粘贴/选文件，避免手改 accounts.json */
+/* 一键导入：按钮打开弹窗，弹窗里只有一个输入框 */
+.modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.6)}
+.modal[hidden]{display:none}
+.modal-card{
+  width:min(680px,100%);max-height:86vh;overflow:auto;padding:22px 24px 18px;
+  border:1px solid var(--fg-20);background:var(--bg);box-shadow:0 24px 60px rgba(0,0,0,.45);
+}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.modal-head h3{margin:0;font-size:15px;font-weight:600;letter-spacing:.02em}
+.modal-x{border:none;background:transparent;color:var(--fg-40);font-size:22px;line-height:1;cursor:pointer;padding:0 2px}
+.modal-x:hover{color:var(--fg)}
 #importText{
-  width:100%;margin:4px 0 12px;padding:10px 12px;border:1px solid var(--fg-20);
+  width:100%;margin:10px 0 12px;padding:10px 12px;border:1px solid var(--fg-20);
   background:transparent;color:var(--fg);font-family:var(--mono);font-size:11.5px;
-  line-height:1.6;resize:vertical;min-height:120px;outline:none;
+  line-height:1.6;resize:vertical;min-height:150px;outline:none;
 }
 #importText:focus{border-color:var(--fg-40)}
-.import-panel .actions{margin:0 0 8px}
+.modal-row{display:flex;align-items:center;gap:10px}
+.modal-row label{margin:0;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg-40)}
+.modal-row select{width:auto;min-width:170px;font-size:13px;padding:6px 0}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
 .test-model-label{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-60);white-space:nowrap}
 .test-model-label select{min-width:160px;font-size:13px}
 .metrics{
@@ -525,6 +538,7 @@ pre{
         </div>
         <p class="seg-hint" id="poolSiteHint">当前号池：—</p>
         <div class="ops-row">
+          <button class="ghost" id="btnImportOpen" type="button">一键导入</button>
           <button class="ghost" id="btnCheckin" type="button" disabled aria-describedby="checkinHint">每日签到</button>
           <button class="ghost" id="btnPoolTest" type="button" disabled aria-describedby="poolTestHint">批量测试</button>
           <label class="test-model-label" for="testModelSelect">测试模型
@@ -537,35 +551,6 @@ pre{
         <p class="checkin-hint" id="poolTestHint">对当前号池已启用账号发最小 chat，验证可用性与延迟；默认选最低倍率模型。</p>
         <pre class="checkin-detail" id="checkinRaw" hidden></pre>
         <pre class="checkin-detail" id="poolTestRaw" hidden></pre>
-
-        <details class="raw import-panel" id="importPanel">
-          <summary>批量导入账号</summary>
-          <div style="padding:0 14px 14px">
-            <p class="checkin-hint" style="margin-top:0">支持 CodeBuddy 客户端凭据、本程序账号池文件、<code>account + auth</code> 包装；按域名自动识别站点，重复账号会被更新而不是新增。</p>
-            <div class="field-grid">
-              <div>
-                <label for="importSite">站点</label>
-                <select id="importSite">
-                  <option value="">自动识别（按域名）</option>
-                  <option value="domestic">国内站 · domestic</option>
-                  <option value="global">国际站 · global</option>
-                </select>
-              </div>
-              <div>
-                <label for="importLabel">标签前缀</label>
-                <input id="importLabel" placeholder="可选，例如：备用号" />
-              </div>
-            </div>
-            <textarea id="importText" spellcheck="false" placeholder='粘贴 JSON，例如：
-[{"uid":"…","nickname":"…","domain":"www.codebuddy.cn","access_token":"…","refresh_token":"…","expires_at":1795951021000}]'></textarea>
-            <div class="actions">
-              <input type="file" id="importFile" accept=".json,application/json" hidden />
-              <button class="ghost" id="btnImportPick" type="button">选择文件…</button>
-              <button class="primary" id="btnImport" type="button">导入</button>
-            </div>
-            <pre class="checkin-detail" id="importResult" hidden></pre>
-          </div>
-        </details>
 
         <div id="accounts"></div>
       </div>
@@ -809,6 +794,31 @@ pre{
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- 一键导入：点按钮打开，弹窗里只有一个输入框 -->
+<div class="modal" id="importModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="importTitle">
+    <div class="modal-head">
+      <h3 id="importTitle">导入账号</h3>
+      <button class="modal-x" id="btnImportClose" type="button" aria-label="关闭">×</button>
+    </div>
+    <p class="checkin-hint" style="margin:6px 0 0">粘贴账号 JSON 即可（CodeBuddy 客户端凭据、账号池文件、<code>account + auth</code> 包装都认）。同账号按 userId + 站点更新，不会重复新增。</p>
+    <textarea id="importText" spellcheck="false" autocomplete="off" placeholder='[{&quot;uid&quot;:&quot;…&quot;,&quot;nickname&quot;:&quot;…&quot;,&quot;domain&quot;:&quot;www.codebuddy.cn&quot;,&quot;access_token&quot;:&quot;…&quot;,&quot;refresh_token&quot;:&quot;…&quot;,&quot;expires_at&quot;:1795951021000}]'></textarea>
+    <div class="modal-row">
+      <label for="importSite">站点</label>
+      <select id="importSite">
+        <option value="">自动识别（按域名）</option>
+        <option value="domestic">国内站 · domestic</option>
+        <option value="global">国际站 · global</option>
+      </select>
+    </div>
+    <pre class="checkin-detail" id="importResult" hidden></pre>
+    <div class="modal-actions">
+      <button class="ghost" id="btnImportCancel" type="button">取消</button>
+      <button class="primary" id="btnImport" type="button">导入</button>
+    </div>
+  </div>
+</div>
 
 <!-- hidden compatibility targets for existing helpers -->
 <pre id="statusBox"></pre>
@@ -1827,9 +1837,21 @@ async function startOAuth(){
   if (url && url !== '#') window.open(url, '_blank', 'noopener');
 }
 
+function openImportModal(){
+  const out = $('importResult');
+  out.hidden = true; out.textContent = '';
+  $('importText').value = '';
+  $('importModal').hidden = false;
+  setTimeout(function(){ try { $('importText').focus(); } catch (e) {} }, 30);
+}
+
+function closeImportModal(){
+  $('importModal').hidden = true;
+}
+
 async function runImport(){
   const text = ($('importText').value || '').trim();
-  if (!text) { showToast('先粘贴或选择账号 JSON', 'error'); return; }
+  if (!text) { showToast('先粘贴账号 JSON', 'error'); $('importText').focus(); return; }
   const btn = $('btnImport');
   btn.disabled = true; btn.textContent = '导入中…';
   const out = $('importResult'); out.hidden = false; out.textContent = '正在导入…';
@@ -1838,8 +1860,7 @@ async function runImport(){
       method: 'POST',
       body: JSON.stringify({
         text: text,
-        site: $('importSite').value || '',
-        label: ($('importLabel').value || '').trim()
+        site: ($('importSite') && $('importSite').value) || ''
       })
     });
     const lines = (data.results || []).map(function(r){
@@ -1848,8 +1869,11 @@ async function runImport(){
     });
     out.textContent = '新增 ' + (data.added||0) + ' / 更新 ' + (data.updated||0) + ' / 失败 ' + (data.failed||0) + '\n' + lines.join('\n');
     showToast('导入完成：新增 ' + (data.added||0) + '，更新 ' + (data.updated||0) + (data.failed ? ('，失败 ' + data.failed) : ''), data.failed ? 'error' : undefined);
-    if (data.ok) $('importText').value = '';
     await refreshStatus();
+    if (data.ok) {
+      // 全部成功就收起弹窗，保持「一键」手感；有失败则留在弹窗里让人看原因。
+      setTimeout(closeImportModal, 700);
+    }
   } catch (e) {
     out.textContent = '导入失败：' + (e.message || e);
     showToast('导入失败：' + (e.message || e), 'error');
@@ -1960,17 +1984,14 @@ if ($('btnPoolTest')) $('btnPoolTest').onclick = function(){ runPoolChatTest().c
 if ($('btnModels')) $('btnModels').onclick = function(){ refreshModels().catch(function(e){ $('modelsRaw').textContent = e.message; $('modelChips').innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>'; }); };
 if ($('btnGoAccounts')) $('btnGoAccounts').onclick = function(){ switchTab('tab-pool'); };
 $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
+if ($('btnImportOpen')) $('btnImportOpen').onclick = openImportModal;
+if ($('btnImportClose')) $('btnImportClose').onclick = closeImportModal;
+if ($('btnImportCancel')) $('btnImportCancel').onclick = closeImportModal;
+if ($('importModal')) $('importModal').onclick = function(e){ if (e.target === this) closeImportModal(); };
+document.addEventListener('keydown', function(e){
+  if ((e.key === 'Escape' || e.key === 'Esc') && $('importModal') && !$('importModal').hidden) closeImportModal();
+});
 $('btnImport').onclick = function(){ runImport().catch(function(e){ showToast(String(e), 'error'); }); };
-$('btnImportPick').onclick = function(){ $('importFile').click(); };
-$('importFile').onchange = function(){
-  const file = this.files && this.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = function(){ $('importText').value = String(reader.result || ''); showToast('已载入 ' + file.name); };
-  reader.onerror = function(){ showToast('读取文件失败', 'error'); };
-  reader.readAsText(file);
-  this.value = '';
-};
 $('btnPoll').onclick = function(){ pollOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 $('btnRefreshClient').onclick = function(){ refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); }); };
 $('btnGenerateKey').onclick = function(){ generateApiKey().catch(function(e){ showToast(e.message, 'error'); }); };

@@ -7,7 +7,7 @@
 
 ## v0.7.1 · 2026-10-31 · 账号批量导入
 
-- 管理台「账号池」新增**批量导入**：粘贴文本或直接选择 JSON 文件，一次写入多个账号。
+- 管理台「账号池」工具栏新增**一键导入**按钮：点开弹窗、粘贴 JSON、点「导入」即完成，一次可写入多个账号。
 - 自动识别三类来源，可混在同一份文本里：
   - CodeBuddy 客户端凭据 `[{"uid","nickname","domain","access_token","refresh_token","expires_at"}]`
   - 本程序的账号池文件 `{"version":1,"accounts":[…]}`（可用于整池迁移）
@@ -15,6 +15,7 @@
 - 站点按 `domain` / `realm` 自动推断（`*.codebuddy.cn` / `*.workbuddy.cn` → domestic，其余 → global），也可在界面上强制指定；`expires_at` 的秒与毫秒两种写法都会归一成毫秒。
 - 去重按凭据哈希 与 `userId + site` 判定：同一账号重复导入是**更新**而不是新增，不会污染号池。
 - 新增 `POST /direct-admin/api/codebuddy/accounts/import`，返回 `added / updated / failed` 与逐条明细，前端直接展示。
+- 弹窗交互：打开即聚焦输入框、`Esc`/点遮罩/取消关闭、导入成功自动收起、失败留在弹窗内逐条显示原因；不引入任何前端依赖。
 - 新增 `internal/accountimport` 包与 7 组解析用例、3 组接口用例。
 
 ---
