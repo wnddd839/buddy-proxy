@@ -52,6 +52,8 @@ func ProbeEndpointURL(ctx context.Context, proxyURL, endpoint string) ProbeResul
 			return ProbeResult{ElapsedMS: time.Since(start).Milliseconds(), Error: err.Error()}
 		}
 	}
+	// 一次性探针不保留空闲连接，避免反复点「检测」堆积连接与 goroutine。
+	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 15 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

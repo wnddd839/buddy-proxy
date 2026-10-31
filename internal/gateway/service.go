@@ -472,6 +472,39 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	}, nil
 }
 
+// MergeRefreshedToken 把刷新得到的凭证合并回已有账号。
+// 只更新凭证相关字段，保留运维字段（启用状态、出口、配额、冷却、租户信息等）——
+// AccountFromTokenData 只认识 token，直接 ReplaceAccount 会把这些字段清掉。
+func MergeRefreshedToken(existing accounts.Account, token *oauth.TokenData) accounts.Account {
+	updated := oauth.AccountFromTokenData(token, strutil.First(existing.Site), existing.Label)
+	updated.ID = existing.ID
+	updated.Enabled = existing.Enabled
+	updated.Source = strutil.First(existing.Source, updated.Source)
+	updated.Site = strutil.First(existing.Site, updated.Site)
+	updated.BaseURL = existing.BaseURL
+	updated.InternetEnvironment = existing.InternetEnvironment
+	updated.APIEndpoint = existing.APIEndpoint
+	updated.ChatCompletionsPath = existing.ChatCompletionsPath
+	updated.Transport = existing.Transport
+	updated.EnterpriseID = existing.EnterpriseID
+	updated.TenantID = existing.TenantID
+	updated.DepartmentFullName = existing.DepartmentFullName
+	updated.CreatedAt = existing.CreatedAt
+	updated.SuccessRequests = existing.SuccessRequests
+	updated.FailedRequests = existing.FailedRequests
+	updated.LastUsedAt = existing.LastUsedAt
+	updated.LastSelectedAt = existing.LastSelectedAt
+	updated.CooldownUntil = existing.CooldownUntil
+	updated.ModelCooldowns = existing.ModelCooldowns
+	updated.QuotaRemaining = existing.QuotaRemaining
+	updated.QuotaUnlimited = existing.QuotaUnlimited
+	updated.QuotaResetAt = existing.QuotaResetAt
+	updated.QuotaCheckedAt = existing.QuotaCheckedAt
+	// 出口是运维决策，刷新令牌不该把号扔回本机 IP。
+	updated.Proxy = existing.Proxy
+	return updated
+}
+
 func (s *Service) refreshSelected(ctx context.Context, selection accounts.Selection, force bool) (accounts.Selection, error) {
 	account := selection.Account
 	if !oauth.ShouldRefresh(account, force, s.Config().RefreshWindow, time.Now()) {
@@ -482,6 +515,8 @@ func (s *Service) refreshSelected(ctx context.Context, selection accounts.Select
 		BaseURL:      strutil.First(account.BaseURL, s.Config().BaseURL),
 		AccessToken:  account.BearerToken,
 		RefreshToken: account.RefreshToken,
+		// 刷新令牌也走账号自己的出口：同一账号不该在两个 IP 之间跳。
+		HTTPClient: s.Provider.For(account.Proxy),
 	})
 	if err != nil {
 		if force || (account.TokenExpiresAt > 0 && account.TokenExpiresAt <= time.Now().UnixMilli()) {
@@ -490,25 +525,7 @@ func (s *Service) refreshSelected(ctx context.Context, selection accounts.Select
 		s.Log.Warn("codebuddy oauth refresh skipped after failure", "accountId", account.ID, "error", err.Error())
 		return selection, nil
 	}
-	updated := oauth.AccountFromTokenData(token, strutil.First(account.Site, s.Config().Site), account.Label)
-	updated.ID = account.ID
-	updated.Enabled = account.Enabled
-	updated.BaseURL = account.BaseURL
-	updated.InternetEnvironment = account.InternetEnvironment
-	updated.APIEndpoint = account.APIEndpoint
-	updated.ChatCompletionsPath = account.ChatCompletionsPath
-	updated.Transport = account.Transport
-	updated.SuccessRequests = account.SuccessRequests
-	updated.FailedRequests = account.FailedRequests
-	updated.LastUsedAt = account.LastUsedAt
-	updated.LastSelectedAt = account.LastSelectedAt
-	updated.CreatedAt = account.CreatedAt
-	updated.CooldownUntil = account.CooldownUntil
-	updated.ModelCooldowns = account.ModelCooldowns
-	updated.QuotaRemaining = account.QuotaRemaining
-	updated.QuotaUnlimited = account.QuotaUnlimited
-	updated.QuotaResetAt = account.QuotaResetAt
-	updated.QuotaCheckedAt = account.QuotaCheckedAt
+	updated := MergeRefreshedToken(account, token)
 	saved, _, err := s.Pool.ReplaceAccount(updated)
 	if err != nil {
 		return selection, err

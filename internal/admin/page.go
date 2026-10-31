@@ -1946,14 +1946,14 @@ function renderEgress(){
   if (!box) return;
   const cands = egressState.candidates || [];
   const counts = {};
-  (egressState.used || []).forEach(function(u){ counts[u.proxy] = u.count || 0; });
+  (egressState.used || []).forEach(function(u){ counts[u.id] = u.count || 0; });
   if (!cands.length) {
     box.innerHTML = '<div class="egress-hint" style="padding:6px 0">还没有候选出口，账号默认走本机直连。</div>';
   } else {
     box.innerHTML = cands.map(function(c){
       return '<div class="egress-row">' +
         '<div class="egress-id"><strong>' + escapeHtml(c.label || proxyHost(c.url)) + '</strong><span>' + escapeHtml(c.url) + '</span></div>' +
-        '<div class="egress-count">' + (counts[c.url] || 0) + ' 个账号</div>' +
+        '<div class="egress-count">' + (counts[c.id] || 0) + ' 个账号</div>' +
         '<div class="actions">' +
           '<button class="ghost" data-egress-act="check" data-id="' + escapeHtml(c.id) + '" type="button">检测</button>' +
           '<button class="danger" data-egress-act="del" data-id="' + escapeHtml(c.id) + '" type="button">删除</button>' +

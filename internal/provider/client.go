@@ -49,7 +49,16 @@ func (c *Client) For(proxyURL string) *http.Client {
 	if err != nil || proxy == nil {
 		return c.HTTP
 	}
-	transport, err := proxy.Transport(c.base)
+	base := c.base
+	if base == nil {
+		// 兜底：Client 字面量构造（测试/第三方）没走 NewClient 时不能崩。
+		typed, ok := c.HTTP.Transport.(*http.Transport)
+		if !ok {
+			return c.HTTP
+		}
+		base = typed
+	}
+	transport, err := proxy.Transport(base)
 	if err != nil || transport == nil {
 		return c.HTTP
 	}

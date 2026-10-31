@@ -31,6 +31,7 @@ type proxyAccountRef struct {
 }
 
 type proxyUsageView struct {
+	ID       string            `json:"id"`
 	Proxy    string            `json:"proxy"`
 	Count    int               `json:"count"`
 	Accounts []proxyAccountRef `json:"accounts"`
@@ -65,7 +66,7 @@ func (s *Server) handleProxiesList(w http.ResponseWriter, r *http.Request) {
 			direct++
 			continue
 		}
-		key := egress.Mask(account.Proxy)
+		key := strings.TrimSpace(account.Proxy)
 		grouped[key] = append(grouped[key], proxyAccountRef{
 			ID:      account.ID,
 			Label:   account.Label,
@@ -74,9 +75,14 @@ func (s *Server) handleProxiesList(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	used := make([]proxyUsageView, 0, len(grouped))
-	for proxy, list := range grouped {
+	for raw, list := range grouped {
 		sort.Slice(list, func(i, j int) bool { return list[i].Label < list[j].Label })
-		used = append(used, proxyUsageView{Proxy: proxy, Count: len(list), Accounts: list})
+		used = append(used, proxyUsageView{
+			ID:       proxies.ID(raw),
+			Proxy:    egress.Mask(raw),
+			Count:    len(list),
+			Accounts: list,
+		})
 	}
 	sort.Slice(used, func(i, j int) bool { return used[i].Proxy < used[j].Proxy })
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{

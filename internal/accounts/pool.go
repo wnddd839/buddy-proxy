@@ -826,6 +826,11 @@ func (p *Pool) Upsert(account Account) (Account, Store, error) {
 			normalized.QuotaUnlimited = existing.QuotaUnlimited
 			normalized.QuotaResetAt = existing.QuotaResetAt
 			normalized.QuotaCheckedAt = existing.QuotaCheckedAt
+			// 导入数据里没有出口字段时保留原绑定：重新导入不该把号扔回本机 IP。
+			// 要解绑请走 POST /accounts/{id}/proxy {clear:true}。
+			if strings.TrimSpace(normalized.Proxy) == "" {
+				normalized.Proxy = existing.Proxy
+			}
 			store.Accounts[i] = normalized
 			replaced = true
 			break

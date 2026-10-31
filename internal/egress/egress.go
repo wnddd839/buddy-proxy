@@ -76,7 +76,7 @@ func Parse(raw string) (*Proxy, error) {
 			port = "1080"
 		}
 	}
-	if _, err := strconv.Atoi(port); err != nil {
+	if n, err := strconv.Atoi(port); err != nil || n <= 0 || n > 65535 {
 		return nil, fmt.Errorf("egress: %q 端口非法", Mask(trimmed))
 	}
 	p.Host, p.Port = host, port
@@ -167,7 +167,7 @@ func (p *Proxy) DialContext(ctx context.Context, network, addr string) (net.Conn
 	} else {
 		_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	}
-	if err := p.handshake(conn, network, addr); err != nil {
+	if err := p.handshake(ctx, conn, network, addr); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func (p *Proxy) DialContext(ctx context.Context, network, addr string) (net.Conn
 	return conn, nil
 }
 
-func (p *Proxy) handshake(conn net.Conn, network, addr string) error {
+func (p *Proxy) handshake(ctx context.Context, conn net.Conn, network, addr string) error {
 	// 1) 问候：声明支持的认证方式。
 	methods := []byte{0x00} // 无认证
 	if p.User != "" {
@@ -229,7 +229,7 @@ func (p *Proxy) handshake(conn net.Conn, network, addr string) error {
 		req = append(req, ip.To16()...)
 	default:
 		if !p.RemoteDNS {
-			resolved, err := net.DefaultResolver.LookupHost(context.Background(), host)
+			resolved, err := net.DefaultResolver.LookupHost(ctx, host)
 			if err != nil || len(resolved) == 0 {
 				return fmt.Errorf("egress: 本地解析 %q 失败: %w", host, err)
 			}

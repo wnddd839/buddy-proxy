@@ -1090,19 +1090,7 @@ func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, pat
 			httputil.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		updated := oauth.AccountFromTokenData(token, strutil.First(selected.Site, s.Svc.Config().Site), selected.Label)
-		updated.ID = selected.ID
-		updated.Enabled = selected.Enabled
-		updated.BaseURL = selected.BaseURL
-		updated.InternetEnvironment = selected.InternetEnvironment
-		updated.APIEndpoint = selected.APIEndpoint
-		updated.ChatCompletionsPath = selected.ChatCompletionsPath
-		updated.Transport = selected.Transport
-		updated.CreatedAt = selected.CreatedAt
-		updated.SuccessRequests = selected.SuccessRequests
-		updated.FailedRequests = selected.FailedRequests
-		updated.LastUsedAt = selected.LastUsedAt
-		updated.LastSelectedAt = selected.LastSelectedAt
+		updated := gateway.MergeRefreshedToken(selected, token)
 		saved, store, err := s.Svc.Pool.ReplaceAccount(updated)
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
