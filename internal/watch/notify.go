@@ -76,11 +76,16 @@ func (c SMTPConfig) Enabled() bool {
 
 // SMTPNotifier 通过 SMTP 发告警邮件。
 type SMTPNotifier struct {
-	cfg SMTPConfig
+	cfg      SMTPConfig
+	adminURL string
 }
 
 // NewSMTPNotifier 构造邮件投递器。
 func NewSMTPNotifier(cfg SMTPConfig) *SMTPNotifier {
+	return newSMTPNotifier(cfg, "")
+}
+
+func newSMTPNotifier(cfg SMTPConfig, adminURL string) *SMTPNotifier {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 20 * time.Second
 	}
@@ -91,7 +96,7 @@ func NewSMTPNotifier(cfg SMTPConfig) *SMTPNotifier {
 			cfg.Mode = "starttls"
 		}
 	}
-	return &SMTPNotifier{cfg: cfg}
+	return &SMTPNotifier{cfg: cfg, adminURL: adminURL}
 }
 
 // Notify 实现 Notifier。
@@ -99,7 +104,7 @@ func (s *SMTPNotifier) Notify(_ context.Context, ev Event) error {
 	if s == nil || !s.cfg.Enabled() {
 		return nil
 	}
-	subject, body := renderMail(ev)
+	subject, body := renderMail(ev, s.adminURL)
 	msg := buildMessage(s.cfg.From, s.cfg.To, subject, body)
 
 	host, _, err := net.SplitHostPort(s.cfg.Addr)
@@ -200,7 +205,7 @@ func NewNotifier(cfg Config) Notifier {
 		chain = append(chain, NewWebhookNotifier(cfg.WebhookURL, cfg.WebhookToken, cfg.WebhookTimeout))
 	}
 	if cfg.SMTP.Enabled() {
-		chain = append(chain, NewSMTPNotifier(cfg.SMTP))
+		chain = append(chain, newSMTPNotifier(cfg.SMTP, cfg.AdminURL))
 	}
 	if len(chain) == 0 {
 		return nil
@@ -208,7 +213,7 @@ func NewNotifier(cfg Config) Notifier {
 	return chain
 }
 
-func renderMail(ev Event) (subject, body string) {
+func renderMail(ev Event, adminURL string) (subject, body string) {
 	tag := "告警"
 	switch ev.Kind {
 	case "recover":
@@ -232,8 +237,19 @@ func renderMail(ev Event) (subject, body string) {
 		ev.Metrics.ReasoningMissed, ev.Metrics.ReasoningAsked,
 		ev.Metrics.ReasoningMissRate*100, ev.Metrics.BaselineMissRate*100)
 	fmt.Fprintf(&b, "  耗时 P50      %dms（基线 %dms）\n", ev.Metrics.LatencyP50, ev.Metrics.BaselineLatencyP50)
+	b.WriteString("\n排查：\n")
+	if adminURL != "" {
+		fmt.Fprintf(&b, "  1) 管理台概览页的「波动监测」条：%s\n", adminURL)
+		b.WriteString("  2) 进程日志：journalctl -u <服务名> | grep 'watch:'\n")
+	} else {
+		b.WriteString("  1) 进程日志：journalctl -u <服务名> | grep 'watch:'\n")
+	}
+	b.WriteString("  3) 换一个问法手动打一发（不要复用同一句），看 reasoning_content 与 reasoning_tokens\n")
+	b.WriteString("\n对号入座：\n")
+	b.WriteString("  · 502 且上游返回 403 code 11140 → 上游把重复/相似请求判为 illegal，不是网关故障\n")
+	b.WriteString("  · 200 但没有 reasoning → 上游降档或模型默认关闭思考\n")
+	b.WriteString("  · 只有推理 token 下降、内容仍在 → 账号切换或降档，不是服务宕机\n")
 	b.WriteString("\n判定依据：所有指标都相对本进程自身的滚动基线比较，不是固定阈值。\n")
-	b.WriteString("若只有推理缺失、HTTP 仍 200，多为上游降档或账号切换，不是服务宕机。\n")
 	return subject, b.String()
 }
 

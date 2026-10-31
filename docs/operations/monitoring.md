@@ -115,6 +115,27 @@ CODEBUDDY_PROXY_WATCH_SMTP_MODE=implicit   # implicit（465）| starttls（587�
 `watch.ok=false` **不会**改变 `/health` 的 HTTP 状态码——网关进程本身是健康的，
 把 503 抛给负载均衡只会让故障被放大。需要机器可读判据时读 `watch.ok`。
 
+### 告警邮件长什么样
+
+邮件正文除了指标，还带**可直接使用的排查入口**和**对号入座清单**，因为"哪个指标越线"和"根因是什么"不是一回事：
+
+```
+排查：
+  1) 管理台概览页的「波动监测」条：https://<你的域名>/direct-admin/
+  2) 进程日志：journalctl -u <服务名> | grep 'watch:'
+  3) 换一个问法手动打一发（不要复用同一句）
+
+对号入座：
+  · 502 且上游返回 403 code 11140 → 上游把重复/相似请求判为 illegal，不是网关故障
+  · 200 但没有 reasoning → 上游降档或模型默认关闭思考
+  · 只有推理 token 下降、内容仍在 → 账号切换或降档，不是服务宕机
+```
+
+> 为什么强调"换一个问法"：上游会对**完全相同的请求**返回 `403 request illegal (code 11140)`。
+> 用固定 prompt 做定时探活，探针自己就会被判成重复请求，报出来的"故障"是假的。
+
+管理台地址优先取 `CODEBUDDY_PROXY_PUBLIC_BASE_URL`，没配则回落到 `http://127.0.0.1:<PORT>/direct-admin/`。
+
 ## webhook 载荷
 
 ```json

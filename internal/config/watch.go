@@ -24,6 +24,8 @@ func loadWatchConfig() watch.Config {
 	cfg.LatencyFactor = envFloat("CODEBUDDY_PROXY_WATCH_LATENCY_FACTOR", cfg.LatencyFactor)
 	cfg.Reminder = envDurationText("CODEBUDDY_PROXY_WATCH_REMINDER", cfg.Reminder)
 
+	cfg.AdminURL = watchAdminURL()
+
 	cfg.WebhookURL = firstEnv("CODEBUDDY_PROXY_WATCH_WEBHOOK")
 	cfg.WebhookToken = firstEnv("CODEBUDDY_PROXY_WATCH_WEBHOOK_TOKEN")
 
@@ -45,6 +47,15 @@ func loadWatchConfig() watch.Config {
 		cfg.MinSample = watch.DefaultConfig().MinSample
 	}
 	return cfg
+}
+
+// watchAdminURL 给告警邮件里的排查入口用；优先公网地址，否则本机端口。
+func watchAdminURL() string {
+	if base := strings.TrimRight(firstEnv("CODEBUDDY_PROXY_PUBLIC_BASE_URL", "CURSOR_DIRECT_PUBLIC_BASE_URL"), "/"); base != "" {
+		return base + "/direct-admin/"
+	}
+	port := envInt("CODEBUDDY_PROXY_PORT", "CURSOR_DIRECT_PORT", DefaultPort)
+	return "http://127.0.0.1:" + strconv.Itoa(port) + "/direct-admin/"
 }
 
 func envPositiveInt(key string, def int) int {

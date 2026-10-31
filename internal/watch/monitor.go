@@ -55,6 +55,8 @@ type Config struct {
 
 	// SMTP 邮件通道（可选，与 webhook 可同时启用）。
 	SMTP SMTPConfig
+	// AdminURL 是管理台地址，只用于邮件正文里的排查入口（可空）。
+	AdminURL string
 }
 
 // DefaultConfig 给出保守的默认值：宁可漏报，不要误报。

@@ -46,6 +46,18 @@ func TestLoadWatchConfigFromEnv(t *testing.T) {
 	}
 }
 
+func TestWatchAdminURL(t *testing.T) {
+	t.Setenv("CODEBUDDY_PROXY_PUBLIC_BASE_URL", "https://gw.example.com/")
+	if got := watchAdminURL(); got != "https://gw.example.com/direct-admin/" {
+		t.Fatalf("public base should win, got %q", got)
+	}
+	t.Setenv("CODEBUDDY_PROXY_PUBLIC_BASE_URL", "")
+	t.Setenv("CODEBUDDY_PROXY_PORT", "33221")
+	if got := watchAdminURL(); got != "http://127.0.0.1:33221/direct-admin/" {
+		t.Fatalf("should fall back to loopback with the real port, got %q", got)
+	}
+}
+
 func TestEnvRatioClamps(t *testing.T) {
 	t.Setenv("TEST_RATIO", "0")
 	if got := envRatio("TEST_RATIO", 0.25); got != 0.25 {
