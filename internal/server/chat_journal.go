@@ -37,6 +37,8 @@ func (s *Server) recordChatJournal(
 		Ok:             ok,
 		ErrMsg:         strings.TrimSpace(errMsg),
 		Usage:          usage,
+		ReasoningRequested: strings.TrimSpace(opts.ReasoningEffort) != "" ||
+			len(opts.Reasoning) > 0 || len(opts.Thinking) > 0,
 	}
 	if result != nil {
 		input.Trace = result.Trace

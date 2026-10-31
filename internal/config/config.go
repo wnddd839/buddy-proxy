@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wnddd839/codebuddy-proxy/internal/watch"
 )
 
 const (
@@ -59,6 +61,9 @@ type Config struct {
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
 	DefaultModels       []string
+
+	// Watch 是进程内波动监测配置（见 internal/watch）。
+	Watch watch.Config
 }
 
 func Load() Config {
@@ -88,6 +93,7 @@ func Load() Config {
 		MaxIdleConnsPerHost: DefaultMaxIdleConnsPerHost,
 		IdleConnTimeout:     DefaultIdleConnTimeout,
 		DefaultModels:       []string{"auto"},
+		Watch:               loadWatchConfig(),
 	}
 
 	// 管理台密码为空则开放管理页（本地友好）。

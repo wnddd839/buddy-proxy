@@ -36,6 +36,9 @@ curl -fsS http://127.0.0.1:32126/readyz
 # 探测有 20s 缓存；管理台切 SITE / 产品会立刻清空。
 ```
 
+`/health` 的 `watch` 段（开启 `CODEBUDDY_PROXY_WATCH=on` 后出现）给出推理缺失率、错误率与耗时基线，
+详见 [波动监测与告警](monitoring.md)。
+
 管理台 **05 / 用量与明细**（`#usage`）展示请求日志；默认持久化到 `CODEBUDDY_PROXY_USAGE_PATH`（缺省与账号池同目录的 `proxy-usage.json`）。`GET /direct-admin/api/usage` 见 `docs/api/http.md`。
 
 ## 日志

@@ -50,6 +50,11 @@ func main() {
 	}
 
 	svc := gateway.New(cfg, logger)
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	defer stopWatch()
+	if svc.Watch != nil {
+		go svc.Watch.Run(watchCtx)
+	}
 	srv := server.New(cfg, svc)
 
 	printStartupBanner(cfg, generatedKey)
