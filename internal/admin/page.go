@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.10.20-attention-account-menu"
+const UIRevision = "2026.10.31-account-import"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -142,6 +142,14 @@ h1{
 .lede{margin:0;color:var(--fg-60);font-size:13.5px;line-height:1.6;max-width:52ch}
 .checkin-hint{margin:12px 0 0;font-size:11.5px;line-height:1.5;color:var(--fg-40);max-width:58ch}
 .checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
+/* 批量导入：粘贴/选文件，避免手改 accounts.json */
+#importText{
+  width:100%;margin:4px 0 12px;padding:10px 12px;border:1px solid var(--fg-20);
+  background:transparent;color:var(--fg);font-family:var(--mono);font-size:11.5px;
+  line-height:1.6;resize:vertical;min-height:120px;outline:none;
+}
+#importText:focus{border-color:var(--fg-40)}
+.import-panel .actions{margin:0 0 8px}
 .test-model-label{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-60);white-space:nowrap}
 .test-model-label select{min-width:160px;font-size:13px}
 .metrics{
@@ -529,6 +537,36 @@ pre{
         <p class="checkin-hint" id="poolTestHint">对当前号池已启用账号发最小 chat，验证可用性与延迟；默认选最低倍率模型。</p>
         <pre class="checkin-detail" id="checkinRaw" hidden></pre>
         <pre class="checkin-detail" id="poolTestRaw" hidden></pre>
+
+        <details class="raw import-panel" id="importPanel">
+          <summary>批量导入账号</summary>
+          <div style="padding:0 14px 14px">
+            <p class="checkin-hint" style="margin-top:0">支持 CodeBuddy 客户端凭据、本程序账号池文件、<code>account + auth</code> 包装；按域名自动识别站点，重复账号会被更新而不是新增。</p>
+            <div class="field-grid">
+              <div>
+                <label for="importSite">站点</label>
+                <select id="importSite">
+                  <option value="">自动识别（按域名）</option>
+                  <option value="domestic">国内站 · domestic</option>
+                  <option value="global">国际站 · global</option>
+                </select>
+              </div>
+              <div>
+                <label for="importLabel">标签前缀</label>
+                <input id="importLabel" placeholder="可选，例如：备用号" />
+              </div>
+            </div>
+            <textarea id="importText" spellcheck="false" placeholder='粘贴 JSON，例如：
+[{"uid":"…","nickname":"…","domain":"www.codebuddy.cn","access_token":"…","refresh_token":"…","expires_at":1795951021000}]'></textarea>
+            <div class="actions">
+              <input type="file" id="importFile" accept=".json,application/json" hidden />
+              <button class="ghost" id="btnImportPick" type="button">选择文件…</button>
+              <button class="primary" id="btnImport" type="button">导入</button>
+            </div>
+            <pre class="checkin-detail" id="importResult" hidden></pre>
+          </div>
+        </details>
+
         <div id="accounts"></div>
       </div>
     </section>
@@ -1789,6 +1827,37 @@ async function startOAuth(){
   if (url && url !== '#') window.open(url, '_blank', 'noopener');
 }
 
+async function runImport(){
+  const text = ($('importText').value || '').trim();
+  if (!text) { showToast('先粘贴或选择账号 JSON', 'error'); return; }
+  const btn = $('btnImport');
+  btn.disabled = true; btn.textContent = '导入中…';
+  const out = $('importResult'); out.hidden = false; out.textContent = '正在导入…';
+  try {
+    const data = await api('/direct-admin/api/codebuddy/accounts/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        text: text,
+        site: $('importSite').value || '',
+        label: ($('importLabel').value || '').trim()
+      })
+    });
+    const lines = (data.results || []).map(function(r){
+      const tag = r.status === 'added' ? '新增' : (r.status === 'updated' ? '更新' : '失败');
+      return '  [' + tag + '] ' + (r.label || r.id || ('#' + r.index)) + (r.site ? (' · ' + r.site) : '') + (r.error ? (' — ' + r.error) : '');
+    });
+    out.textContent = '新增 ' + (data.added||0) + ' / 更新 ' + (data.updated||0) + ' / 失败 ' + (data.failed||0) + '\n' + lines.join('\n');
+    showToast('导入完成：新增 ' + (data.added||0) + '，更新 ' + (data.updated||0) + (data.failed ? ('，失败 ' + data.failed) : ''), data.failed ? 'error' : undefined);
+    if (data.ok) $('importText').value = '';
+    await refreshStatus();
+  } catch (e) {
+    out.textContent = '导入失败：' + (e.message || e);
+    showToast('导入失败：' + (e.message || e), 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '导入';
+  }
+}
+
 async function pollOAuth(){
   $('oauthMsg').textContent = '正在检查登录…';
   const data = await api('/direct-admin/api/codebuddy/oauth/poll', {method:'POST', body:'{}'});
@@ -1891,6 +1960,17 @@ if ($('btnPoolTest')) $('btnPoolTest').onclick = function(){ runPoolChatTest().c
 if ($('btnModels')) $('btnModels').onclick = function(){ refreshModels().catch(function(e){ $('modelsRaw').textContent = e.message; $('modelChips').innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>'; }); };
 if ($('btnGoAccounts')) $('btnGoAccounts').onclick = function(){ switchTab('tab-pool'); };
 $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
+$('btnImport').onclick = function(){ runImport().catch(function(e){ showToast(String(e), 'error'); }); };
+$('btnImportPick').onclick = function(){ $('importFile').click(); };
+$('importFile').onchange = function(){
+  const file = this.files && this.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(){ $('importText').value = String(reader.result || ''); showToast('已载入 ' + file.name); };
+  reader.onerror = function(){ showToast('读取文件失败', 'error'); };
+  reader.readAsText(file);
+  this.value = '';
+};
 $('btnPoll').onclick = function(){ pollOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 $('btnRefreshClient').onclick = function(){ refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); }); };
 $('btnGenerateKey').onclick = function(){ generateApiKey().catch(function(e){ showToast(e.message, 'error'); }); };

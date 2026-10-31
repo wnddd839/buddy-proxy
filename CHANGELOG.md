@@ -5,6 +5,20 @@
 
 ---
 
+## v0.7.1 · 2026-10-31 · 账号批量导入
+
+- 管理台「账号池」新增**批量导入**：粘贴文本或直接选择 JSON 文件，一次写入多个账号。
+- 自动识别三类来源，可混在同一份文本里：
+  - CodeBuddy 客户端凭据 `[{"uid","nickname","domain","access_token","refresh_token","expires_at"}]`
+  - 本程序的账号池文件 `{"version":1,"accounts":[…]}`（可用于整池迁移）
+  - `{"account":{…},"auth":{…}}` 包装形态
+- 站点按 `domain` / `realm` 自动推断（`*.codebuddy.cn` / `*.workbuddy.cn` → domestic，其余 → global），也可在界面上强制指定；`expires_at` 的秒与毫秒两种写法都会归一成毫秒。
+- 去重按凭据哈希 与 `userId + site` 判定：同一账号重复导入是**更新**而不是新增，不会污染号池。
+- 新增 `POST /direct-admin/api/codebuddy/accounts/import`，返回 `added / updated / failed` 与逐条明细，前端直接展示。
+- 新增 `internal/accountimport` 包与 7 组解析用例、3 组接口用例。
+
+---
+
 ## v0.6.3 · 2026-10-20 · 模型级限频与管理台整理
 
 - 将上游 6004 / `rate-model` 限频按模型记录冷却，避免一个模型触发限频后误停同账号上的其他模型；同会话软钉遇到当前模型冷却时松钉并尝试其他账号，固定账号 Key 仍保持固定。
