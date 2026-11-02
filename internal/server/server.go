@@ -87,13 +87,17 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 	mux.HandleFunc("HEAD /direct-admin/codebuddy/oauth/callback", s.handleOAuthCallback)
 	mux.HandleFunc("/direct-admin/api/", s.handleAdminAPIEntry)
 	mux.HandleFunc("/", s.handleFallback)
+	idleTimeout := cfg.ServerIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 120 * time.Second
+	}
 	s.HTTP = &http.Server{
 		Addr:              cfg.Addr(),
 		Handler:           recoverHandler(svc.Log, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       0,
 		WriteTimeout:      0,
-		IdleTimeout:       120 * time.Second,
+		IdleTimeout:       idleTimeout,
 	}
 	return s
 }
