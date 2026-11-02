@@ -449,6 +449,7 @@ usage chunk 形如：
 |--------|------|------|
 | GET | `/direct-admin/api/codebuddy/status` | 账号池摘要 |
 | GET | `/direct-admin/api/codebuddy/accounts` | 账号列表 |
+| POST | `/direct-admin/api/codebuddy/accounts/import` | 批量导入账号。body `{"text":"<JSON 文本>","site":"domestic\|global","label":"可选前缀"}`；自动识别 CodeBuddy 客户端凭据 / 账号池文件 / `account+auth` 包装，按凭据去重并返回逐条结果 |
 | DELETE | `/direct-admin/api/codebuddy/accounts/{id}` | 删除账号 |
 | POST | `/direct-admin/api/codebuddy/accounts/{id}/enable` | 启用 |
 | POST | `/direct-admin/api/codebuddy/accounts/{id}/disable` | 禁用 |

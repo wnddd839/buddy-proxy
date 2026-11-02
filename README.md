@@ -40,6 +40,8 @@ kiro-proxy 已发布
 - [@kylstwang](https://github.com/kylstwang) · [#37](https://github.com/wnddd839/buddy-proxy/issues/37) Linux ARM 路由器运行与预编译发行包需求
 - [@kouekikin24](https://github.com/kouekikin24) · [#45](https://github.com/wnddd839/buddy-proxy/issues/45) 输出 token 上限静默失效（附国内/国际仅改字段名的上游对照与修复验证）
 
+特别感谢本版功能贡献：[@240xu](https://github.com/240xu) 的 [#48](https://github.com/wnddd839/buddy-proxy/pull/48) 波动监测、[#49](https://github.com/wnddd839/buddy-proxy/pull/49) 批量导入和 [#50](https://github.com/wnddd839/buddy-proxy/pull/50) 固定出口，以及 [@kouekikin24](https://github.com/kouekikin24) 的 [#44](https://github.com/wnddd839/buddy-proxy/pull/44) 流重试保护。v0.7.0 在原 PR 基础上适配整合并修复已确认问题；未直接合并原 PR 不影响贡献归属。
+
 ---
 
 ## 一件事
@@ -68,6 +70,8 @@ kiro-proxy 已发布
 | **官方搜索能力** | Chat 显式传 `web_search_options:{}`，Responses 显式声明 `web_search`，由代理执行官方搜索闭环；不声明不搜索。另有 `/v1/search`、`/v1/webfetch`、`/v1/agentic_search`。使用账号官方权限及配额，不接独立第三方搜索服务，详见[下游接入](docs/guides/search.md) |
 | **多账号调度** | 同会话钉在同一账号；钉号被禁用/删除会换号。新会话按额度快照选最大（缺快照或超过 5 分钟才探活）；失败换号前再探活拿最大。6004 / `rate-model` 按模型冷却，并按 `will reset at` 自动恢复，不阻断同账号其他模型。固定账号 Key 不换号。凭据以 `0600` 权限落盘 |
 | **真实余额** | 管理台直读官网 Credits，显示「剩余 / 总额」 |
+| **批量导入与固定出口** | 账号池粘贴客户端凭据或账号池 JSON，重复账号更新、错误逐条显示；支持按账号绑定 HTTP / HTTPS / SOCKS5 / SOCKS5h 出口、维护候选与均衡分配，代理失效不回退直连 |
+| **可选波动监测** | 观测真实请求的错误率、推理缺失与耗时，支持日志、webhook 和 SMTP；默认关闭，见[配置说明](docs/operations/monitoring.md) |
 | **国内 / 国际** | 同一进程可同时持有两区账号。默认区域可在管理台切换；单请求用 Key 绑定、`X-Site` 或 `cn:` / `global:` 前缀选区。**端点以账号自身区域为准** |
 | **CodeBuddy / WorkBuddy** | 一键切产品：CodeBuddy 走 CLI 头，WorkBuddy 走 IDE 头；模型目录随之切换 |
 | **模型列表** | 走协议 `/v3/config`，60 秒缓存，可强制刷新 |
@@ -112,7 +116,9 @@ chmod +x ./codebuddy-proxy-linux-amd64
 
 运行中的实例可在管理台顶栏下方点「检查更新 / 更新并重启」，仅从官方 GitHub Release 下载并按 `SHA256SUMS.txt` 校验，成功后自动重启并回连；下载校验失败或新版本启动失败时保留/回滚旧程序。改动只替换可执行文件，不会覆盖 `.env`、账号池或用量文件。**首个带更新器的版本仍需手动升级一次**；Docker 部署请用镜像更新（`docker compose pull && docker compose up -d`）。
 
-当前正式版为 **v0.6.3**。从该版本起，6004 / `rate-model` 冷却按上游模型分别记录；限频某个模型不会阻断同一账号上的其他模型。v0.6.2 起更新器优先通过官方 Release 网页发现版本，避免共享代理出口耗尽匿名 API 额度。v0.6.1 如遇检查更新 HTTP 403，请手动升级到 v0.6.2 或更新版本。
+当前正式版为 **v0.7.0**，新增可选波动监测、账号批量导入和账号固定出口，并修复流重试与截断工具参数处理。保留 v0.6.3 的模型级冷却和现有管理台布局。v0.6.2 起更新器优先通过官方 Release 网页发现版本，避免共享代理出口耗尽匿名 API 额度。v0.6.1 如遇检查更新 HTTP 403，请手动升级到 v0.6.2 或更新版本。
+
+未绑定账号出口时沿用进程默认网络配置（包括 `HTTP_PROXY` / `HTTPS_PROXY`）；出口检测中的直连对照会忽略这些环境代理。代理 URL 含凭据时请保管好账号池和同目录 `proxies.json`。
 
 正式发行版的版本号由构建时的 Release tag 注入；源码直接构建默认显示 `dev`。
 

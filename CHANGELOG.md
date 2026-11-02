@@ -5,7 +5,7 @@
 
 ---
 
-## v0.7.0 · 2026-10-31 · 波动监测与告警
+## v0.7.0 · 2026-11-02 · 监测、批量导入与固定出口
 
 - 新增 `internal/watch`：从真实请求流取样，按进程自身滚动基线判断「错误率 / 推理字段缺失率 / 响应耗时」是否异常，不额外发探针请求、不消耗上游额度。
 - 只统计客户端**明确要求推理**的请求（`reasoning_effort` / `reasoning` / `thinking`），避免客户端本就不需要思考时误报「思考消失」。
@@ -15,6 +15,22 @@
 - 管理台概览新增「波动监测」条：状态 + 错误率 / 推理缺失 / 耗时 P50 / 样本数，未启用时不占位。
 - `/health` 增加 `watch` 段（`enabled` / `ok` / `reasons` / `metrics`）。该段**不改变 HTTP 状态码**——进程存活与业务退化分开表达，避免负载均衡把网关整体摘除。
 - 默认关闭，用 `CODEBUDDY_PROXY_WATCH=on` 开启；参数、载荷格式与排查建议见 `docs/operations/monitoring.md`。
+- 管理台「账号池」工具栏新增**一键导入**按钮：点开弹窗、粘贴 JSON、点「导入」即完成，一次可写入多个账号。
+- 自动识别三类来源，可混在同一份文本里：
+  - CodeBuddy 客户端凭据 `[{"uid","nickname","domain","access_token","refresh_token","expires_at"}]`
+  - 本程序的账号池文件 `{"version":1,"accounts":[…]}`（可用于整池迁移）
+  - `{"account":{…},"auth":{…}}` 包装形态
+- 站点按 `domain` / `realm` 自动推断（`*.codebuddy.cn` / `*.workbuddy.cn` → domestic，其余 → global），也可在界面上强制指定；`expires_at` 的秒与毫秒两种写法都会归一成毫秒。
+- 去重按凭据哈希 与 `userId + site` 判定：同一账号重复导入是**更新**而不是新增，不会污染号池。
+- 新增 `POST /direct-admin/api/codebuddy/accounts/import`，返回 `added / updated / failed` 与逐条明细，前端直接展示。
+- 弹窗交互：打开即聚焦输入框、`Esc`/点遮罩/取消关闭、导入成功自动收起、失败留在弹窗内逐条显示原因；不引入任何前端依赖。
+- 新增 `internal/accountimport` 包与 7 组解析用例、3 组接口用例。
+
+- 新增账号固定出口绑定、代理候选清单、出口检测和均衡分配，支持 HTTP / HTTPS / SOCKS5 / SOCKS5h；无效代理拒绝使用，不回退直连。
+- 修复流重试预算与交付状态：已发出的正文或工具增量不再重放，截断工具参数不伪装成成功完成。
+- 修复监测基线污染、取消请求和关闭推理导致的误报；SMTP 投递支持超时与取消。
+- 批量导入保留未提供的旧账户字段，逐条报告错误，正确统计新增与更新。
+- 感谢 [@240xu](https://github.com/240xu) 提供 #48、#49、#50，感谢 [@kouekikin24](https://github.com/kouekikin24) 提供 #44。本版在原 PR 基础上适配整合并修复已确认问题。
 
 ---
 

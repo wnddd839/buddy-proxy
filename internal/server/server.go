@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wnddd839/codebuddy-proxy/internal/accountimport"
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/admin"
 	"github.com/wnddd839/codebuddy-proxy/internal/billing"
@@ -901,6 +902,12 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		}
 		httputil.WriteJSON(w, http.StatusOK, listed)
 		return
+	// 一键导入：接受多种来源的凭据文本（CodeBuddy 客户端快照 / 账号池文件 /
+	// account+auth 包装），逐条 upsert。放在 accounts/{id} 分支之前，避免
+	// "import" 被当成账号 ID。
+	case path == "/direct-admin/api/codebuddy/accounts/import" && r.Method == http.MethodPost:
+		s.handleAccountsImport(w, r)
+		return
 	// Batch check-in for enabled accounts. Defaults to the active pool site so the
 	// button follows CODEBUDDY_SITE; optional body {"site":"domestic"} overrides it.
 	case path == "/direct-admin/api/codebuddy/checkin" && r.Method == http.MethodPost:
@@ -953,6 +960,122 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		return
 	}
 	httputil.WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "unknown admin api"})
+}
+
+// handleAccountsImport 解析并写入账号池。
+//
+// body: {"text":"<原始 JSON 文本>","site":"domestic|global","label":"可选前缀"}
+// 返回逐条结果，便于前端展示「新增 / 更新 / 失败」。
+func (s *Server) handleAccountsImport(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Text  string `json:"text"`
+		Site  string `json:"site"`
+		Label string `json:"label"`
+	}
+	if err := httputil.ReadJSON(r, &body); err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(body.Text) == "" {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "text 不能为空"})
+		return
+	}
+
+	parsed, err := accountimport.Parse([]byte(body.Text), accountimport.Options{
+		Site:  config.OptionalSite(body.Site),
+		Label: body.Label,
+	})
+	if err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
+	store, err := s.Svc.Pool.Read()
+	if err != nil {
+		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	known := map[string]accounts.Account{}
+	remember := func(item accounts.Account) {
+		known[item.ID] = item
+		if item.CredentialHash != "" {
+			known["h:"+item.CredentialHash] = item
+		}
+		if item.AuthStatus.UserID != "" {
+			known["u:"+item.AuthStatus.UserID+"|"+config.NormalizeSite(item.Site)] = item
+		}
+	}
+	for _, item := range store.Accounts {
+		remember(item)
+	}
+
+	type importResult struct {
+		Index  int    `json:"index"`
+		ID     string `json:"id,omitempty"`
+		Label  string `json:"label,omitempty"`
+		Site   string `json:"site,omitempty"`
+		Status string `json:"status"` // added | updated | failed
+		Error  string `json:"error,omitempty"`
+	}
+	results := make([]importResult, 0, len(parsed))
+	added, updated, failed := 0, 0, 0
+	var latest accounts.Store
+	for _, candidate := range parsed {
+		if candidate.Err != nil {
+			failed++
+			results = append(results, importResult{Index: candidate.Index, Status: "failed", Error: candidate.Err.Error()})
+			continue
+		}
+		existing := known[candidate.ID]
+		if existing.ID == "" && candidate.CredentialHash != "" {
+			existing = known["h:"+candidate.CredentialHash]
+		}
+		if existing.ID == "" && candidate.AuthStatus.UserID != "" {
+			existing = known["u:"+candidate.AuthStatus.UserID+"|"+config.NormalizeSite(candidate.Site)]
+		}
+		existed := existing.ID != ""
+		var saved accounts.Account
+		var snapshot accounts.Store
+		var upsertErr error
+		if existed {
+			saved, snapshot, upsertErr = s.Svc.Pool.UpdateAccount(existing.ID, candidate.Merge)
+		} else {
+			saved, snapshot, upsertErr = s.Svc.Pool.Upsert(candidate.Account)
+		}
+		if upsertErr != nil {
+			failed++
+			results = append(results, importResult{Index: candidate.Index, Status: "failed", Error: upsertErr.Error()})
+			continue
+		}
+		latest = snapshot
+		status := "added"
+		if existed {
+			status = "updated"
+			updated++
+		} else {
+			added++
+		}
+		remember(saved)
+		results = append(results, importResult{
+			Index:  candidate.Index,
+			ID:     saved.ID,
+			Label:  saved.Label,
+			Site:   config.NormalizeSite(saved.Site),
+			Status: status,
+		})
+	}
+
+	if latest.Accounts == nil {
+		latest, _ = s.Svc.Pool.Read()
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":       failed == 0,
+		"added":    added,
+		"updated":  updated,
+		"failed":   failed,
+		"results":  results,
+		"accounts": accounts.SummarizeStore(latest, s.Svc.Pool.Path()),
+	})
 }
 
 func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, path string) {

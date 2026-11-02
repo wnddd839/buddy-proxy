@@ -142,7 +142,7 @@ h1{
 .lede{margin:0;color:var(--fg-60);font-size:13.5px;line-height:1.6;max-width:52ch}
 .checkin-hint{margin:12px 0 0;font-size:11.5px;line-height:1.5;color:var(--fg-40);max-width:58ch}
 .checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
-/* 弹窗（出口设置） */
+/* 账号导入与出口设置弹窗 */
 .modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.6)}
 .modal[hidden]{display:none}
 .modal-card{
@@ -153,6 +153,12 @@ h1{
 .modal-head h3{margin:0;font-size:15px;font-weight:600;letter-spacing:.02em}
 .modal-x{border:none;background:transparent;color:var(--fg-40);font-size:22px;line-height:1;cursor:pointer;padding:0 2px}
 .modal-x:hover{color:var(--fg)}
+#importText{
+  width:100%;margin:10px 0 12px;padding:10px 12px;border:1px solid var(--fg-20);
+  background:transparent;color:var(--fg);font-family:var(--mono);font-size:11.5px;
+  line-height:1.6;resize:vertical;min-height:150px;outline:none;
+}
+#importText:focus{border-color:var(--fg-40)}
 .modal-row{display:flex;align-items:center;gap:10px}
 .modal-row label{margin:0;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg-40)}
 .modal-row select{width:auto;min-width:170px;font-size:13px;padding:6px 0}
@@ -568,6 +574,7 @@ pre{
         </div>
         <p class="seg-hint" id="poolSiteHint">当前号池：—</p>
         <div class="ops-row">
+          <button class="ghost" id="btnImportOpen" type="button">一键导入</button>
           <button class="ghost" id="btnCheckin" type="button" disabled aria-describedby="checkinHint">每日签到</button>
           <button class="ghost" id="btnPoolTest" type="button" disabled aria-describedby="poolTestHint">批量测试</button>
           <label class="test-model-label" for="testModelSelect">测试模型
@@ -858,6 +865,31 @@ pre{
       <button class="ghost" id="btnEgressCheck" type="button">检测</button>
       <button class="ghost" id="btnEgressCancel" type="button">取消</button>
       <button class="primary" id="btnEgressSave" type="button">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 一键导入：点按钮打开，弹窗里只有一个输入框 -->
+<div class="modal" id="importModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="importTitle">
+    <div class="modal-head">
+      <h3 id="importTitle">导入账号</h3>
+      <button class="modal-x" id="btnImportClose" type="button" aria-label="关闭">×</button>
+    </div>
+    <p class="checkin-hint" style="margin:6px 0 0">粘贴账号 JSON 即可（CodeBuddy 客户端凭据、账号池文件、<code>account + auth</code> 包装都认）。同账号按 userId + 站点更新，不会重复新增。</p>
+    <textarea id="importText" spellcheck="false" autocomplete="off" placeholder='[{&quot;uid&quot;:&quot;…&quot;,&quot;nickname&quot;:&quot;…&quot;,&quot;domain&quot;:&quot;www.codebuddy.cn&quot;,&quot;access_token&quot;:&quot;…&quot;,&quot;refresh_token&quot;:&quot;…&quot;,&quot;expires_at&quot;:1795951021000}]'></textarea>
+    <div class="modal-row">
+      <label for="importSite">站点</label>
+      <select id="importSite">
+        <option value="">自动识别（按域名）</option>
+        <option value="domestic">国内站 · domestic</option>
+        <option value="global">国际站 · global</option>
+      </select>
+    </div>
+    <pre class="checkin-detail" id="importResult" hidden></pre>
+    <div class="modal-actions">
+      <button class="ghost" id="btnImportCancel" type="button">取消</button>
+      <button class="primary" id="btnImport" type="button">导入</button>
     </div>
   </div>
 </div>
@@ -1907,6 +1939,51 @@ async function startOAuth(){
   if (url && url !== '#') window.open(url, '_blank', 'noopener');
 }
 
+function openImportModal(){
+  const out = $('importResult');
+  out.hidden = true; out.textContent = '';
+  $('importText').value = '';
+  $('importModal').hidden = false;
+  setTimeout(function(){ try { $('importText').focus(); } catch (e) {} }, 30);
+}
+
+function closeImportModal(){
+  $('importModal').hidden = true;
+}
+
+async function runImport(){
+  const text = ($('importText').value || '').trim();
+  if (!text) { showToast('先粘贴账号 JSON', 'error'); $('importText').focus(); return; }
+  const btn = $('btnImport');
+  btn.disabled = true; btn.textContent = '导入中…';
+  const out = $('importResult'); out.hidden = false; out.textContent = '正在导入…';
+  try {
+    const data = await api('/direct-admin/api/codebuddy/accounts/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        text: text,
+        site: ($('importSite') && $('importSite').value) || ''
+      })
+    });
+    const lines = (data.results || []).map(function(r){
+      const tag = r.status === 'added' ? '新增' : (r.status === 'updated' ? '更新' : '失败');
+      return '  [' + tag + '] ' + (r.label || r.id || ('#' + r.index)) + (r.site ? (' · ' + r.site) : '') + (r.error ? (' — ' + r.error) : '');
+    });
+    out.textContent = '新增 ' + (data.added||0) + ' / 更新 ' + (data.updated||0) + ' / 失败 ' + (data.failed||0) + '\n' + lines.join('\n');
+    showToast('导入完成：新增 ' + (data.added||0) + '，更新 ' + (data.updated||0) + (data.failed ? ('，失败 ' + data.failed) : ''), data.failed ? 'error' : undefined);
+    await refreshStatus();
+    if (data.ok) {
+      // 全部成功就收起弹窗，保持「一键」手感；有失败则留在弹窗里让人看原因。
+      setTimeout(closeImportModal, 700);
+    }
+  } catch (e) {
+    out.textContent = '导入失败：' + (e.message || e);
+    showToast('导入失败：' + (e.message || e), 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '导入';
+  }
+}
+
 async function pollOAuth(){
   $('oauthMsg').textContent = '正在检查登录…';
   const data = await api('/direct-admin/api/codebuddy/oauth/poll', {method:'POST', body:'{}'});
@@ -2197,6 +2274,14 @@ if ($('btnPoolTest')) $('btnPoolTest').onclick = function(){ runPoolChatTest().c
 if ($('btnModels')) $('btnModels').onclick = function(){ refreshModels().catch(function(e){ $('modelsRaw').textContent = e.message; $('modelChips').innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>'; }); };
 if ($('btnGoAccounts')) $('btnGoAccounts').onclick = function(){ switchTab('tab-pool'); };
 $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
+if ($('btnImportOpen')) $('btnImportOpen').onclick = openImportModal;
+if ($('btnImportClose')) $('btnImportClose').onclick = closeImportModal;
+if ($('btnImportCancel')) $('btnImportCancel').onclick = closeImportModal;
+if ($('importModal')) $('importModal').onclick = function(e){ if (e.target === this) closeImportModal(); };
+document.addEventListener('keydown', function(e){
+  if ((e.key === 'Escape' || e.key === 'Esc') && $('importModal') && !$('importModal').hidden) closeImportModal();
+});
+$('btnImport').onclick = function(){ runImport().catch(function(e){ showToast(String(e), 'error'); }); };
 $('btnPoll').onclick = function(){ pollOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 $('btnRefreshClient').onclick = function(){ refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); }); };
 $('btnGenerateKey').onclick = function(){ generateApiKey().catch(function(e){ showToast(e.message, 'error'); }); };
