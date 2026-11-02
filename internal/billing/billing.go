@@ -127,7 +127,7 @@ func fetchAccountUsage(ctx context.Context, client *provider.Client, account acc
 		"Status":          []int{0, 3},
 		"OnlyValidPeriod": true,
 	}
-	resourcePayload, err := postJSON(ctx, client.HTTP, resourceEndpoint, billingHeaders, resourceBody)
+	resourcePayload, err := postJSON(ctx, client.For(account.Proxy), resourceEndpoint, billingHeaders, resourceBody)
 	if err != nil {
 		return UsageResult{}, fmt.Errorf("CodeBuddy credits query failed: %w", err)
 	}
@@ -168,7 +168,7 @@ func fetchAccountUsage(ctx context.Context, client *provider.Client, account acc
 			DepartmentFullName:  account.DepartmentFullName,
 			Domain:              account.Domain,
 		})
-		if notifyPayload, notifyErr := postJSON(ctx, client.HTTP, notifyEndpoint, notifyHeaders, map[string]any{}); notifyErr == nil {
+		if notifyPayload, notifyErr := postJSON(ctx, client.For(account.Proxy), notifyEndpoint, notifyHeaders, map[string]any{}); notifyErr == nil {
 			if code, ok := asNumber(notifyPayload["code"]); !ok || code == 0 {
 				data, _ := notifyPayload["data"].(map[string]any)
 				if data == nil {

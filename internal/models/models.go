@@ -65,6 +65,7 @@ type ListResult struct {
 }
 
 type ListOptions struct {
+	Proxy               string
 	Site                string
 	Product             string
 	BaseURL             string
@@ -162,6 +163,8 @@ func (c *Lister) List(ctx context.Context, client *provider.Client, opts ListOpt
 		}
 	}
 
+	// All catalog sources and fallbacks share this account's bound transport.
+	client = &provider.Client{HTTP: client.For(opts.Proxy), IDEVersion: client.IDEVersion, Log: client.Log}
 	chatOpts := provider.ChatOptions{
 		BearerToken:         opts.BearerToken,
 		UserID:              opts.UserID,

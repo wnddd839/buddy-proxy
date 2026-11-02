@@ -13,9 +13,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
+	"github.com/wnddd839/codebuddy-proxy/internal/egress"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 )
 
@@ -24,7 +26,58 @@ type Client struct {
 	IDEVersion string
 	// Log 上游失败排障日志；为空时回退 slog.Default()。网关 New 时注入进程 logger。
 	Log *slog.Logger
+
+	// base 是直连用的 Transport，各出口按需 Clone（连接池互不干扰）。
+	base    *http.Transport
+	clients sync.Map // 出口 URL → *http.Client
 }
+
+// For returns the client for an account binding. Invalid bindings fail closed.
+// 同一出口的 client 会被缓存复用（连接池、TLS 会话都在里面）。
+func (c *Client) For(proxyURL string) *http.Client {
+	raw := strings.TrimSpace(proxyURL)
+	if raw == "" {
+		return c.httpClient()
+	}
+	if c == nil {
+		return &http.Client{Transport: proxyFailure{fmt.Errorf("egress: provider client is unavailable")}}
+	}
+	if cached, ok := c.clients.Load(raw); ok {
+		return cached.(*http.Client)
+	}
+	proxy, err := egress.Parse(raw)
+	if err != nil || proxy == nil {
+		return &http.Client{Transport: proxyFailure{err}}
+	}
+	base := c.base
+	if base == nil {
+		// 兜底：Client 字面量构造（测试/第三方）没走 NewClient 时不能崩。
+		typed, ok := c.httpClient().Transport.(*http.Transport)
+		if !ok {
+			if c.httpClient().Transport == nil {
+				typed = http.DefaultTransport.(*http.Transport)
+			} else {
+				return &http.Client{Transport: proxyFailure{fmt.Errorf("egress: cannot configure proxy on custom transport")}}
+			}
+		}
+		base = typed
+	}
+	transport, err := proxy.Transport(base)
+	if err != nil || transport == nil {
+		return &http.Client{Transport: proxyFailure{fmt.Errorf("egress: cannot create proxy transport")}}
+	}
+	client := *c.httpClient()
+	client.Transport = transport
+	actual, loaded := c.clients.LoadOrStore(raw, &client)
+	if loaded {
+		transport.CloseIdleConnections()
+	}
+	return actual.(*http.Client)
+}
+
+type proxyFailure struct{ err error }
+
+func (p proxyFailure) RoundTrip(*http.Request) (*http.Response, error) { return nil, p.err }
 
 func NewClient(cfg config.Config) *Client {
 	// 重要：protocol_direct 聊天不要设置 http.Client.Timeout。
@@ -53,6 +106,7 @@ func NewClient(cfg config.Config) *Client {
 			Timeout:   0,
 			Transport: transport,
 		},
+		base:       transport,
 		IDEVersion: strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
 		Log:        slog.Default(),
 	}
@@ -92,6 +146,8 @@ type ChatOptions struct {
 	// DeliverToolDeltas 表示调用方真的会把 tool_call_delta 转发给客户端。
 	// 只有 Responses 流式入口为 true；chat 流式只转发 tool_use，非流式无回调。
 	DeliverToolDeltas bool
+	// Proxy 是该请求使用的出口（账号级绑定）。空 = 直连。
+	Proxy string
 }
 
 type Event struct {
@@ -816,7 +872,7 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	headers, trace := c.BuildProtocolDirectHeaders(opts)
 	req.Header = headers
 
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.For(opts.Proxy).Do(req)
 	if err != nil {
 		return Result{}, fmt.Errorf("CodeBuddy chat completion transport error: %w [region=%s site=%s endpoint=%s domain=%s model=%s]", err, region, config.NormalizeSite(opts.Site), endpoint, domain, model)
 	}

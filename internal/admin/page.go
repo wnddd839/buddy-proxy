@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.10.31-watch-monitor"
+const UIRevision = "2026.11.02-watch-import-egress"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -142,6 +142,35 @@ h1{
 .lede{margin:0;color:var(--fg-60);font-size:13.5px;line-height:1.6;max-width:52ch}
 .checkin-hint{margin:12px 0 0;font-size:11.5px;line-height:1.5;color:var(--fg-40);max-width:58ch}
 .checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
+/* 弹窗（出口设置） */
+.modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.6)}
+.modal[hidden]{display:none}
+.modal-card{
+  width:min(680px,100%);max-height:86vh;overflow:auto;padding:22px 24px 18px;
+  border:1px solid var(--fg-20);background:var(--bg);box-shadow:0 24px 60px rgba(0,0,0,.45);
+}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.modal-head h3{margin:0;font-size:15px;font-weight:600;letter-spacing:.02em}
+.modal-x{border:none;background:transparent;color:var(--fg-40);font-size:22px;line-height:1;cursor:pointer;padding:0 2px}
+.modal-x:hover{color:var(--fg)}
+.modal-row{display:flex;align-items:center;gap:10px}
+.modal-row label{margin:0;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg-40)}
+.modal-row select{width:auto;min-width:170px;font-size:13px;padding:6px 0}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+/* 账号出口面板 */
+.egress-panel{margin:16px 0 8px;padding:12px 14px;border:1px solid var(--fg-10);border-radius:10px;background:rgba(28,28,28,.015)}
+.egress-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.egress-head strong{font-size:13px;font-weight:600}
+.egress-hint{font-size:11px;color:var(--fg-40)}
+.egress-list{margin-top:8px}
+.egress-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid var(--fg-10)}
+.egress-row:first-child{border-top:none}
+.egress-id{flex:1;min-width:0}
+.egress-id strong{display:block;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.egress-id span{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--fg-40);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.egress-count{font-size:11px;color:var(--fg-60);white-space:nowrap}
+.egress-add{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.egress-add input{flex:1;min-width:180px}
 .test-model-label{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-60);white-space:nowrap}
 .test-model-label select{min-width:160px;font-size:13px}
 .metrics{
@@ -551,6 +580,20 @@ pre{
         <p class="checkin-hint" id="poolTestHint">对当前号池已启用账号发最小 chat，验证可用性与延迟；默认选最低倍率模型。</p>
         <pre class="checkin-detail" id="checkinRaw" hidden></pre>
         <pre class="checkin-detail" id="poolTestRaw" hidden></pre>
+        <div class="egress-panel" id="egressPanel">
+          <div class="egress-head">
+            <strong>账号出口</strong>
+            <span class="egress-hint" id="egressHint">未绑定出口的账号走本机直连</span>
+          </div>
+          <div class="egress-list" id="egressList"></div>
+          <div class="egress-add">
+            <input id="egressNewUrl" placeholder="socks5h://user:pass@host:port" autocomplete="off" spellcheck="false"/>
+            <input id="egressNewLabel" placeholder="备注（可选）" autocomplete="off" style="flex:0 0 140px"/>
+            <button class="ghost" id="btnEgressAdd" type="button">加入候选</button>
+            <button class="ghost" id="btnEgressBalance" type="button">均衡分配</button>
+          </div>
+        </div>
+
         <div id="accounts"></div>
       </div>
     </section>
@@ -794,6 +837,31 @@ pre{
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+<!-- 设置单个账号的出口 -->
+<div class="modal" id="egressModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="egressTitle">
+    <div class="modal-head">
+      <h3 id="egressTitle">设置账号出口</h3>
+      <button class="modal-x" id="btnEgressClose" type="button" aria-label="关闭">×</button>
+    </div>
+    <p class="checkin-hint" style="margin:6px 0 0">绑死后该账号的请求固定走这条出口（不轮换、不自动切换）。选「直连」则用本机 IP。</p>
+    <div class="modal-row">
+      <label for="egressSelect">出口</label>
+      <select id="egressSelect"></select>
+    </div>
+    <div class="modal-row" id="egressCustomRow" hidden>
+      <label for="egressCustom">自定义</label>
+      <input id="egressCustom" placeholder="socks5h://user:pass@host:port" autocomplete="off" spellcheck="false"/>
+    </div>
+    <pre class="checkin-detail" id="egressCheckRaw" hidden></pre>
+    <div class="modal-actions">
+      <button class="ghost" id="btnEgressCheck" type="button">检测</button>
+      <button class="ghost" id="btnEgressCancel" type="button">取消</button>
+      <button class="primary" id="btnEgressSave" type="button">保存</button>
+    </div>
+  </div>
+</div>
+
 <!-- hidden compatibility targets for existing helpers -->
 <pre id="statusBox"></pre>
 <pre id="oauthBox"></pre>
@@ -938,6 +1006,7 @@ function formatResetAt(ms){
 }
 
 const usageByAccount = {};
+let lastAccounts = [];
 // 套餐时间由后端按北京时间解析为毫秒；前端只显示绝对时间，不解析无时区字符串。
 function packageExpiryView(usage, now){
   const packages = ((usage.credits || {}).packages || []).slice().sort(function(a,b){
@@ -977,6 +1046,7 @@ function packageExpiryView(usage, now){
 function renderAccounts(summary, activeSite) {
   const box = $('accounts');
   const all = (summary && summary.accounts) || [];
+  lastAccounts = all;
   const expanded = new Set(Array.from(box.querySelectorAll('.package-expiry[open]')).map(function(d){ return d.closest('.account').getAttribute('data-account-id'); }));
   // 15 秒轮询会重绘卡片；记住已展开的「更多」菜单，避免操作到一半被收起。
   const menuOpen = new Set(Array.from(box.querySelectorAll('.more[open]')).map(function(d){ return d.closest('.account').getAttribute('data-account-id'); }));
@@ -1031,6 +1101,7 @@ function renderAccounts(summary, activeSite) {
           '<strong>' + label + '</strong>' +
           '<span class="badge site">' + escapeHtml(siteLabel(site)) + '</span>' +
           '<span class="badge ' + (logged?'on':'off') + '">' + (logged?'已登录':'未登录') + '</span>' +
+          (a.proxy ? '<span class="badge" title="' + escapeHtml(a.proxy) + '">出口 ' + escapeHtml(proxyHost(a.proxy)) + '</span>' : '') +
           (a.enabled ? '' : '<span class="badge off">已禁用</span>') +
           (a.tokenExpired ? '<span class="badge bad">Token 过期</span>' : '') +
         '</div>' +
@@ -1039,6 +1110,7 @@ function renderAccounts(summary, activeSite) {
           '<button class="ghost" data-act="usage" data-id="' + id + '" type="button">' + (usage && usage.credits ? '刷新余额' : '查余额') + '</button>' +
           '<details class="more"' + (menuOpen.has(a.id) ? ' open' : '') + '><summary aria-label="更多操作">更多</summary><div class="more-menu">' +
             '<button data-act="toggle" data-id="' + id + '" data-enabled="' + (a.enabled?0:1) + '" type="button">' + (a.enabled?'禁用账号':'启用账号') + '</button>' +
+            '<button data-act="proxy" data-id="' + id + '" type="button">设置出口</button>' +
             '<button data-act="refresh" data-id="' + id + '" type="button">刷新 Token</button>' +
             '<button class="danger" data-act="delete" data-id="' + id + '" type="button">删除账号</button>' +
           '</div></details>' +
@@ -1573,6 +1645,7 @@ function paintStatus(data){
   $('statusBox').textContent = raw;
   $('statusRaw').textContent = raw;
   renderAccounts(accounts, poolSite);
+  refreshEgress();
 }
 
 function paintOAuth(data){
@@ -1876,6 +1949,10 @@ async function onAccountAction(ev){
     }
     return;
   }
+  if (act === 'proxy') {
+    openEgressModal(id);
+    return;
+  }
   if (act === 'delete') {
     if (!confirm('确认删除该账号？')) return;
     await api('/direct-admin/api/codebuddy/accounts/'+encodeURIComponent(id), {method:'DELETE'});
@@ -1889,10 +1966,194 @@ async function onAccountAction(ev){
   await refreshStatus();
 }
 
+// ---------------- 账号出口 ----------------
+let egressState = {candidates: [], used: [], direct: 0, total: 0};
+let egressAccountID = '';
+
+function proxyHost(url){
+  const s = String(url || '');
+  const at = s.lastIndexOf('@');
+  const rest = at >= 0 ? s.slice(at + 1) : s.replace(/^[a-z0-9+.-]+:\/\//i, '');
+  return rest.replace(/\/.*$/, '');
+}
+
+async function refreshEgress(){
+  try {
+    egressState = await api('/direct-admin/api/codebuddy/proxies');
+    renderEgress();
+  } catch (e) {
+    // 出口面板只是附加信息，失败不打扰主流程。
+  }
+}
+
+function renderEgress(){
+  const box = $('egressList');
+  if (!box) return;
+  const cands = egressState.candidates || [];
+  const counts = {};
+  (egressState.used || []).forEach(function(u){ counts[u.id] = u.count || 0; });
+  if (!cands.length) {
+    box.innerHTML = '<div class="egress-hint" style="padding:6px 0">还没有候选出口，账号默认走本机直连。</div>';
+  } else {
+    box.innerHTML = cands.map(function(c){
+      return '<div class="egress-row">' +
+        '<div class="egress-id"><strong>' + escapeHtml(c.label || proxyHost(c.url)) + '</strong><span>' + escapeHtml(c.url) + '</span></div>' +
+        '<div class="egress-count">' + (counts[c.id] || 0) + ' 个账号</div>' +
+        '<div class="actions">' +
+          '<button class="ghost" data-egress-act="check" data-id="' + escapeHtml(c.id) + '" type="button">检测</button>' +
+          '<button class="danger" data-egress-act="del" data-id="' + escapeHtml(c.id) + '" type="button">删除</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+    box.innerHTML += '<div class="egress-row"><div class="egress-id"><strong>直连（本机 IP）</strong><span>没有绑定出口的账号</span></div>' +
+      '<div class="egress-count">' + (egressState.direct || 0) + ' 个账号</div><div class="actions"></div></div>';
+    box.querySelectorAll('button[data-egress-act]').forEach(function(btn){ btn.onclick = onEgressRowAction; });
+  }
+  $('egressHint').textContent = cands.length + ' 条候选出口 · ' + (egressState.direct || 0) + ' 个账号仍直连';
+}
+
+async function onEgressRowAction(ev){
+  const btn = ev.currentTarget;
+  const id = btn.getAttribute('data-id');
+  const act = btn.getAttribute('data-egress-act');
+  btn.disabled = true;
+  try {
+    if (act === 'del') {
+      if (!confirm('从候选清单删除这条出口？（已绑定它的账号不受影响）')) return;
+      await api('/direct-admin/api/codebuddy/proxies/candidates', {method: 'DELETE', body: JSON.stringify({id: id})});
+      showToast('已从候选清单删除');
+    } else {
+      const res = await api('/direct-admin/api/codebuddy/proxies/check', {method: 'POST', body: JSON.stringify({candidateId: id})});
+      if (res.ok) {
+        const direct = (res.direct && res.direct.ok) ? (' · 本机 ' + res.direct.ip) : '';
+        showToast('出口 ' + res.ip + ' · ' + res.elapsedMs + 'ms' + direct);
+      } else {
+        showToast('出口不可用：' + (res.error || '未知错误'), 'error');
+      }
+    }
+  } catch (e) {
+    showToast(String(e.message || e), 'error');
+  } finally {
+    btn.disabled = false;
+    await refreshEgress();
+  }
+}
+
+async function addEgressCandidate(){
+  const url = ($('egressNewUrl').value || '').trim();
+  const label = ($('egressNewLabel').value || '').trim();
+  if (!url) { showToast('先填出口 URL', 'error'); return; }
+  await api('/direct-admin/api/codebuddy/proxies/candidates', {method: 'POST', body: JSON.stringify({url: url, label: label})});
+  $('egressNewUrl').value = '';
+  $('egressNewLabel').value = '';
+  showToast('已加入候选出口');
+  await refreshEgress();
+}
+
+function currentPoolSite(){
+  const btn = document.querySelector('#poolSiteSeg button.active');
+  return btn ? btn.getAttribute('data-site') : '';
+}
+
+async function balanceEgress(){
+  if (!(egressState.candidates || []).length) { showToast('先加至少一条候选出口', 'error'); return; }
+  if (!confirm('把当前号池已启用的账号轮流分配到候选出口？会覆盖这些账号现有的出口绑定。')) return;
+  const res = await api('/direct-admin/api/codebuddy/proxies/balance', {method: 'POST', body: JSON.stringify({site: currentPoolSite()})});
+  showToast('已把 ' + res.assigned + ' 个账号分到 ' + res.proxies + ' 条出口');
+  await refreshStatus();
+  await refreshEgress();
+}
+
+function openEgressModal(id){
+  const account = (lastAccounts || []).filter(function(a){ return a.id === id; })[0] || {};
+  egressAccountID = id;
+  const opts = ['<option value="">直连（本机 IP）</option>'];
+  let matched = false;
+  (egressState.candidates || []).forEach(function(c){
+    const isCurrent = !!account.proxy && account.proxy === c.url;
+    if (isCurrent) matched = true;
+    opts.push('<option value="' + escapeHtml(c.id) + '"' + (isCurrent ? ' selected' : '') + '>' +
+      escapeHtml(c.label || proxyHost(c.url)) + ' · ' + escapeHtml(c.url) + '</option>');
+  });
+  if (account.proxy && !matched) {
+    opts.push('<option value="__current__" selected>当前：' + escapeHtml(account.proxy) + '（不在候选清单）</option>');
+  }
+  opts.push('<option value="__custom__">自定义 URL…</option>');
+  $('egressSelect').innerHTML = opts.join('');
+  $('egressCustomRow').hidden = true;
+  $('egressCustom').value = '';
+  $('egressCheckRaw').hidden = true;
+  $('egressTitle').textContent = '设置出口 · ' + (account.label || id);
+  $('egressModal').hidden = false;
+}
+
+function closeEgressModal(){
+  $('egressModal').hidden = true;
+  egressAccountID = '';
+}
+
+async function saveEgressModal(){
+  const id = egressAccountID;
+  if (!id) return;
+  const value = $('egressSelect').value;
+  if (value === '__current__') { closeEgressModal(); return; }
+  let body;
+  if (value === '') {
+    body = {clear: true};
+  } else if (value === '__custom__') {
+    const url = ($('egressCustom').value || '').trim();
+    if (!url) { showToast('自定义出口 URL 不能为空', 'error'); return; }
+    body = {proxy: url};
+  } else {
+    body = {candidateId: value};
+  }
+  await api('/direct-admin/api/codebuddy/accounts/' + encodeURIComponent(id) + '/proxy', {method: 'POST', body: JSON.stringify(body)});
+  closeEgressModal();
+  showToast('出口已更新');
+  await refreshStatus();
+  await refreshEgress();
+}
+
+async function checkEgressModal(){
+  const value = $('egressSelect').value;
+  const box = $('egressCheckRaw');
+  box.hidden = false;
+  box.textContent = '检测中…（走一次真实 HTTPS 请求）';
+  let body;
+  if (value === '__custom__') body = {url: ($('egressCustom').value || '').trim()};
+  else if (value === '__current__') body = {accountId: egressAccountID};
+  else if (value === '') body = {url: ''};
+  else body = {candidateId: value};
+  try {
+    const res = await api('/direct-admin/api/codebuddy/proxies/check', {method: 'POST', body: JSON.stringify(body)});
+    if (res.ok) {
+      box.textContent = '出口 IP：' + res.ip + ' · ' + res.elapsedMs + 'ms' +
+        (res.direct && res.direct.ok ? ('\n本机 IP：' + res.direct.ip + ' · ' + res.direct.elapsedMs + 'ms') : '');
+    } else {
+      box.textContent = '失败：' + (res.error || '未知错误');
+    }
+  } catch (e) {
+    box.textContent = String(e.message || e);
+  }
+}
+
 // 点击菜单外部时收起账号的「更多」菜单。
 document.addEventListener('click', function(ev){
   document.querySelectorAll('.more[open]').forEach(function(d){ if (!d.contains(ev.target)) d.open = false; });
 });
+
+document.addEventListener('keydown', function(e){
+  if (e.key !== 'Escape' && e.key !== 'Esc') return;
+  if ($('egressModal') && !$('egressModal').hidden) closeEgressModal();
+});
+if ($('btnEgressAdd')) $('btnEgressAdd').onclick = function(){ addEgressCandidate().catch(function(e){ showToast(String(e.message||e), 'error'); }); };
+if ($('btnEgressBalance')) $('btnEgressBalance').onclick = function(){ balanceEgress().catch(function(e){ showToast(String(e.message||e), 'error'); }); };
+if ($('egressSelect')) $('egressSelect').onchange = function(){ $('egressCustomRow').hidden = this.value !== '__custom__'; };
+if ($('btnEgressSave')) $('btnEgressSave').onclick = function(){ saveEgressModal().catch(function(e){ showToast(String(e.message||e), 'error'); }); };
+if ($('btnEgressCheck')) $('btnEgressCheck').onclick = function(){ checkEgressModal().catch(function(e){ showToast(String(e.message||e), 'error'); }); };
+if ($('btnEgressClose')) $('btnEgressClose').onclick = closeEgressModal;
+if ($('btnEgressCancel')) $('btnEgressCancel').onclick = closeEgressModal;
+if ($('egressModal')) $('egressModal').onclick = function(e){ if (e.target === this) closeEgressModal(); };
 
 if ($('btnPoolDomestic')) $('btnPoolDomestic').onclick = function(){ switchPoolSite('domestic').catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('btnPoolGlobal')) $('btnPoolGlobal').onclick = function(){ switchPoolSite('global').catch(function(e){ showToast(e.message, 'error'); }); };

@@ -267,7 +267,7 @@ func (c *Client) AgenticSearch(
 	headers.Set("Accept", "text/event-stream")
 	req.Header = headers
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.For(opts.Proxy).Do(req)
 	if err != nil {
 		return AgenticSearchResult{}, fmt.Errorf("CodeBuddy agentic search transport error: %w [region=%s site=%s endpoint=%s]", err, region, config.NormalizeSite(opts.Site), endpoint)
 	}
@@ -441,7 +441,7 @@ func (c *Client) postAgentToolJSON(
 	headers.Set("Accept", "application/json")
 	req.Header = headers
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.For(opts.Proxy).Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("CodeBuddy %s transport error: %w [region=%s site=%s endpoint=%s]", label, err, region, config.NormalizeSite(opts.Site), endpoint)
 	}
