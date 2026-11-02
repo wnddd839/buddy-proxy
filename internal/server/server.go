@@ -137,6 +137,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	} else {
 		payload["upstream"] = s.Svc.Status()["upstream"]
 	}
+	// watch 只作观测暴露，不改变 HTTP 状态码：真正的告警走 watch 自身的通知通道，
+	// 避免外部探针因为“上游变慢”而把整个网关判死。
+	if st := s.Svc.WatchStatus(); st.Enabled {
+		payload["watch"] = st
+	}
 	httputil.WriteJSON(w, http.StatusOK, payload)
 }
 

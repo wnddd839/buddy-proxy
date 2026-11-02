@@ -24,6 +24,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 	"github.com/wnddd839/codebuddy-proxy/internal/usagejournal"
 	"github.com/wnddd839/codebuddy-proxy/internal/version"
+	"github.com/wnddd839/codebuddy-proxy/internal/watch"
 )
 
 const (
@@ -119,6 +120,8 @@ type Service struct {
 	// Conversations 让钉住的会话在账号不变时复用上游 X-Conversation-ID。
 	Conversations *sessionpin.ConversationTable
 	Journal       *usagejournal.Journal
+	// Watch 是进程内波动监测器，nil 表示未启用（见 internal/watch）。
+	Watch *watch.Monitor
 
 	probeMu    sync.Mutex
 	probeCache map[string]provider.Reachability
@@ -155,6 +158,9 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 		Conversations: sessionpin.NewConversationTable(0),
 		Journal:       journal,
 	}
+	if cfg.Watch.Enabled {
+		svc.Watch = watch.New(cfg.Watch, logger, nil)
+	}
 	svc.modelsCache = map[string]modelsCacheEntry{}
 	svc.probeCache = map[string]provider.Reachability{}
 	svc.storeConfig(cfg)
@@ -175,6 +181,14 @@ func (s *Service) Close() error {
 		}
 	}
 	return err
+}
+
+// WatchStatus 返回波动监测状态；未启用时 Enabled=false。
+func (s *Service) WatchStatus() watch.Status {
+	if s == nil || s.Watch == nil {
+		return watch.Status{}
+	}
+	return s.Watch.Snapshot()
 }
 
 // Config 返回运行时配置快照，并发读安全。
@@ -1275,6 +1289,7 @@ func (s *Service) Status() map[string]any {
 		"product":     product,
 		"poolProduct": product,
 		"upstream":    upstream,
+		"watch":       s.WatchStatus(),
 		"config": map[string]any{
 			"host":                host,
 			"port":                port,

@@ -35,8 +35,13 @@ func (s *Server) recordChatJournal(
 		Model:          strutil.First(publicModel, opts.Model, "auto"),
 		Stream:         stream,
 		Ok:             ok,
-		ErrMsg:         strings.TrimSpace(errMsg),
-		Usage:          usage,
+		// 成功但没有结果的记录来自客户端取消，仍记账，但不作为完成样本监测。
+		Canceled: ok && result == nil,
+		ErrMsg:   strings.TrimSpace(errMsg),
+		Usage:    usage,
+		ReasoningRequested: provider.ReasoningRequested(provider.ChatOptions{
+			ReasoningEffort: opts.ReasoningEffort, Reasoning: opts.Reasoning, Thinking: opts.Thinking,
+		}),
 	}
 	if result != nil {
 		input.Trace = result.Trace

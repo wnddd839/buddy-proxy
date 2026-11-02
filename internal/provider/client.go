@@ -491,6 +491,33 @@ func ApplyReasoningFields(body map[string]any, opts ChatOptions) {
 	}
 }
 
+// ReasoningRequested uses the same object-over-effort precedence as the upstream body.
+// An explicit disable is not a request for reasoning, even if other fields are present.
+func ReasoningRequested(opts ChatOptions) bool {
+	body := make(map[string]any)
+	ApplyReasoningFields(body, opts)
+	enabled := false
+	if thinking, ok := body["thinking"].(map[string]any); ok {
+		kind, _ := thinking["type"].(string)
+		switch strings.ToLower(strings.TrimSpace(kind)) {
+		case "disabled", "none", "off":
+			return false
+		case "enabled", "adaptive":
+			enabled = true
+		}
+	}
+	if reasoning, ok := body["reasoning"].(map[string]any); ok {
+		effort, _ := reasoning["effort"].(string)
+		switch strings.ToLower(strings.TrimSpace(effort)) {
+		case "none", "disabled", "off":
+			return false
+		case "minimal", "low", "medium", "high", "xhigh", "max":
+			enabled = true
+		}
+	}
+	return enabled
+}
+
 func NormalizeToolChoice(value any) any {
 	switch v := value.(type) {
 	case nil:

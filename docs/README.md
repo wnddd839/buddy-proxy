@@ -14,6 +14,7 @@ Buddy Proxy 文档目录（CodeBuddy / WorkBuddy 协议网关）。
 | [architecture/overview.md](architecture/overview.md) | 架构、包职责、请求链路、并发模型 |
 | [api/http.md](api/http.md) | Public `/v1` 接口与 Admin API |
 | [operations/runbook.md](operations/runbook.md) | 运行、排障、持久化、资源占用 |
+| [operations/monitoring.md](operations/monitoring.md) | 波动监测：推理缺失 / 错误率 / 耗时异常的相对基线告警 |
 
 ## 仓库级
 

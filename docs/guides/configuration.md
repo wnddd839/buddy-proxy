@@ -115,6 +115,32 @@ CODEBUDDY_INTERNET_ENVIRONMENT=public
 
 ---
 
+## 波动监测与告警
+
+默认关闭。完整原理与告警节奏见 [波动监测与告警](../operations/monitoring.md)。
+
+| 变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `CODEBUDDY_PROXY_WATCH` | 关闭 | `on` / `true` 开启进程内监测 |
+| `CODEBUDDY_PROXY_WATCH_INTERVAL` | `60s` | 评估周期，支持 `90s` / `2m`，纯数字按秒 |
+| `CODEBUDDY_PROXY_WATCH_WINDOW` | `120` | 近期窗口样本数 |
+| `CODEBUDDY_PROXY_WATCH_BASELINE` | `480` | 基线窗口样本数 |
+| `CODEBUDDY_PROXY_WATCH_MIN_SAMPLES` | `20` | 低于该样本数不做判定（冷启动期） |
+| `CODEBUDDY_PROXY_WATCH_ERROR_RATE` | `0.25` | 近期错误率上限；写 `25` 视为 25% |
+| `CODEBUDDY_PROXY_WATCH_REASONING_MISS` | `0.5` | 请求了推理但无推理 token 的占比上限 |
+| `CODEBUDDY_PROXY_WATCH_LATENCY_FACTOR` | `3.0` | 近期耗时中位数相对基线的倍数上限 |
+| `CODEBUDDY_PROXY_WATCH_REMINDER` | `6h` | 持续异常时的提醒间隔 |
+| `CODEBUDDY_PROXY_WATCH_WEBHOOK` | 空 | 告警 webhook，POST JSON；留空则不发 |
+| `CODEBUDDY_PROXY_WATCH_WEBHOOK_TOKEN` | 空 | 以 `Authorization: Bearer` 发送 |
+| `CODEBUDDY_PROXY_WATCH_SMTP_ADDR` | 空 | 邮件通道，`host:port` |
+| `CODEBUDDY_PROXY_WATCH_SMTP_USER` | 空 | SMTP 用户名 |
+| `CODEBUDDY_PROXY_WATCH_SMTP_PASS` | 空 | SMTP 密码 / 授权码 |
+| `CODEBUDDY_PROXY_WATCH_SMTP_FROM` | 空 | 发件地址，需与认证账号一致 |
+| `CODEBUDDY_PROXY_WATCH_SMTP_TO` | 空 | 收件地址，逗号分隔 |
+| `CODEBUDDY_PROXY_WATCH_SMTP_MODE` | 按端口推断 | `implicit`（465）/ `starttls`（587）/ `none` |
+
+---
+
 ## 固定值（不可通过环境变量配置）
 
 | 常量 | 值 | 说明 |

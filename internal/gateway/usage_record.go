@@ -7,6 +7,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 	"github.com/wnddd839/codebuddy-proxy/internal/usagejournal"
+	"github.com/wnddd839/codebuddy-proxy/internal/watch"
 )
 
 // ChatRecordInput is one gateway-visible chat completion for the usage journal.
@@ -18,21 +19,29 @@ type ChatRecordInput struct {
 	Model          string
 	Stream         bool
 	Ok             bool
+	Canceled       bool
 	ErrMsg         string
 	Usage          provider.Usage
-	Trace          provider.RequestTrace
-	Account        accounts.Summary
-	AccountID      string
+	// ReasoningRequested 表示客户端显式要求了推理（reasoning_effort / reasoning / thinking）。
+	// 只有为 true 时，缺失推理 token 才说明上游掉了思考能力。
+	ReasoningRequested bool
+	Trace              provider.RequestTrace
+	Account            accounts.Summary
+	AccountID          string
 }
 
 // RecordChat appends a usage journal row (persisted via usage journal flush).
 func (s *Service) RecordChat(input ChatRecordInput) {
-	if s == nil || s.Journal == nil {
+	if s == nil {
 		return
 	}
 	duration := time.Since(input.Started).Milliseconds()
 	if duration < 0 {
 		duration = 0
+	}
+	s.recordWatchSample(input, duration)
+	if s.Journal == nil {
+		return
 	}
 	label := strings.TrimSpace(input.Account.UserName)
 	if label == "" {
@@ -63,6 +72,25 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		CachedTokens:                  int64(input.Usage.CachedTokens()),
 		Credit:                        input.Usage.Credit,
 		DurationMs:                    duration,
+	})
+}
+
+// recordWatchSample 把一次真实请求喂给波动监测器；未启用时是空操作。
+func (s *Service) recordWatchSample(input ChatRecordInput, durationMs int64) {
+	if s.Watch == nil || input.Canceled {
+		return
+	}
+	var reasoning int64
+	if d := input.Usage.CompletionTokensDetails; d != nil {
+		reasoning = int64(d.ReasoningTokens)
+	}
+	s.Watch.Record(watch.Sample{
+		At:              input.Started.UnixMilli(),
+		Model:           input.Model,
+		Ok:              input.Ok,
+		ReasoningAsked:  input.ReasoningRequested,
+		ReasoningTokens: reasoning,
+		DurationMs:      durationMs,
 	})
 }
 
