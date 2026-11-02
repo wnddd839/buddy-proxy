@@ -47,7 +47,7 @@ func (s *Server) handleImages(w http.ResponseWriter, r *http.Request, keySite st
 	var body imageGenerateBody
 	if err := httputil.ReadJSON(r, &body); err != nil {
 		if errors.Is(err, httputil.ErrBodyTooLarge) {
-			httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError("Request body exceeds 64MB.", "invalid_request_error"))
+			httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError(httputil.BodyTooLargeMessageSentence(), "invalid_request_error"))
 			return
 		}
 		httputil.WriteJSON(w, http.StatusBadRequest, openai.NewError("Invalid JSON body", "invalid_request_error"))

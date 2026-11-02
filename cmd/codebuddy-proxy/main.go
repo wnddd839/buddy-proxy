@@ -12,6 +12,7 @@ import (
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/gateway"
+	"github.com/wnddd839/codebuddy-proxy/internal/httputil"
 	"github.com/wnddd839/codebuddy-proxy/internal/server"
 	"github.com/wnddd839/codebuddy-proxy/internal/update"
 )
@@ -22,6 +23,8 @@ func main() {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel()}))
 	cfg := config.Load()
+	// 请求体上限可配置：超长会话历史重放可能超过默认 64MiB。
+	httputil.SetMaxJSONBodyBytes(int64(cfg.MaxBodyMB) << 20)
 	generatedKey := false
 
 	// First-run / binary UX: if no gateway key is configured, create one and

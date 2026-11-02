@@ -23,6 +23,7 @@ const (
 	DefaultStreamKeepAlive     = 5 * time.Second
 	DefaultOAuthSessionTTL     = 15 * time.Minute
 	DefaultHTTPTimeout         = 120 * time.Second
+	DefaultMaxBodyMB           = 64
 	DefaultIdleConnTimeout     = 90 * time.Second
 	DefaultMaxIdleConns        = 100
 	DefaultMaxIdleConnsPerHost = 20
@@ -57,6 +58,7 @@ type Config struct {
 	StreamKeepAlive     time.Duration
 	OAuthSessionTTL     time.Duration
 	HTTPTimeout         time.Duration
+	MaxBodyMB           int
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
@@ -89,6 +91,7 @@ func Load() Config {
 		StreamKeepAlive:     envDuration("CODEBUDDY_PROXY_STREAM_KEEPALIVE_MS", "CURSOR_DIRECT_STREAM_KEEPALIVE_MS", DefaultStreamKeepAlive),
 		OAuthSessionTTL:     DefaultOAuthSessionTTL,
 		HTTPTimeout:         DefaultHTTPTimeout,
+		MaxBodyMB:           envInt("CODEBUDDY_PROXY_MAX_BODY_MB", "CURSOR_DIRECT_MAX_BODY_MB", DefaultMaxBodyMB),
 		MaxIdleConns:        DefaultMaxIdleConns,
 		MaxIdleConnsPerHost: DefaultMaxIdleConnsPerHost,
 		IdleConnTimeout:     DefaultIdleConnTimeout,

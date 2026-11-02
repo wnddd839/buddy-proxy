@@ -372,7 +372,7 @@ func (s *Server) finishSearchRequest(
 
 func writeSearchBodyError(w http.ResponseWriter, err error) {
 	if errors.Is(err, httputil.ErrBodyTooLarge) {
-		httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError("Request body exceeds 64MB.", "invalid_request_error"))
+		httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError(httputil.BodyTooLargeMessageSentence(), "invalid_request_error"))
 		return
 	}
 	httputil.WriteJSON(w, http.StatusBadRequest, openai.NewError("Invalid JSON body", "invalid_request_error"))

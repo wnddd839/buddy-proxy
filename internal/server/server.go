@@ -368,7 +368,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, k
 	}
 	if err := httputil.ReadJSON(r, &body); err != nil {
 		if errors.Is(err, httputil.ErrBodyTooLarge) {
-			httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError("Request body exceeds 64MB. 1M-context requests need a larger JSON body.", "invalid_request_error"))
+			httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError(httputil.BodyTooLargeMessageSentence()+" 1M-context requests need a larger JSON body.", "invalid_request_error"))
 			return
 		}
 		httputil.WriteJSON(w, http.StatusBadRequest, openai.NewError("Invalid JSON body", "invalid_request_error"))

@@ -5,17 +5,37 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
 
-// MaxJSONBodyBytes is large enough for 1M-context chat payloads (messages + tools).
-// Other CodeBuddy proxies typically do not apply an 8MiB JSON cap.
-const MaxJSONBodyBytes int64 = 64 << 20
+// MaxJSONBodyBytes 限制单个 JSON 请求体大小。
+// 默认 64MiB 足以容纳 1M-context 的 messages + tools；
+// 但超长会话历史重放（agent 多轮、大工具输出）可能超过这个量级，
+// 因此允许通过 CODEBUDDY_PROXY_MAX_BODY_MB 调整。
+var MaxJSONBodyBytes int64 = 64 << 20
 
-var ErrBodyTooLarge = errors.New("request body exceeds 64MB")
+// SetMaxJSONBodyBytes 在启动时按配置覆盖请求体上限（n<=0 时忽略）。
+func SetMaxJSONBodyBytes(n int64) {
+	if n > 0 {
+		MaxJSONBodyBytes = n
+	}
+}
+
+// BodyTooLargeMessage 返回带实际上限的错误文案，避免写死 "64MB" 误导排查。
+func BodyTooLargeMessage() string {
+	return fmt.Sprintf("request body exceeds %dMB", MaxJSONBodyBytes>>20)
+}
+
+// BodyTooLargeMessageSentence 用于面向用户的错误提示。
+func BodyTooLargeMessageSentence() string {
+	return fmt.Sprintf("Request body exceeds %dMB.", MaxJSONBodyBytes>>20)
+}
+
+var ErrBodyTooLarge = errors.New("request body too large")
 
 func WriteJSON(w http.ResponseWriter, status int, payload any) {
 	raw, err := json.Marshal(payload)
