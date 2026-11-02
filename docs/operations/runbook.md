@@ -132,3 +132,18 @@ Go 版修复：
 管理台出口检测通过指定代理访问 `https://api.ipify.org?format=json`，与聊天使用同一个 `egress.Proxy.Transport` 代理构造逻辑，但目标站和请求超时不同。回显站 DNS、TLS、访问策略或超时失败，不能单凭 `dial tcp <目标IP>:443` 判定“绕过代理”或“聊天出口损坏”；HTTP 代理内部转发或 SOCKS 本地代理也可能报告目标地址的错误。请对照同一账号的聊天测试、代理日志和 `direct` 直连对照结果。未绑定出口的聊天保留进程代理环境，检测的直连对照刻意忽略环境代理。
 
 6004 重置时间较远并不能单独证明日配额耗尽，独立出口也被限流不能证明不存在 IP 维度限制；按账号与模型记录实际重置时间，不按 `<1h` / `>12h` 猜测上游限流类别。
+
+## SSE 连接关闭与首头延迟
+
+三条流式路径（`/v1/chat/completions`、`/v1/responses`、`/v1/agentic_search`）在
+响应头里声明 `Connection: close`，并在 handler 上设 `r.Close = true`。SSE 是一次性
+响应，连接不能回 keep-alive 池：经隧道/反向代理时服务端 FIN 可能丢失，客户端会
+复用死连接并挂到 `headersTimeout`（opencode/undici 顶格 60s），表现为
+`Timed out waiting for response headers`。
+
+- 代价：每次 SSE 新建 TCP。本地回环可忽略；经杭州隧道实测约 +60–90ms，首个响应头
+  实测 0.13–0.21s。
+- 不要改成 `Keep-Alive: timeout=...`：提示寿命不能阻止客户端复用死连接，必须
+  `Connection: close`。
+- 验证：`curl -sS -D- -o /dev/null -N` 请求任一入口应看到 `Connection: close`；
+  同一客户端连续两次流式请求，第二次 `httptrace.GotConnInfo.Reused=false`。

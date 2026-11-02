@@ -5,6 +5,10 @@
 
 ---
 
+## Unreleased
+
+- 修复：SSE 流式响应（`/v1/chat/completions`、`/v1/responses`、`/v1/agentic_search`）结束后禁用 keep-alive（`Connection: close` + `r.Close`）。经隧道/反向代理时 FIN 可能丢失，客户端复用已失效连接会挂到 `headersTimeout`（opencode/undici 顶格 60s），表现为 `Timed out waiting for response headers`。代价是每次 SSE 新建 TCP：本地可忽略，经杭州隧道实测约 +60–90ms。
+
 ## v0.7.2 · 2026-11-04 · 每账号自动签到与流式收尾加固
 
 ### 新功能 · 每账号自动签到

@@ -143,6 +143,13 @@ func (s *Server) streamResponses(
 		s.writeResponsesError(w, http.StatusInternalServerError, "internal_error", "streaming unsupported")
 		return
 	}
+	// SSE 是一次性流：标记本连接不可复用。
+	// 必须在 WriteHeader 之前设置——响应头一旦发出，之后再改 Connection 就不再生效。
+	// 背景：经由反向代理/隧道转发时，服务端关闭连接的 FIN 未必能可靠送达客户端，
+	// 客户端会把已失效的连接当作 keep-alive 复用，导致下一个请求挂起直到超时
+	// （openai-compatible 客户端如 opencode 默认 headersTimeout=60s，表现为
+	//  "Timed out waiting for response headers"；空转重发即可恢复）。
+	r.Close = true
 	builder := openai.NewResponseStreamBuilder(responseID, providerModel.PublicModel, req)
 	var (
 		mu               sync.Mutex
@@ -172,7 +179,7 @@ func (s *Server) streamResponses(
 		started = true
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-transform")
-		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Connection", "close")
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(http.StatusOK)
