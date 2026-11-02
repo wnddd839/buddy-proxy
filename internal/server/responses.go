@@ -212,6 +212,9 @@ func (s *Server) streamResponses(
 	defer close(keepAliveStop)
 
 	opts.Stream = true
+	// Responses 流式真的会把 tool_call_delta 转发给客户端，因此允许 provider
+	// 把它计入"已交付"；chat 流式忽略该事件，不能置位。
+	opts.DeliverToolDeltas = true
 	// 上游事件回调：tool_use 完整到达 / arguments 增量。
 	opts.OnEvent = func(event provider.Event) {
 		writeLocked(func() {
