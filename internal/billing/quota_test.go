@@ -234,3 +234,46 @@ func TestModelRateLimitCooldownRejectsNonChinaZone(t *testing.T) {
 		}
 	}
 }
+
+// TestModelRateLimitCooldownChineseCopy 中文（domestic）文案没有 "will reset at"，
+// 旧实现直接返回 ok=false ⇒ 所有 429 的重置时间都是 0，无法区分频率限制与日配额。
+// 2026-11-02 生产实测真实文案如下。
+func TestModelRateLimitCooldownChineseCopy(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.FixedZone("UTC+8", 8*3600))
+	msg := errors.New("CodeBuddy chat completion failed with 429: 您的使用量已超出频率限制，将在 2026-11-03 18:01:37 UTC+8 重置，您也可以切换其他模型继续使用。 (code 6004) [region=domestic site=domestic]")
+
+	d, ok := ModelRateLimitCooldown(msg, now)
+	if !ok {
+		t.Fatal("中文文案应能解析出重置时间")
+	}
+	want := 30*time.Hour + 1*time.Minute + 37*time.Second
+	if d != want {
+		t.Fatalf("cooldown=%v want %v", d, want)
+	}
+}
+
+func TestModelRateLimitCooldownChineseShortWindow(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.FixedZone("UTC+8", 8*3600))
+	msg := errors.New("您的使用量已超出频率限制，将在 2026-11-02 12:30:00 UTC+8 重置 (code 6004)")
+
+	d, ok := ModelRateLimitCooldown(msg, now)
+	if !ok {
+		t.Fatal("中文短窗口应能解析")
+	}
+	if d != 30*time.Minute {
+		t.Fatalf("cooldown=%v want 30m", d)
+	}
+}
+
+func TestModelRateLimitCooldownEnglishStillWorks(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.FixedZone("UTC+8", 8*3600))
+	msg := errors.New("failed with 429: 6004 rate-model will reset at 2026-11-02 12:30:00 UTC+8, alternatively switch model")
+
+	d, ok := ModelRateLimitCooldown(msg, now)
+	if !ok {
+		t.Fatal("英文文案不应回归")
+	}
+	if d != 30*time.Minute {
+		t.Fatalf("cooldown=%v want 30m", d)
+	}
+}

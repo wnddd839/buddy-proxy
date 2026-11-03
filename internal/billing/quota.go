@@ -117,15 +117,21 @@ func ModelRateLimitCooldown(err error, now time.Time) (time.Duration, bool) {
 	}
 	msg := err.Error()
 	lower := strings.ToLower(msg)
-	if !strings.Contains(lower, "will reset at") {
-		return 0, false
-	}
-	ms := ParseBillingTimeMillis(extractWillResetAt(msg))
-	if ms <= 0 {
-		// 旧逻辑解析失败：生产 6004 文案的时间戳后紧跟 ", alternatively…"，逗号不在
-		// 旧截断集里，整段尾巴进解析器必然失败 → 回落固定 2 分钟。改按时间戳形状提取，
-		// 时间戳之后的文案不参与解析。
-		ms = ParseBillingTimeMillis(extractWillResetAtByShape(msg))
+	var ms int64
+	if strings.Contains(lower, "will reset at") {
+		ms = ParseBillingTimeMillis(extractWillResetAt(msg))
+		if ms <= 0 {
+			// 旧逻辑解析失败：生产 6004 文案的时间戳后紧跟 ", alternatively…"，逗号不在
+			// 旧截断集里，整段尾巴进解析器必然失败 → 回落固定 2 分钟。改按时间戳形状提取，
+			// 时间戳之后的文案不参与解析。
+			ms = ParseBillingTimeMillis(extractWillResetAtByShape(msg))
+		}
+	} else {
+		// domestic 区域的上游文案是中文，没有 "will reset at"：
+		//   "您的使用量已超出频率限制，将在 2026-11-03 18:01:37 UTC+8 重置，……(code 6004)"
+		// 不认这个措辞的话重置时间永远是 0，所有 429 都无法区分「频率限制」和「日配额」。
+		// 直接按时间戳形状在整条消息里找第一个时间戳。
+		ms = ParseBillingTimeMillis(extractResetAtAnywhere(msg))
 	}
 	if ms <= 0 {
 		return 0, false
@@ -180,6 +186,13 @@ func extractWillResetAtByShape(msg string) string {
 		return ""
 	}
 	raw := strings.TrimSpace(reWillResetAt.FindString(msg[idx+len("will reset at"):]))
+	return strings.TrimSpace(reChinaZoneSuffix.ReplaceAllString(raw, ""))
+}
+
+// extractResetAtAnywhere 在整条消息里按时间戳形状找第一个时间戳，不依赖
+// "will reset at" 这类英文措辞。用于中文文案（domestic）以及上游改文案的情况。
+func extractResetAtAnywhere(msg string) string {
+	raw := strings.TrimSpace(reWillResetAt.FindString(msg))
 	return strings.TrimSpace(reChinaZoneSuffix.ReplaceAllString(raw, ""))
 }
 
