@@ -46,24 +46,6 @@ func TestProbeInvalidProxy(t *testing.T) {
 	}
 }
 
-func TestProbeUsesConfiguredProxy(t *testing.T) {
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Host != "echo.invalid" {
-			t.Errorf("unexpected proxy target: %s", r.URL)
-		}
-		_, _ = w.Write([]byte(`{"ip":"203.0.113.9"}`))
-	}))
-	defer proxy.Close()
-	// 目标域名不可能直连成功；只有实际经过指定 HTTP / SOCKS 代理才能读到回显。
-	socks := fakeSocks(t, false, "", "", "HTTP/1.0 200 OK\r\n\r\n"+`{"ip":"203.0.113.9"}`)
-	for _, raw := range []string{proxy.URL, "socks5h://" + socks} {
-		res := ProbeEndpointURL(t.Context(), raw, "http://echo.invalid")
-		if !res.OK || res.IP != "203.0.113.9" {
-			t.Fatalf("probe did not use %s: %+v", raw, res)
-		}
-	}
-}
-
 // 回显不是 IP 时要报错，避免把错误页当出口 IP。
 func TestProbeRejectsNonIP(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

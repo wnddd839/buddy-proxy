@@ -116,10 +116,6 @@ func ModelRateLimitCooldown(err error, now time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 	msg := err.Error()
-	lower := strings.ToLower(msg)
-	if !strings.Contains(lower, "will reset at") && !strings.Contains(msg, "将在") {
-		return 0, false
-	}
 	ms := ParseBillingTimeMillis(extractWillResetAt(msg))
 	if ms <= 0 {
 		// 旧逻辑解析失败：生产 6004 文案的时间戳后紧跟 ", alternatively…"，逗号不在

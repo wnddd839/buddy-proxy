@@ -44,25 +44,24 @@ func TestPublicJSONLimitOverHTTP(t *testing.T) {
 }
 
 func TestHTTPConfigDefaultsAndIdleTimeout(t *testing.T) {
+	t.Chdir(t.TempDir())
 	for _, tc := range []struct {
-		bodyMB int
-		idle   time.Duration
-		want   time.Duration
+		body, idle string
+		wantMB     int64
+		wantIdle   time.Duration
 	}{
-		{0, 0, 120 * time.Second},
-		{-1, -1, 120 * time.Second},
-		{128, 5 * time.Second, 5 * time.Second},
+		{"", "", 64, 120 * time.Second},
+		{"0", "0", 64, 120 * time.Second},
+		{"-1", "-1", 64, 120 * time.Second},
+		{"invalid", "invalid", 64, 120 * time.Second},
+		{"128", "5000", 128, 5 * time.Second},
 	} {
-		s := testServerCfg(t, config.Config{MaxBodyMB: tc.bodyMB, ServerIdleTimeout: tc.idle})
-		if s.HTTP.IdleTimeout != tc.want {
-			t.Fatalf("idle timeout=%s want %s", s.HTTP.IdleTimeout, tc.want)
-		}
-		wantMB := tc.bodyMB
-		if wantMB <= 0 {
-			wantMB = 64
-		}
-		if s.maxJSONBodyBytes != int64(wantMB)<<20 {
-			t.Fatalf("body limit=%d want %d MiB", s.maxJSONBodyBytes, wantMB)
+		t.Setenv("CODEBUDDY_PROXY_MAX_BODY_MB", tc.body)
+		t.Setenv("CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS", tc.idle)
+		cfg := config.Load()
+		s := testServerCfg(t, config.Config{MaxBodyMB: cfg.MaxBodyMB, ServerIdleTimeout: cfg.ServerIdleTimeout})
+		if s.HTTP.IdleTimeout != tc.wantIdle || s.maxJSONBodyBytes != tc.wantMB<<20 {
+			t.Fatalf("body=%d idle=%s; want %d MiB / %s", s.maxJSONBodyBytes, s.HTTP.IdleTimeout, tc.wantMB, tc.wantIdle)
 		}
 	}
 }

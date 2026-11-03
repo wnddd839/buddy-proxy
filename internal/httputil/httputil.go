@@ -194,15 +194,11 @@ func WriteSSEComment(w http.ResponseWriter, comment string) {
 }
 
 func ReadJSON(r *http.Request, dst any) error {
-	return readJSONLimited(r, dst, MaxJSONBodyBytes)
+	return ReadJSONLimited(r, dst, MaxJSONBodyBytes)
 }
 
 // ReadJSONLimited 使用调用方指定的上限读取 JSON，避免修改进程全局上限。
 func ReadJSONLimited(r *http.Request, dst any, limit int64) error {
-	return readJSONLimited(r, dst, limit)
-}
-
-func readJSONLimited(r *http.Request, dst any, limit int64) error {
 	defer r.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {

@@ -46,7 +46,7 @@ func TestReadJSONRejectsOversizedBody(t *testing.T) {
 	raw := `{"model":"` + strings.Repeat("a", 200) + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(raw))
 	var dst map[string]any
-	err := readJSONLimited(req, &dst, 64)
+	err := ReadJSONLimited(req, &dst, 64)
 	if !errors.Is(err, ErrBodyTooLarge) {
 		t.Fatalf("err=%v want ErrBodyTooLarge", err)
 	}
@@ -55,7 +55,7 @@ func TestReadJSONRejectsOversizedBody(t *testing.T) {
 func TestReadJSONAcceptsSmallBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"auto"}`))
 	var dst map[string]any
-	if err := readJSONLimited(req, &dst, 64); err != nil {
+	if err := ReadJSONLimited(req, &dst, 64); err != nil {
 		t.Fatal(err)
 	}
 	if dst["model"] != "auto" {
