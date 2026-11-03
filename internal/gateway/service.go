@@ -656,7 +656,9 @@ func (s *Service) shouldRetryNextAccount(err error, selection accounts.Selection
 func isTransportReplayError(msg string) bool {
 	lower := strings.ToLower(msg)
 	return strings.Contains(lower, "transport error") ||
-		strings.Contains(lower, "stream reset before first content")
+		strings.Contains(lower, "stream reset before first content") ||
+		// 无终止帧就结流（上游 FIN 半截）：首内容前等同建连失败，可安全换号重放。
+		strings.Contains(lower, "without terminal event before first content")
 }
 
 func isSiteMismatchError(err error) bool {

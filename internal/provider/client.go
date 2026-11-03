@@ -1107,13 +1107,20 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 		// delivered: 内容是否**真的下发给了客户端**（回调非空且该事件会被转发）。
 		// 空回合判定用它；与 sawContent 分开，避免把"解析到但没下发"当成已交付。
 		delivered bool
-		bytesRead int64
-		dataBuf   strings.Builder
+		// sawTerminal：是否收到过显式终止信号（finish_reason 帧或 [DONE]）。
+		// 缺少它说明上游是「说到一半被掐断」，绝不能当正常完成收尾。
+		sawTerminal bool
+		bytesRead   int64
+		dataBuf     strings.Builder
 	)
 	flush := func() {
 		data := strings.TrimSpace(dataBuf.String())
 		dataBuf.Reset()
-		if data == "" || data == "[DONE]" {
+		if data == "" {
+			return
+		}
+		if data == "[DONE]" {
+			sawTerminal = true
 			return
 		}
 		raw := []byte(data)
@@ -1154,6 +1161,8 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 				if opts.DeliverToolDeltas && opts.OnEvent != nil {
 					delivered = true
 				}
+			case "turn_ended":
+				sawTerminal = true
 			}
 			if event.Type == "text_delta" && event.Text != "" {
 				event.Text = fixer.Feed(event.Text)
@@ -1190,6 +1199,18 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 		}
 		if err == io.EOF {
 			flush()
+			if !sawTerminal && (sawContent || delivered) {
+				// 上游在生成途中以 FIN 正常关闭（而非 RST）：没有终止帧，正文却是
+				// 半截。旧行为是 break 出循环、由 FinishReasonFromTurn 默认补一个
+				// finish_reason=stop —— 客户端把它当完整回答，用户看到的就是
+				// 「会话说到一半直接没了」。这里必须判成截断：
+				//   · 未下发正文 -> 交服务层换号重放（客户端无感）
+				//   · 已下发正文 -> 冒泡成显式错误（客户端可重试，不会静默吞掉半截）
+				if !delivered {
+					return Result{}, fmt.Errorf("CodeBuddy chat completion stream ended without terminal event before first content: %w", io.ErrUnexpectedEOF)
+				}
+				return Result{Turn: Turn{Delivered: delivered}}, fmt.Errorf("CodeBuddy chat completion stream truncated after delivering content: %w", io.ErrUnexpectedEOF)
+			}
 			break
 		}
 		if err != nil {
