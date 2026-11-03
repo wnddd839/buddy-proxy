@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net"
@@ -156,6 +157,14 @@ func fakeSocks(t *testing.T, requireAuth bool, user, pass, payload string) strin
 		// 成功响应 + 绑定地址 0.0.0.0:0
 		if _, err := conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
 			return
+		}
+		if strings.HasPrefix(payload, "HTTP/") {
+			// HTTP 探针需先发请求；提前写响应会被 Transport 判成 unsolicited response。
+			req, err := http.ReadRequest(bufio.NewReader(conn))
+			if err != nil {
+				return
+			}
+			req.Body.Close()
 		}
 		_, _ = conn.Write([]byte(payload))
 	}()
