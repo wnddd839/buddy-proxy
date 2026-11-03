@@ -67,7 +67,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 **失败处理**：
 
 - 鉴权类失败 → 强制 refresh 后重试同一账号一次
-- **429·502·503·504·rate limit / 额度耗尽** 等可恢复上游故障 → 松开该会话的账号钉，标记 `failedRequests` + `lastError`，写入 `cooldownUntil`（6004 / rate-model 只写 `modelCooldowns[模型]`）；对仍可用的候选账号**并行探活额度**（只打 `/billing/meter/get-user-resource`，整批最多 2.5s，失败或超时保留缓存），再按 `PreferQuota` 选剩余最大者，用 `ExcludeIDs` 换号重试（单请求最多 16 个账号）。新会话的探活仍按第 3 步：只补 **缺失或超过 5 分钟** 的快照，快照新鲜则不打 billing。号池试尽或触达上限时回传真实上游错误，不用「重试深度超限」掩盖 429/503
+- **429·502·503·504·rate limit / 额度耗尽** 等可恢复上游故障 → 松开该会话的账号钉，标记 `failedRequests` + `lastError`，写入 `cooldownUntil`（6004 / rate-model 只写 `modelCooldowns[模型]`）；对仍可用的候选账号**并行探活额度**（只打 `/billing/meter/get-user-resource`，整批最多 2.5s，失败或超时保留缓存），再按 `PreferQuota` 选剩余最大者，用 `ExcludeIDs` 换号重试（单请求最多 16 个账号）。新会话的探活仍按第 3 步：只补 **缺失或超过 5 分钟** 的快照，快照新鲜则不打 billing。号池试尽或触达上限时回传真实上游错误，不用「重试深度超限」掩盖 429/503。后续普通请求不能通过全冷却兜底绕过当前模型的 6004 / rate-model 冷却；全部候选都被该模型限流时立即返回最早重置时间，不等待或重放
 - 同区域**全部账号冷却** → 降级选 `cooldownUntil` 最小者（避免整体不可用）
 - **传输层重放（有独立预算）**：`transport error`（建连/响应头前的连接层失败）与 `stream reset before first content`（已收到 200 头、但在任何正文或工具增量之前被上游掐断）**共同消耗** `maxResetReplays`（默认 2 次）预算。预算耗尽后不再换号，直接把最后一次错误交给客户端——避免 N 个账号全部拒连时放大成 N 次请求与 N 倍等待
 - **空回合重放（独立预算）**：上游以 `finish_reason=stop` 收尾但既无正文也无工具调用时，允许**一次**换号重放；该预算用独立计数器，不会被 429 / 流重置 / OAuth 刷新等无关失败提前耗尽（全局「单请求最多 16 个账号」上限仍然优先）。`content_filter` / `refusal` 属合法噤声，`length` / `max_tokens`（推理耗尽输出预算）属合法完成，均不判空

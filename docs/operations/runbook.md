@@ -94,7 +94,7 @@ curl -fsS http://127.0.0.1:32126/readyz
 - **传输层重放预算**：`transport error`（建连失败）与 `stream reset before first content` 共用 `maxResetReplays=2` 的预算，两类失败都计数；耗尽即停止换号。排查时注意：日志 `retrying codebuddy request with next account` 对**所有**换号重试都会打印（16 账号 429 链正常会有 15 条），不能只看条数；应筛同一请求内的 `transport error` / `stream reset before first content` 计数是否超过 2
 - **空回合重放**：`empty completed turn` 只允许一次换号重放，且用独立计数器（429/流重置/OAuth 刷新不消耗它）；但全局「单请求最多 16 个账号」上限仍优先。若客户端收到空正文，先看 WARN 里的 `finish=`——`stop` 才是软截断，`length`/`max_tokens` 是合法的输出预算耗尽
 - **不重放已交付内容**：只有真的写进客户端响应的内容才算已交付（chat 流式的 `tool_call_delta` 不下发、非流式无回调，均不计入）；`ToolUses` 为空可能只是截断工具被丢弃，不代表客户端没收到过正文或完整工具调用
-- **全冷却降级**：同区域全部冷却时仍选最快恢复账号（debug 日志），避免短时整体不可用
+- **全冷却降级**：普通账号级故障仍可选最快恢复账号（debug 日志）；6004 / rate-model 的当前模型冷却不参与降级，必须等到重置时间，其他模型不受影响。显式固定账号仍保留直接请求语义。所有候选账号都在模型冷却时立即失败，不在服务器内排队；Chat 错误返回 `Retry-After` / `retry_after`（秒）。
 - 250ms 合并异步落盘，去掉每请求多次同步 IO
 - OAuth / Upsert / Delete / Replace / SetEnabled **同步刷盘**（凭据不可丢）
 - 原子写：temp 文件 + rename，权限 `0600`
@@ -118,3 +118,14 @@ Go 版修复：
 - OAuth 会话 TTL 15 分钟；`reuseExisting=true` 且仍在 TTL 内会复用 `waiting` 会话
 
 验证：重新点「开始认证」，用**新生成**的 launch 链接，应 302 到上游登录页。
+
+## 请求体与空闲连接配置
+
+- 长会话返回 413 时，可设置 `CODEBUDDY_PROXY_MAX_BODY_MB=128` 并重启。默认 64 MiB，需同时核对 Nginx/隧道上限及进程内存；该配置不会扩大模型上下文窗口。
+- 可用 `CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS` 调整服务端 keep-alive 空闲超时（默认 120000 毫秒）。它不控制活跃 SSE，也不控制客户端等待响应头的时间；不能仅凭此配置宣称修复隧道 FIN/连接复用故障。
+
+## 出口回显检测与聊天可达性
+
+管理台出口检测通过指定代理访问 `https://api.ipify.org?format=json`，与聊天使用同一个 `egress.Proxy.Transport` 代理构造逻辑，但目标站和请求超时不同。回显站 DNS、TLS、访问策略或超时失败，不能单凭 `dial tcp <目标IP>:443` 判定“绕过代理”或“聊天出口损坏”；HTTP 代理内部转发或 SOCKS 本地代理也可能报告目标地址的错误。请对照同一账号的聊天测试、代理日志和 `direct` 直连对照结果。未绑定出口的聊天保留进程代理环境，检测的直连对照刻意忽略环境代理。
+
+6004 重置时间较远并不能单独证明日配额耗尽，独立出口也被限流不能证明不存在 IP 维度限制；按账号与模型记录实际重置时间，不按 `<1h` / `>12h` 猜测上游限流类别。

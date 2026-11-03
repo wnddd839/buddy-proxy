@@ -42,7 +42,8 @@ type Server struct {
 	HTTP    *http.Server
 	Updater *update.Manager
 	// Proxies 是候选出口清单（proxies.json），账号绑定仍以 Account.Proxy 为准。
-	Proxies *proxies.File
+	Proxies          *proxies.File
+	maxJSONBodyBytes int64
 }
 
 func New(cfg config.Config, svc *gateway.Service) *Server {
@@ -50,6 +51,15 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 		Svc:     svc,
 		Updater: update.New(version.Version),
 		Proxies: proxies.Open(filepath.Join(filepath.Dir(cfg.AccountsPath), "proxies.json")),
+	}
+	maxBodyMB := cfg.MaxBodyMB
+	if maxBodyMB <= 0 || int64(maxBodyMB) > (1<<63-1)>>20 {
+		maxBodyMB = config.DefaultMaxBodyMB
+	}
+	s.maxJSONBodyBytes = int64(maxBodyMB) << 20
+	idleTimeout := cfg.ServerIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = config.DefaultServerIdleTimeout
 	}
 	mux := http.NewServeMux()
 	// Go 1.22+ 方法感知路由（http_servemux_patterns）
@@ -93,9 +103,13 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       0,
 		WriteTimeout:      0,
-		IdleTimeout:       120 * time.Second,
+		IdleTimeout:       idleTimeout,
 	}
 	return s
+}
+
+func (s *Server) bodyTooLargeMessage() string {
+	return fmt.Sprintf("Request body exceeds %dMB.", s.maxJSONBodyBytes>>20)
 }
 
 func (s *Server) ListenAndServe() error {
@@ -366,9 +380,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, k
 		Thinking            map[string]any   `json:"thinking"`
 		PromptCacheKey      string           `json:"prompt_cache_key"`
 	}
-	if err := httputil.ReadJSON(r, &body); err != nil {
+	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
 		if errors.Is(err, httputil.ErrBodyTooLarge) {
-			httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError("Request body exceeds 64MB. 1M-context requests need a larger JSON body.", "invalid_request_error"))
+			httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError(s.bodyTooLargeMessage(), "invalid_request_error"))
 			return
 		}
 		httputil.WriteJSON(w, http.StatusBadRequest, openai.NewError("Invalid JSON body", "invalid_request_error"))
