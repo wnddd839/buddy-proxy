@@ -21,6 +21,9 @@ const (
 	DefaultWorkBuddyProductVer = "4.9.29177644"
 	DefaultRefreshWindow       = 10 * time.Minute
 	DefaultStreamKeepAlive     = 5 * time.Second
+	// DefaultStreamStall 上游流停滞看门狗：连续这么久收不到任何字节即判死。
+	// 取值需大于正常思考间隔（推理模型可能长时间只发心跳），远小于 TCP 超时。
+	DefaultStreamStall         = 180 * time.Second
 	DefaultOAuthSessionTTL     = 15 * time.Minute
 	DefaultHTTPTimeout         = 120 * time.Second
 	DefaultIdleConnTimeout     = 90 * time.Second
@@ -55,6 +58,7 @@ type Config struct {
 	IDEVersion          string
 	RefreshWindow       time.Duration
 	StreamKeepAlive     time.Duration
+	StreamStall         time.Duration
 	OAuthSessionTTL     time.Duration
 	HTTPTimeout         time.Duration
 	MaxIdleConns        int
@@ -87,6 +91,7 @@ func Load() Config {
 		IDEVersion:          envOr("CODEBUDDY_IDE_VERSION", "", DefaultIDEVersion),
 		RefreshWindow:       envDuration("CODEBUDDY_REFRESH_WINDOW_MS", "CURSOR_DIRECT_CODEBUDDY_REFRESH_WINDOW_MS", DefaultRefreshWindow),
 		StreamKeepAlive:     envDuration("CODEBUDDY_PROXY_STREAM_KEEPALIVE_MS", "CURSOR_DIRECT_STREAM_KEEPALIVE_MS", DefaultStreamKeepAlive),
+		StreamStall:         envDuration("CODEBUDDY_PROXY_STREAM_STALL_MS", "CURSOR_DIRECT_STREAM_STALL_MS", DefaultStreamStall),
 		OAuthSessionTTL:     DefaultOAuthSessionTTL,
 		HTTPTimeout:         DefaultHTTPTimeout,
 		MaxIdleConns:        DefaultMaxIdleConns,

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -43,6 +44,8 @@ type Server struct {
 	Updater *update.Manager
 	// Proxies 是候选出口清单（proxies.json），账号绑定仍以 Account.Proxy 为准。
 	Proxies *proxies.File
+	// drainTimeout 是优雅关闭宽限期，0 时由 DrainTimeout 回退默认值。
+	drainTimeout time.Duration
 }
 
 func New(cfg config.Config, svc *gateway.Service) *Server {
@@ -50,6 +53,11 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 		Svc:     svc,
 		Updater: update.New(version.Version),
 		Proxies: proxies.Open(filepath.Join(filepath.Dir(cfg.AccountsPath), "proxies.json")),
+	}
+	if raw := strings.TrimSpace(os.Getenv("CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS")); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+			s.drainTimeout = time.Duration(ms) * time.Millisecond
+		}
 	}
 	mux := http.NewServeMux()
 	// Go 1.22+ 方法感知路由（http_servemux_patterns）
@@ -96,6 +104,16 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 		IdleTimeout:       120 * time.Second,
 	}
 	return s
+}
+
+// DrainTimeout 返回优雅关闭宽限期：必须大于一个 agent 回合的常见时长，
+// 否则每次部署都会硬切在途请求。默认 10 分钟，可用
+// CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS 覆盖。
+func (s *Server) DrainTimeout() time.Duration {
+	if s != nil && s.drainTimeout > 0 {
+		return s.drainTimeout
+	}
+	return 10 * time.Minute
 }
 
 func (s *Server) ListenAndServe() error {

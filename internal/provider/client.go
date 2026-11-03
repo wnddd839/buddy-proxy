@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
@@ -26,6 +27,9 @@ type Client struct {
 	IDEVersion string
 	// Log 上游失败排障日志；为空时回退 slog.Default()。网关 New 时注入进程 logger。
 	Log *slog.Logger
+	// StallTimeout 上游流停滞看门狗：流式响应期间连续这么久收不到任何字节，
+	// 就主动断开并按失败处理。<=0 表示关闭（测试用 Client{} 即关闭）。
+	StallTimeout time.Duration
 
 	// base 是直连用的 Transport，各出口按需 Clone（连接池互不干扰）。
 	base    *http.Transport
@@ -106,9 +110,10 @@ func NewClient(cfg config.Config) *Client {
 			Timeout:   0,
 			Transport: transport,
 		},
-		base:       transport,
-		IDEVersion: strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
-		Log:        slog.Default(),
+		base:         transport,
+		IDEVersion:   strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
+		Log:          slog.Default(),
+		StallTimeout: cfg.StreamStall,
 	}
 }
 
@@ -1095,6 +1100,12 @@ func partTypes(parts []any) []string {
 func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 	acc := newAccumulator()
 	fixer := newATXFixer()
+	var guard *stallGuard
+	if g := newStallGuard(body, c.StallTimeout); g != nil {
+		guard = g
+		defer g.timer.Stop()
+		body = g
+	}
 	reader := bufio.NewReaderSize(body, 64*1024)
 	var (
 		eventCount int
@@ -1191,6 +1202,15 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 		if err == io.EOF {
 			flush()
 			break
+		}
+		if err != nil && guard != nil && guard.fired.Load() {
+			// 停滞看门狗触发：上游 TCP 还在，但连续 StallTimeout 没有字节。
+			// 旧行为会一直挂着（实测单请求 80-925 秒），最后要么 TCP 超时、要么
+			// 客户端自己放弃——用户看到的就是「卡住然后没了」。
+			if !sawContent {
+				return Result{}, fmt.Errorf("CodeBuddy chat completion stream stalled before first content: %w", err)
+			}
+			return Result{Turn: Turn{Delivered: delivered}}, fmt.Errorf("CodeBuddy chat completion stream stalled after delivering content: %w", err)
 		}
 		if err != nil {
 			// 上游流在任何正文/工具增量之前被传输层掐断（边缘空闲回收/连接重置）。
@@ -1978,4 +1998,39 @@ func truthy(value any) bool {
 	default:
 		return false
 	}
+}
+
+// stallGuard 是上游流停滞看门狗：每次读到字节就把定时器往后推，超时未读到
+// 数据则关闭底层 body，让阻塞中的 Read 立刻返回错误。用于把「上游假活」从
+// 无限挂起收敛成可判定的失败（首内容前可换号重放，已交付则显式报错）。
+type stallGuard struct {
+	r       io.Reader
+	closer  io.Closer
+	timeout time.Duration
+	timer   *time.Timer
+	fired   atomic.Bool
+}
+
+func newStallGuard(body io.Reader, timeout time.Duration) *stallGuard {
+	if timeout <= 0 {
+		return nil
+	}
+	closer, ok := body.(io.Closer)
+	if !ok {
+		return nil
+	}
+	g := &stallGuard{r: body, closer: closer, timeout: timeout}
+	g.timer = time.AfterFunc(timeout, func() {
+		g.fired.Store(true)
+		_ = g.closer.Close()
+	})
+	return g
+}
+
+func (g *stallGuard) Read(p []byte) (int, error) {
+	n, err := g.r.Read(p)
+	if n > 0 {
+		g.timer.Reset(g.timeout)
+	}
+	return n, err
 }

@@ -48,7 +48,7 @@ var (
 	// first content" = 已收到 200 头但上游在任何正文/工具增量之前掐断流
 	// （provider.readSSE 标记，思考流不算增量）。两者客户端都尚未收到可消费的
 	// 内容，重放不可见，换号重拨即可自愈。
-	reRetryNextAccount = regexp.MustCompile(`(?i)\b429\b|\b502\b|\b503\b|\b504\b|rate.?limit|too many requests|site mismatch|invalid request|transport error|stream reset before first content`)
+	reRetryNextAccount = regexp.MustCompile(`(?i)\b429\b|\b500\b|\b502\b|\b503\b|\b504\b|rate.?limit|too many requests|site mismatch|invalid request|transport error|stream reset before first content`)
 )
 
 // maxResetReplays 慢掐重放预算：最多 2 次重放（共 3 发）。每次重放都会让思考
@@ -656,7 +656,9 @@ func (s *Service) shouldRetryNextAccount(err error, selection accounts.Selection
 func isTransportReplayError(msg string) bool {
 	lower := strings.ToLower(msg)
 	return strings.Contains(lower, "transport error") ||
-		strings.Contains(lower, "stream reset before first content")
+		strings.Contains(lower, "stream reset before first content") ||
+		// 上游停滞（看门狗掐断）：首内容前同样可安全换号。
+		strings.Contains(lower, "stream stalled before first content")
 }
 
 func isSiteMismatchError(err error) bool {
