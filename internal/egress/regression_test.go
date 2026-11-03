@@ -74,7 +74,10 @@ func TestSOCKSHandshakeHonorsCancellation(t *testing.T) {
 
 func TestDirectProbeIgnoresEnvironmentProxy(t *testing.T) {
 	if os.Getenv("CBP_DIRECT_PROBE_TEST") == "1" {
-		result := ProbeEndpointURL(t.Context(), "", "http://direct-probe.invalid")
+		// 直连应失败，但不能让系统 DNS 重试耗尽父进程的 5 秒预算。
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		result := ProbeEndpointURL(ctx, "", "http://direct-probe.invalid")
 		if result.OK {
 			t.Fatal("DIRECT probe used the environment proxy")
 		}

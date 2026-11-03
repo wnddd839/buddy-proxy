@@ -109,7 +109,7 @@ func IsModelRateLimitError(err error) bool {
 	return strings.Contains(msg, "6004") || strings.Contains(msg, "rate-model") || strings.Contains(msg, "rate model")
 }
 
-// ModelRateLimitCooldown 从 6004 / rate-model 的 "will reset at" 文案解析冷却时长。
+// ModelRateLimitCooldown 从 6004 / rate-model 的英文或中文重置文案解析冷却时长。
 // 解析失败或已过期时返回 ok=false，由调用方回退固定表。
 func ModelRateLimitCooldown(err error, now time.Time) (time.Duration, bool) {
 	if !IsModelRateLimitError(err) {
@@ -117,7 +117,7 @@ func ModelRateLimitCooldown(err error, now time.Time) (time.Duration, bool) {
 	}
 	msg := err.Error()
 	lower := strings.ToLower(msg)
-	if !strings.Contains(lower, "will reset at") {
+	if !strings.Contains(lower, "will reset at") && !strings.Contains(msg, "将在") {
 		return 0, false
 	}
 	ms := ParseBillingTimeMillis(extractWillResetAt(msg))
@@ -177,9 +177,12 @@ func extractWillResetAtByShape(msg string) string {
 	lower := strings.ToLower(msg)
 	idx := strings.Index(lower, "will reset at")
 	if idx < 0 {
+		idx = strings.Index(msg, "将在")
+	}
+	if idx < 0 {
 		return ""
 	}
-	raw := strings.TrimSpace(reWillResetAt.FindString(msg[idx+len("will reset at"):]))
+	raw := strings.TrimSpace(reWillResetAt.FindString(msg[idx:]))
 	return strings.TrimSpace(reChinaZoneSuffix.ReplaceAllString(raw, ""))
 }
 

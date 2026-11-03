@@ -27,6 +27,22 @@ var (
 	ErrAccountCoolingDown = errors.New("CodeBuddy account is cooling down")
 )
 
+// ModelCooldownError 表示当前模型的所有候选账号仍在上游限流窗口内。
+type ModelCooldownError struct {
+	Model string
+	Until int64
+}
+
+func (e *ModelCooldownError) Error() string {
+	return fmt.Sprintf("CodeBuddy model rate limit: model=%s will reset at %s", e.Model, time.UnixMilli(e.Until).UTC().Format(time.RFC3339))
+}
+
+func (e *ModelCooldownError) Unwrap() error { return ErrAccountCoolingDown }
+
+func (e *ModelCooldownError) RetryAfterHeader() string {
+	return fmt.Sprint(max(1, int64((time.Until(time.UnixMilli(e.Until))+time.Second-1)/time.Second)))
+}
+
 func (a *Account) UnmarshalJSON(data []byte) error {
 	type alias Account
 	aux := &struct {
@@ -603,6 +619,7 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 	var (
 		fallbackIdx   = -1
 		fallbackUntil int64
+		modelResetAt  int64
 	)
 	for offset := 0; offset < len(store.Accounts); offset++ {
 		idx := (store.NextIndex + offset) % len(store.Accounts)
@@ -614,6 +631,13 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 			continue
 		}
 		if _, skip := exclude[account.ID]; skip {
+			continue
+		}
+		// 上游已明确限制该模型，不能借“全冷却降级”提前再次请求。
+		if until := account.ModelCooldowns[opts.Model]; until > now {
+			if modelResetAt == 0 || until < modelResetAt {
+				modelResetAt = until
+			}
 			continue
 		}
 		if blockedUntil := unavailableUntil(account, now, opts.Model); blockedUntil > now {
@@ -642,6 +666,9 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 			BypassedCooldown: true,
 			Model:            opts.Model,
 		}, nil
+	}
+	if modelResetAt > 0 {
+		return Selection{}, &ModelCooldownError{Model: opts.Model, Until: modelResetAt}
 	}
 	if opts.Site != "" {
 		return Selection{}, fmt.Errorf("%w for site=%s", ErrNoAccounts, config.NormalizeSite(opts.Site))

@@ -709,7 +709,7 @@ func isRetryExhausted(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, accounts.ErrNoAccounts) || errors.Is(err, errRetryDepthExceeded) {
+	if errors.Is(err, accounts.ErrNoAccounts) || errors.Is(err, accounts.ErrAccountCoolingDown) || errors.Is(err, errRetryDepthExceeded) {
 		return true
 	}
 	return strings.Contains(err.Error(), "no enabled CodeBuddy accounts")

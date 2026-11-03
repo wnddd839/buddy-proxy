@@ -11,6 +11,8 @@ Authorization: Bearer <CODEBUDDY_PROXY_API_KEY>
 
 Chat、Responses、Images JSON、搜索、网页抓取和 agentic search 的 JSON 请求体默认最多 64 MiB，可通过 `CODEBUDDY_PROXY_MAX_BODY_MB` 调整；超限返回 413，错误文案显示实际上限。别名路由共用该限制；管理接口和图片 multipart 限制不变。
 
+Chat 普通号池的当前模型全部处于 6004 / rate-model 冷却时，不再向这些账号发请求；非流式错误提供 `Retry-After` 响应头与 `error.retry_after`（秒），已打开的流提供 SSE `error.retry_after`。保留既有 HTTP 错误状态约定；显式固定账号 Key 仍可直接请求该账号。
+
 鉴权失败统一返回：
 
 ```json

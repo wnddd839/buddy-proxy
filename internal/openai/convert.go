@@ -67,8 +67,11 @@ func RetryAfter(err error) string {
 	if err == nil {
 		return ""
 	}
-	if chatErr, ok := errors.AsType[*provider.ChatError](err); ok {
-		return strings.TrimSpace(chatErr.RetryAfterHeader())
+	if retryErr, ok := errors.AsType[interface {
+		error
+		RetryAfterHeader() string
+	}](err); ok {
+		return strings.TrimSpace(retryErr.RetryAfterHeader())
 	}
 	return ""
 }
