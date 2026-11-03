@@ -38,12 +38,14 @@ type APIKeyBinding struct {
 }
 
 type Config struct {
-	Host                string
-	Port                int
-	APIKey              string
-	APIKeys             []APIKeyBinding
-	AdminPassword       string
-	RequireAPIKey       bool
+	Host          string
+	Port          int
+	APIKey        string
+	APIKeys       []APIKeyBinding
+	AdminPassword string
+	RequireAPIKey bool
+	// ConcurrencyDisabled 关闭按账号并发观测（默认开启，仅内存计数）。
+	ConcurrencyDisabled bool
 	PublicBaseURL       string
 	AccountsPath        string
 	UsagePath           string
@@ -108,6 +110,7 @@ func Load() Config {
 	// 管理台密码为空则开放管理页（本地友好）。
 	// /v1 API Key 门禁仍由 CODEBUDDY_PROXY_REQUIRE_API_KEY 独立控制。
 	cfg.RequireAPIKey = envBool("CODEBUDDY_PROXY_REQUIRE_API_KEY", "CURSOR_DIRECT_REQUIRE_API_KEY", cfg.APIKey != "" || len(cfg.APIKeys) > 0)
+	cfg.ConcurrencyDisabled = envBool("CODEBUDDY_PROXY_CONCURRENCY_DISABLED", "", false)
 	if usageEnv := strings.TrimSpace(firstEnv("CODEBUDDY_PROXY_USAGE_PATH")); usageEnv != "" {
 		cfg.UsagePath = expandHome(usageEnv)
 	} else {

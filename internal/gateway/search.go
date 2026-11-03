@@ -143,7 +143,13 @@ func (s *Service) withSearchAccount(
 	}
 	account := selection.Account
 	chatOpts := s.chatOptionsFromAccount(account, CompleteOptions{Site: site})
-	if err := call(ctx, account, chatOpts); err != nil {
+	endFlight := s.Concurrency.Begin(account.ID, account.Label)
+	callErr := call(ctx, account, chatOpts)
+	if callErr != nil {
+		s.recordRateLimit(account, "", site, callErr)
+	}
+	endFlight(callErr == nil)
+	if err := callErr; err != nil {
 		if errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
 			s.Log.Info("codebuddy "+label+" request canceled by client", "accountId", account.ID)
 			return err

@@ -109,6 +109,12 @@ server ──► gateway ──► accounts pool + oauth refresh
 | singleflight | `modelsFlight` | 模型列表并发 cache miss 合并回源 |
 | 常量时间比较 | `crypto/subtle` | API Key / admin 密码比对 |
 | 异步刷盘 | `accounts.Pool.flushLoop` | 250ms 合并写，退出时强制 flush |
+| 并发观测 | `concurrency.Tracker` | 按账号记录 in-flight、1/5/60 分钟 RPM、429 触发瞬间的账号/全局在途数；默认常开，仅内存计数 |
+
+并发观测默认常开：`Begin` / `End` 只是一次互斥锁加计数，成本远低于一次上游请求；
+它的价值在 429 排查——只有记录「限流触发瞬间的在途数」才能区分「账号池太窄」
+和「单账号并发过高」。需要关闭时设 `CODEBUDDY_PROXY_CONCURRENCY_DISABLED=true`
+（nil tracker 的埋点是空操作）。
 
 ## 账号池持久化
 

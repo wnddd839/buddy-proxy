@@ -16,6 +16,7 @@ import (
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/billing"
+	"github.com/wnddd839/codebuddy-proxy/internal/concurrency"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
@@ -122,6 +123,8 @@ type Service struct {
 	Journal       *usagejournal.Journal
 	// Watch 是进程内波动监测器，nil 表示未启用（见 internal/watch）。
 	Watch *watch.Monitor
+	// Concurrency 是并发观测器（in-flight / RPM / 限流现场），nil 表示不观测。
+	Concurrency *concurrency.Tracker
 
 	probeMu    sync.Mutex
 	probeCache map[string]provider.Reachability
@@ -161,6 +164,12 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 	if cfg.Watch.Enabled {
 		svc.Watch = watch.New(cfg.Watch, logger, nil)
 	}
+	// 并发观测默认开启：只做内存计数，成本可忽略；落盘同账号池目录。
+	// 需要彻底关掉时设 CODEBUDDY_PROXY_CONCURRENCY_DISABLED=true
+	//（nil tracker 的 Begin / RecordRateLimit 都是安全的空操作）。
+	if !cfg.ConcurrencyDisabled {
+		svc.Concurrency = concurrency.New(concurrency.DefaultPath(cfg.AccountsPath), 0)
+	}
 	svc.modelsCache = map[string]modelsCacheEntry{}
 	svc.probeCache = map[string]provider.Reachability{}
 	svc.storeConfig(cfg)
@@ -174,6 +183,11 @@ func (s *Service) Close() error {
 	var err error
 	if s.Journal != nil {
 		err = s.Journal.Close()
+	}
+	if s.Concurrency != nil {
+		if cerr := s.Concurrency.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
 	}
 	if s.Pool != nil {
 		if poolErr := s.Pool.Close(); poolErr != nil && err == nil {
@@ -450,7 +464,14 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if pinKey != "" {
 		chatOpts.ConversationID = s.Conversations.ID(pinKey+"\x1e"+chatOpts.Product, account.ID)
 	}
+	// 并发观测：在这里打点，才能把「限流触发瞬间的在途数」和真实请求绑定。
+	endFlight := s.Concurrency.Begin(account.ID, account.Label)
 	result, err := s.Provider.Complete(ctx, chatOpts)
+	if err != nil {
+		// 必须在 endFlight 之前记录：此时本次请求仍在途，才能反映「限流触发瞬间的真实并发」。
+		s.recordRateLimit(account, opts.Model, site, err)
+	}
+	endFlight(err == nil)
 	if err != nil {
 		// 客户端主动断开 SSE/HTTP，不算账号或上游故障。
 		if errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
@@ -1321,6 +1342,7 @@ func (s *Service) Status() map[string]any {
 		"poolProduct": product,
 		"upstream":    upstream,
 		"watch":       s.WatchStatus(),
+		"concurrency": s.ConcurrencySummary(),
 		"config": map[string]any{
 			"host":                host,
 			"port":                port,

@@ -5,6 +5,10 @@
 
 ---
 
+## Unreleased
+
+- 新增按账号并发观测：in-flight 水位、1/5/60 分钟 RPM、429 触发瞬间的账号/全局在途数；`/direct-admin/api/concurrency` 返回完整快照，`/status` 只带汇总数字。默认常开（仅内存计数），可用 `CODEBUDDY_PROXY_CONCURRENCY_DISABLED=true` 关闭；落盘 `proxy-concurrency.json`。
+
 ## v0.7.2 · 2026-11-04 · 每账号自动签到与流式收尾加固
 
 ### 新功能 · 每账号自动签到

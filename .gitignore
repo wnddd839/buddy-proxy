@@ -35,3 +35,4 @@ go-codebuddy/
 # runtime credentials and usage data
 proxy-accounts*.json
 proxy-usage*.json
+proxy-concurrency*.json

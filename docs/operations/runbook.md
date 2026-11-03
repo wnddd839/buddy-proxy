@@ -132,3 +132,10 @@ Go 版修复：
 管理台出口检测通过指定代理访问 `https://api.ipify.org?format=json`，与聊天使用同一个 `egress.Proxy.Transport` 代理构造逻辑，但目标站和请求超时不同。回显站 DNS、TLS、访问策略或超时失败，不能单凭 `dial tcp <目标IP>:443` 判定“绕过代理”或“聊天出口损坏”；HTTP 代理内部转发或 SOCKS 本地代理也可能报告目标地址的错误。请对照同一账号的聊天测试、代理日志和 `direct` 直连对照结果。未绑定出口的聊天保留进程代理环境，检测的直连对照刻意忽略环境代理。
 
 6004 重置时间较远并不能单独证明日配额耗尽，独立出口也被限流不能证明不存在 IP 维度限制；按账号与模型记录实际重置时间，不按 `<1h` / `>12h` 猜测上游限流类别。
+
+## 并发观测与 429 现场
+
+- `/direct-admin/api/status` 的 `concurrency` 只有汇总数字（`globalInFlight` / `accounts` / `rateLimits` / `totals`）；完整按账号水位与限流事件在 `GET /direct-admin/api/concurrency`。
+- 每个限流事件记录 `accountInFlight` / `globalInFlight`，是「429 触发瞬间」的真实并发（在请求结束前记录）。若 `accountInFlight` 恒为 1，说明瓶颈是账号池太窄或单账号 RPM 上限，不是全局并发。
+- 落盘文件 `proxy-concurrency.json` 与账号池同目录，默认保留 60 分钟窗口；不要手工编辑。
+- 默认常开（仅内存计数）。关闭：`CODEBUDDY_PROXY_CONCURRENCY_DISABLED=true`。

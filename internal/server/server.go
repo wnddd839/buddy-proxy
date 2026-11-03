@@ -683,6 +683,12 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		}
 		httputil.WriteJSON(w, http.StatusOK, payload)
 		return
+	case path == "/direct-admin/api/concurrency" && r.Method == http.MethodGet:
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok":          true,
+			"concurrency": s.Svc.ConcurrencyStatus(),
+		})
+		return
 	case path == "/direct-admin/api/usage" && r.Method == http.MethodGet:
 		rangeName := strings.TrimSpace(r.URL.Query().Get("range"))
 		// Page size default 20; usagejournal.normalizePageSize caps at 100.
