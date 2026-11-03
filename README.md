@@ -40,7 +40,9 @@ kiro-proxy 已发布
 - [@kylstwang](https://github.com/kylstwang) · [#37](https://github.com/wnddd839/buddy-proxy/issues/37) Linux ARM 路由器运行与预编译发行包需求
 - [@kouekikin24](https://github.com/kouekikin24) · [#45](https://github.com/wnddd839/buddy-proxy/issues/45) 输出 token 上限静默失效（附国内/国际仅改字段名的上游对照与修复验证）
 
-特别感谢本版功能贡献：[@240xu](https://github.com/240xu) 的 [#48](https://github.com/wnddd839/buddy-proxy/pull/48) 波动监测、[#49](https://github.com/wnddd839/buddy-proxy/pull/49) 批量导入和 [#50](https://github.com/wnddd839/buddy-proxy/pull/50) 固定出口，以及 [@kouekikin24](https://github.com/kouekikin24) 的 [#44](https://github.com/wnddd839/buddy-proxy/pull/44) 流重试保护。v0.7.0 在原 PR 基础上适配整合并修复已确认问题；未直接合并原 PR 不影响贡献归属。
+特别感谢 v0.7.0 功能贡献：[@240xu](https://github.com/240xu) 的 [#48](https://github.com/wnddd839/buddy-proxy/pull/48) 波动监测、[#49](https://github.com/wnddd839/buddy-proxy/pull/49) 批量导入和 [#50](https://github.com/wnddd839/buddy-proxy/pull/50) 固定出口，以及 [@kouekikin24](https://github.com/kouekikin24) 的 [#44](https://github.com/wnddd839/buddy-proxy/pull/44) 流重试保护。v0.7.0 在原 PR 基础上适配整合并修复已确认问题；未直接合并原 PR 不影响贡献归属。
+
+v0.7.1 感谢 [@240xu](https://github.com/240xu) 提供 [#52](https://github.com/wnddd839/buddy-proxy/pull/52) 请求体上限、[#53](https://github.com/wnddd839/buddy-proxy/pull/53) 空闲超时配置，以及 [#54](https://github.com/wnddd839/buddy-proxy/issues/54) 限流实测反馈。
 
 ---
 
@@ -68,7 +70,7 @@ kiro-proxy 已发布
 | **协议直连** | OAuth 登录后直连上游，不依赖 `codebuddy --serve` 等本地中间进程 |
 | **标准 OpenAI 形状** | `GET /v1/models` · `POST /v1/chat/completions` · `POST /v1/responses`（Responses API，Codex CLI 可直连）· `POST /v1/images/generations` · `POST /v1/images/edits`，流式与非流式都支持 |
 | **官方搜索能力** | Chat 显式传 `web_search_options:{}`，Responses 显式声明 `web_search`，由代理执行官方搜索闭环；不声明不搜索。另有 `/v1/search`、`/v1/webfetch`、`/v1/agentic_search`。使用账号官方权限及配额，不接独立第三方搜索服务，详见[下游接入](docs/guides/search.md) |
-| **多账号调度** | 同会话钉在同一账号；钉号被禁用/删除会换号。新会话按额度快照选最大（缺快照或超过 5 分钟才探活）；失败换号前再探活拿最大。6004 / `rate-model` 按模型冷却，并按 `will reset at` 自动恢复，不阻断同账号其他模型。固定账号 Key 不换号。凭据以 `0600` 权限落盘 |
+| **多账号调度** | 同会话钉在同一账号；钉号被禁用/删除会换号。新会话按额度快照选最大（缺快照或超过 5 分钟才探活）；失败换号前再探活拿最大。6004 / `rate-model` 按模型冷却，并按英文或中文重置时间自动恢复；普通号池全冷却时不绕过该模型限制，不阻断同账号其他模型。固定账号 Key 不换号。凭据以 `0600` 权限落盘 |
 | **真实余额** | 管理台直读官网 Credits，显示「剩余 / 总额」 |
 | **批量导入与固定出口** | 账号池粘贴客户端凭据或账号池 JSON，重复账号更新、错误逐条显示；支持按账号绑定 HTTP / HTTPS / SOCKS5 / SOCKS5h 出口、维护候选与均衡分配，代理失效不回退直连 |
 | **可选波动监测** | 观测真实请求的错误率、推理缺失与耗时，支持日志、webhook 和 SMTP；默认关闭，见[配置说明](docs/operations/monitoring.md) |
@@ -116,7 +118,18 @@ chmod +x ./codebuddy-proxy-linux-amd64
 
 运行中的实例可在管理台顶栏下方点「检查更新 / 更新并重启」，仅从官方 GitHub Release 下载并按 `SHA256SUMS.txt` 校验，成功后自动重启并回连；下载校验失败或新版本启动失败时保留/回滚旧程序。改动只替换可执行文件，不会覆盖 `.env`、账号池或用量文件。**首个带更新器的版本仍需手动升级一次**；Docker 部署请用镜像更新（`docker compose pull && docker compose up -d`）。
 
-当前正式版为 **v0.7.0**，新增可选波动监测、账号批量导入和账号固定出口，并修复流重试与截断工具参数处理。保留 v0.6.3 的模型级冷却和现有管理台布局。v0.6.2 起更新器优先通过官方 Release 网页发现版本，避免共享代理出口耗尽匿名 API 额度。v0.6.1 如遇检查更新 HTTP 403，请手动升级到 v0.6.2 或更新版本。
+当前正式版为 **[v0.7.1](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.1)**，修复普通号池全冷却时绕过模型限流的问题，支持中文重置时间，并在 Chat 冷却错误中给出剩余等待秒数；不在服务端长时间排队。保留 v0.7.0 的波动监测、批量导入和固定出口。
+
+新增两个可选配置，修改后重启生效，默认行为保持不变：
+
+```env
+# 公开推理接口 JSON 请求体上限，单位 MiB；不扩大模型上下文窗口
+CODEBUDDY_PROXY_MAX_BODY_MB=64
+# HTTP keep-alive 空闲超时，单位毫秒；不限制活跃 SSE，也不是客户端响应头超时
+CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS=120000
+```
+
+超长会话如需调大请求体上限，请同时核对反代限制与可用内存。v0.6.2 起更新器优先通过官方 Release 网页发现版本；v0.6.1 如遇检查更新 HTTP 403，请手动升级到 v0.6.2 或更新版本。
 
 未绑定账号出口时沿用进程默认网络配置（包括 `HTTP_PROXY` / `HTTPS_PROXY`）；出口检测中的直连对照会忽略这些环境代理。代理 URL 含凭据时请保管好账号池和同目录 `proxies.json`。
 

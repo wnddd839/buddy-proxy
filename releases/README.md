@@ -32,7 +32,7 @@ make release
 Windows PowerShell：
 
 ```powershell
-.\scripts\release.ps1 -Version v0.6
+.\scripts\release.ps1 -Version v0.7.1
 ```
 
 ARM 构建不依赖 CGO。请先通过 `uname -m` 确认设备架构：`aarch64` 选择 arm64，`armv7l` 选择 armv7，ARMv6 选择 armv6。MIPS 路由器不能运行 ARM 二进制。发行包已完成交叉构建，但仍需在目标设备确认系统与指令集兼容性。
@@ -68,6 +68,8 @@ chmod +x ./codebuddy-proxy-linux-amd64   # 或 darwin 对应文件
 | `CODEBUDDY_PROXY_API_KEY` | 客户端主 Key |
 | `CODEBUDDY_PROXY_API_KEYS` | 可选。多 Key 绑区域或账号，例如 `cbp_aaa:global,cbp_fixed:account=<id>` |
 | `CODEBUDDY_PROXY_PORT` | 端口，默认 `32126` |
+| `CODEBUDDY_PROXY_MAX_BODY_MB` | 公开推理接口 JSON 上限（MiB），默认 `64` |
+| `CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS` | HTTP keep-alive 空闲超时（毫秒），默认 `120000`，不限制活跃 SSE |
 | `CODEBUDDY_SITE` | `domestic` 或 `global` |
 | `CODEBUDDY_PRODUCT` | `codebuddy`（默认）或 `workbuddy` |
 | `CODEBUDDY_PROXY_ACCOUNTS_PATH` | 账号池 JSON 路径 |
