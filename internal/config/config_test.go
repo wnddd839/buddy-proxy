@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 )
@@ -49,6 +50,22 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ChatCompletionsPath != "/v2/chat/completions" {
 		t.Fatalf("path=%q", cfg.ChatCompletionsPath)
+	}
+}
+
+func TestLoadHTTPDeploymentLimits(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("CODEBUDDY_PROXY_MAX_BODY_MB", "128")
+	t.Setenv("CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS", "5000")
+	cfg := config.Load()
+	if cfg.MaxBodyMB != 128 || cfg.ServerIdleTimeout != 5*time.Second {
+		t.Fatalf("body=%d idle=%s", cfg.MaxBodyMB, cfg.ServerIdleTimeout)
+	}
+	t.Setenv("CODEBUDDY_PROXY_MAX_BODY_MB", "invalid")
+	t.Setenv("CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS", "invalid")
+	cfg = config.Load()
+	if cfg.MaxBodyMB != 64 || cfg.ServerIdleTimeout != 120*time.Second {
+		t.Fatalf("default body=%d idle=%s", cfg.MaxBodyMB, cfg.ServerIdleTimeout)
 	}
 }
 

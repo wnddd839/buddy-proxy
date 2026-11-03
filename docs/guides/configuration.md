@@ -22,6 +22,8 @@
 |------|--------|------|
 | `CODEBUDDY_PROXY_HOST` | `127.0.0.1` | 监听地址 |
 | `CODEBUDDY_PROXY_PORT` | `32126` | 监听端口 |
+| `CODEBUDDY_PROXY_MAX_BODY_MB` | `64` | 公开推理接口 JSON 上限，单位 MiB；非正值或溢出回退默认。管理接口仍为 64 MiB，图片 multipart 限制不变 |
+| `CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS` | `120000` | HTTP keep-alive 空闲超时（毫秒）；非正值回退默认，不是 SSE 总时长或上游首包超时 |
 | `CODEBUDDY_PROXY_PUBLIC_BASE_URL` | 空 | 公网访问地址，用于 OAuth 回调与客户端配置回显。会去掉结尾 `/` |
 
 ## 鉴权

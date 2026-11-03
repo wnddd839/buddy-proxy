@@ -36,9 +36,9 @@ func (s *Server) writeResponsesError(w http.ResponseWriter, status int, code, me
 
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request, keySite string) {
 	var req openai.ResponsesRequest
-	if err := httputil.ReadJSON(r, &req); err != nil {
+	if err := httputil.ReadJSONLimited(r, &req, s.maxJSONBodyBytes); err != nil {
 		if errors.Is(err, httputil.ErrBodyTooLarge) {
-			s.writeResponsesError(w, http.StatusRequestEntityTooLarge, "request_too_large", "Request body exceeds 64MB.")
+			s.writeResponsesError(w, http.StatusRequestEntityTooLarge, "request_too_large", s.bodyTooLargeMessage())
 			return
 		}
 		s.writeResponsesError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body")

@@ -73,8 +73,8 @@ func (s *Server) handleAgenticSearchAuth(w http.ResponseWriter, r *http.Request)
 // handleSearch 转发上游 /agenttool/v1/search（关键词搜索）。
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, keySite string) {
 	var body searchRequestBody
-	if err := httputil.ReadJSON(r, &body); err != nil {
-		writeSearchBodyError(w, err)
+	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
+		s.writeSearchBodyError(w, err)
 		return
 	}
 	query := strings.TrimSpace(body.Query)
@@ -132,8 +132,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, keySite st
 // handleWebFetch 转发上游 /agenttool/v1/webfetch（网页正文抓取）。
 func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request, keySite string) {
 	var body webFetchRequestBody
-	if err := httputil.ReadJSON(r, &body); err != nil {
-		writeSearchBodyError(w, err)
+	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
+		s.writeSearchBodyError(w, err)
 		return
 	}
 	target := strings.TrimSpace(body.URL)
@@ -201,8 +201,8 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request, keySite 
 // 上游本身是 SSE；stream=false 时聚合成 JSON，stream=true 时逐事件回放。
 func (s *Server) handleAgenticSearch(w http.ResponseWriter, r *http.Request, keySite string) {
 	var body agenticSearchRequestBody
-	if err := httputil.ReadJSON(r, &body); err != nil {
-		writeSearchBodyError(w, err)
+	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
+		s.writeSearchBodyError(w, err)
 		return
 	}
 	query := strings.TrimSpace(body.Query)
@@ -370,9 +370,9 @@ func (s *Server) finishSearchRequest(
 	}, model, false, ok, errMsg, provider.Usage{}, result)
 }
 
-func writeSearchBodyError(w http.ResponseWriter, err error) {
+func (s *Server) writeSearchBodyError(w http.ResponseWriter, err error) {
 	if errors.Is(err, httputil.ErrBodyTooLarge) {
-		httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError("Request body exceeds 64MB.", "invalid_request_error"))
+		httputil.WriteJSON(w, http.StatusRequestEntityTooLarge, openai.NewError(s.bodyTooLargeMessage(), "invalid_request_error"))
 		return
 	}
 	httputil.WriteJSON(w, http.StatusBadRequest, openai.NewError("Invalid JSON body", "invalid_request_error"))

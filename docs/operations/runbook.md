@@ -118,3 +118,8 @@ Go 版修复：
 - OAuth 会话 TTL 15 分钟；`reuseExisting=true` 且仍在 TTL 内会复用 `waiting` 会话
 
 验证：重新点「开始认证」，用**新生成**的 launch 链接，应 302 到上游登录页。
+
+## 请求体与空闲连接配置
+
+- 长会话返回 413 时，可设置 `CODEBUDDY_PROXY_MAX_BODY_MB=128` 并重启。默认 64 MiB，需同时核对 Nginx/隧道上限及进程内存；该配置不会扩大模型上下文窗口。
+- 可用 `CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS` 调整服务端 keep-alive 空闲超时（默认 120000 毫秒）。它不控制活跃 SSE，也不控制客户端等待响应头的时间；不能仅凭此配置宣称修复隧道 FIN/连接复用故障。

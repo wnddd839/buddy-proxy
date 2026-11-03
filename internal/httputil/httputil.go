@@ -15,7 +15,7 @@ import (
 // Other CodeBuddy proxies typically do not apply an 8MiB JSON cap.
 const MaxJSONBodyBytes int64 = 64 << 20
 
-var ErrBodyTooLarge = errors.New("request body exceeds 64MB")
+var ErrBodyTooLarge = errors.New("request body too large")
 
 func WriteJSON(w http.ResponseWriter, status int, payload any) {
 	raw, err := json.Marshal(payload)
@@ -195,6 +195,11 @@ func WriteSSEComment(w http.ResponseWriter, comment string) {
 
 func ReadJSON(r *http.Request, dst any) error {
 	return readJSONLimited(r, dst, MaxJSONBodyBytes)
+}
+
+// ReadJSONLimited 使用调用方指定的上限读取 JSON，避免修改进程全局上限。
+func ReadJSONLimited(r *http.Request, dst any, limit int64) error {
+	return readJSONLimited(r, dst, limit)
 }
 
 func readJSONLimited(r *http.Request, dst any, limit int64) error {
