@@ -5,6 +5,10 @@
 
 ---
 
+## Unreleased
+
+- 新增 `CODEBUDDY_PROXY_OAUTH_PROXY`：国际站（`global`）OAuth 专用出口。`auth/state` 与 `auth/token` 走该代理，解决中国大陆直连 `www.codebuddy.ai` 时 TLS 握手超时；国内站与普通推理调用不受影响，未配置时行为完全不变。管理台 OAuth 区块会显示当前出口（仅 `host:port`，不含凭据）。
+
 ## v0.7.2 · 2026-11-04 · 每账号自动签到与流式收尾加固
 
 ### 新功能 · 每账号自动签到

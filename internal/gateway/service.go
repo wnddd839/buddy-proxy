@@ -103,9 +103,13 @@ type Service struct {
 	Pool     *accounts.Pool
 	Provider *provider.Client
 	OAuth    *oauth.Client
-	Models   *models.Lister
-	Log      *slog.Logger
-	Started  time.Time
+	// oauthGlobal 是国际站专用的 OAuth 客户端（走 OAuthProxy 出口）。
+	// 与 OAuth 分开是因为 oauth.Client 会记住上一次 state 做去重，
+	// 两个站点的 state 空间不能混；nil 表示未配置出口，回退到 OAuth。
+	oauthGlobal *oauth.Client
+	Models      *models.Lister
+	Log         *slog.Logger
+	Started     time.Time
 
 	runtimeCfg atomic.Pointer[config.Config]
 
@@ -160,6 +164,11 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 	}
 	if cfg.Watch.Enabled {
 		svc.Watch = watch.New(cfg.Watch, logger, nil)
+	}
+	// 国际站 OAuth 必须走海外出口：www.codebuddy.ai 从大陆直连会 TLS 握手超时。
+	// p.For 按 proxy URL 缓存 http.Client，重复构造不会新建连接池。
+	if proxy := strings.TrimSpace(cfg.OAuthProxy); proxy != "" {
+		svc.oauthGlobal = oauth.NewClient(p.For(proxy))
 	}
 	svc.modelsCache = map[string]modelsCacheEntry{}
 	svc.probeCache = map[string]provider.Reachability{}
@@ -1289,6 +1298,23 @@ func (s *Service) cachedUpstreamStatus() provider.UpstreamStatus {
 	return out
 }
 
+// OAuthProxyLabel 返回国际站 OAuth 出口的 host:port（不含任何凭据）。
+// 未配置或无法解析时返回空串，管理台据此显示「默认出口」。
+func (s *Service) OAuthProxyLabel() string {
+	if s == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(s.Config().OAuthProxy)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
 func (s *Service) Status() map[string]any {
 	cfg := s.Config()
 	s.mu.Lock()
@@ -1317,6 +1343,7 @@ func (s *Service) Status() map[string]any {
 		"stats":       stats,
 		"accounts":    summary,
 		"poolSite":    site,
+		"oauthProxy":  s.OAuthProxyLabel(),
 		"product":     product,
 		"poolProduct": product,
 		"upstream":    upstream,
@@ -1410,6 +1437,18 @@ func (s *Service) resetOAuthSessionLocked(site, label, publicOrigin string) {
 	s.oauth.CallbackURL = fmt.Sprintf("%s/direct-admin/codebuddy/oauth/callback?id=%s&token=%s", strings.TrimRight(publicOrigin, "/"), url.QueryEscape(s.oauth.ID), url.QueryEscape(s.oauth.Token))
 }
 
+// oauthFor 按站点选 OAuth 客户端：国际站走专用海外出口，其余沿用默认客户端。
+// 没有配置出口时一律回退默认，保证国内站行为与之前完全一致。
+func (s *Service) oauthFor(site string) *oauth.Client {
+	if s == nil {
+		return nil
+	}
+	if config.NormalizeSite(site) == "global" && s.oauthGlobal != nil {
+		return s.oauthGlobal
+	}
+	return s.OAuth
+}
+
 func (s *Service) StartOAuth(ctx context.Context, site, label, publicOrigin string, reuse bool) (map[string]any, error) {
 	s.mu.Lock()
 	if s.oauth == nil {
@@ -1426,7 +1465,11 @@ func (s *Service) StartOAuth(ctx context.Context, site, label, publicOrigin stri
 	sessionSite := s.oauth.Site
 	s.mu.Unlock()
 
-	started, err := s.OAuth.Start(ctx, sessionSite)
+	client := s.oauthFor(sessionSite)
+	if client == nil {
+		client = s.OAuth
+	}
+	started, err := client.Start(ctx, sessionSite)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.oauth == nil || s.oauth.ID != sessionID {
@@ -1458,7 +1501,11 @@ func (s *Service) PollOAuth(ctx context.Context, publicOrigin string) (map[strin
 		defer s.mu.Unlock()
 		return s.oauthPayloadLocked(publicOrigin), nil
 	}
-	polled, err := s.OAuth.Poll(ctx, session.Site, session.AuthState)
+	client := s.oauthFor(session.Site)
+	if client == nil {
+		client = s.OAuth
+	}
+	polled, err := client.Poll(ctx, session.Site, session.AuthState)
 	if err != nil {
 		s.mu.Lock()
 		s.oauth.Status = "failed"

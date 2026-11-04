@@ -58,6 +58,11 @@ type Config struct {
 	RefreshWindow       time.Duration
 	StreamKeepAlive     time.Duration
 	OAuthSessionTTL     time.Duration
+	// OAuthProxy 是国际站（global）OAuth 专用出口，形如 socks5h://127.0.0.1:17998。
+	// 为空则沿用默认客户端（国内站路径不变）。
+	// 存在的理由：www.codebuddy.ai 从中国大陆直连会被 TLS 握手超时拦掉，
+	// 而 OAuth 的 auth/state 与 auth/token 两个调用都走这个客户端。
+	OAuthProxy          string
 	HTTPTimeout         time.Duration
 	ServerIdleTimeout   time.Duration
 	MaxBodyMB           int
@@ -94,6 +99,7 @@ func Load() Config {
 		RefreshWindow:       envDuration("CODEBUDDY_REFRESH_WINDOW_MS", "CURSOR_DIRECT_CODEBUDDY_REFRESH_WINDOW_MS", DefaultRefreshWindow),
 		StreamKeepAlive:     envDuration("CODEBUDDY_PROXY_STREAM_KEEPALIVE_MS", "CURSOR_DIRECT_STREAM_KEEPALIVE_MS", DefaultStreamKeepAlive),
 		OAuthSessionTTL:     DefaultOAuthSessionTTL,
+		OAuthProxy:          strings.TrimSpace(firstEnv("CODEBUDDY_PROXY_OAUTH_PROXY")),
 		HTTPTimeout:         DefaultHTTPTimeout,
 		ServerIdleTimeout:   envDuration("CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS", "", DefaultServerIdleTimeout),
 		MaxBodyMB:           envInt("CODEBUDDY_PROXY_MAX_BODY_MB", "", DefaultMaxBodyMB),

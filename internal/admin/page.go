@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.02-watch-import-egress"
+const UIRevision = "2026.11.02-watch-import-egress-oauth-egress"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -637,6 +637,7 @@ pre{
         <div class="oauth-status">
           <div class="title">会话状态</div>
           <div class="msg" id="oauthMsg">OAuth 会话空闲（账号池登录态见上方「登录态」；这里只反映进行中的认证流程）</div>
+          <p class="seg-hint" id="oauthEgress">国际站 OAuth 出口：—</p>
         </div>
         <details class="raw">
           <summary>原始 OAuth 响应</summary>
@@ -1647,6 +1648,11 @@ function paintStatus(data){
     ? (totalTokens + ' · cache ' + cachedTokens)
     : String(totalTokens);
   paintWatch(data.watch);
+  if ($('oauthEgress')) {
+    $('oauthEgress').textContent = data.oauthProxy
+      ? '国际站 OAuth 出口：' + data.oauthProxy
+      : '国际站 OAuth 出口：默认（未单独配置）';
+  }
   const loggedIn = !!accounts.loggedIn;
   const primary = accounts.primary || ((accounts.accounts||[])[0] || null);
   $('mLogin').textContent = loggedIn
