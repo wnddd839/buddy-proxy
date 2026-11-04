@@ -68,6 +68,8 @@ type Config struct {
 
 	// Watch 是进程内波动监测配置（见 internal/watch）。
 	Watch watch.Config
+	// CheckinAuto 是每账号自动签到总开关（默认关闭，见 internal/checkin）。
+	CheckinAuto bool
 }
 
 func Load() Config {
@@ -100,6 +102,7 @@ func Load() Config {
 		IdleConnTimeout:     DefaultIdleConnTimeout,
 		DefaultModels:       []string{"auto"},
 		Watch:               loadWatchConfig(),
+		CheckinAuto:         envBool("CODEBUDDY_PROXY_CHECKIN_AUTO", "", false),
 	}
 
 	// 管理台密码为空则开放管理页（本地友好）。

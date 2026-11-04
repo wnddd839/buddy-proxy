@@ -21,6 +21,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/admin"
 	"github.com/wnddd839/codebuddy-proxy/internal/billing"
+	"github.com/wnddd839/codebuddy-proxy/internal/checkin"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/gateway"
 	"github.com/wnddd839/codebuddy-proxy/internal/httputil"
@@ -42,7 +43,9 @@ type Server struct {
 	HTTP    *http.Server
 	Updater *update.Manager
 	// Proxies 是候选出口清单（proxies.json），账号绑定仍以 Account.Proxy 为准。
-	Proxies          *proxies.File
+	Proxies *proxies.File
+	// Checkin 是每账号自动签到规则与调度器（proxy-checkin.json）。
+	Checkin          *checkin.Runner
 	maxJSONBodyBytes int64
 }
 
@@ -52,6 +55,10 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 		Updater: update.New(version.Version),
 		Proxies: proxies.Open(filepath.Join(filepath.Dir(cfg.AccountsPath), "proxies.json")),
 	}
+	s.Checkin = checkin.NewRunner(
+		checkin.Open(filepath.Join(filepath.Dir(cfg.AccountsPath), "proxy-checkin.json")),
+		svc.Pool, svc.Provider, svc.Log, svc.Config,
+	)
 	maxBodyMB := cfg.MaxBodyMB
 	if maxBodyMB <= 0 || int64(maxBodyMB) > (1<<63-1)>>20 {
 		maxBodyMB = config.DefaultMaxBodyMB
@@ -937,6 +944,36 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		poolSite := config.NormalizeSite(strutil.First(body.Site, s.Svc.ActivePoolSite()))
 		result := billing.RunPoolCheckin(r.Context(), s.Svc.Provider, store, s.Svc.Config(), poolSite)
 		httputil.WriteJSON(w, http.StatusOK, result)
+		return
+	// 每账号自动签到：总开关写 .env，规则写 proxy-checkin.json，保存后立即生效。
+	case path == "/direct-admin/api/checkin-config" && r.Method == http.MethodGet:
+		store, err := s.Checkin.Rules()
+		if err != nil {
+			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "auto": s.Checkin.Auto(), "rules": store.Rules, "path": s.Checkin.Path(),
+		})
+		return
+	case path == "/direct-admin/api/checkin-config" && r.Method == http.MethodPost:
+		var body struct {
+			Auto  bool           `json:"auto"`
+			Rules []checkin.Rule `json:"rules"`
+		}
+		if err := httputil.ReadJSON(r, &body); err != nil {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		if err := s.Checkin.SetRules(checkin.Store{Rules: body.Rules}); err != nil {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		if err := s.Checkin.SetAuto(body.Auto); err != nil {
+			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "auto": body.Auto})
 		return
 	// Batch chat test for enabled accounts. Same-level path as checkin so it is not
 	// swallowed by /accounts/{id}. Optional body: {"site":"...","model":"..."}.

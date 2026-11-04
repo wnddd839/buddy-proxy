@@ -41,7 +41,8 @@ server ──► gateway ──► accounts pool + oauth refresh
 | `gateway` | 选号、额度快照探活、失败换号、会话粘滞调度、stats、用量 journal 记录、OAuth session、搜索/抓取调度、运行时配置（`atomic.Pointer`） | HTML |
 | `server` | 路由、鉴权、流式写回 | 上游协议细节 |
 | `admin` | 管理台页面字符串 | 业务状态机 |
-| `billing` | Credits 查询（剩余 / 总额）与通知码解析 | 账号写入 |
+| `billing` | Credits 查询（剩余 / 总额）、每日签到请求与通知码解析 | 账号写入 |
+| `checkin` | 每账号自动签到规则文件与定时调度（北京时间、确定性随机窗口） | 账号池文件写入、HTML |
 | `openai` | OpenAI chat/chunk/usage 与 Responses 协议翻译、上游错误分类 | 上游映射 |
 | `strutil` | `First` / `Truncate` / `MaskSecret` / `RandomHex` / `Compact` | — |
 | `httputil` | JSON/SSE/Cookie/Origin/CSRF | — |

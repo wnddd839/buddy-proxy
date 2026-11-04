@@ -141,6 +141,9 @@ h1{
 }
 .lede{margin:0;color:var(--fg-60);font-size:13.5px;line-height:1.6;max-width:52ch}
 .checkin-hint{margin:12px 0 0;font-size:11.5px;line-height:1.5;color:var(--fg-40);max-width:58ch}
+.checkin-rule{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--fg-10)}
+.checkin-rule label{display:flex;align-items:center;gap:6px;font-size:12px}
+.checkin-rule input[type=text]{width:88px;padding:5px 8px;border:1px solid var(--fg-20);background:transparent;color:var(--fg);font:inherit}
 .checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
 /* 账号导入与出口设置弹窗 */
 .modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.6)}
@@ -713,6 +716,28 @@ pre{
           </div>
         </div>
         <div class="secret-hint" id="clientConfigHint">API Key 点击复制时才会读取明文。Key 默认写入 ~/.codebuddy/proxy.env，与账号池同目录，换文件夹启动也会沿用同一把。绑定 Key 换区不改主 Key。</div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-inner">
+        <div class="section-head">
+          <div>
+            <h2>自动签到</h2>
+            <p>每个账号可单独设时刻或时段随机，时间统一按北京时间。启动不补签，错过等明天；想补签请到「账号池」手动跑一轮。</p>
+          </div>
+          <div class="actions"><button class="teal" id="btnCheckinSave" type="button">保存</button></div>
+        </div>
+        <div class="ops-row">
+          <label class="test-model-label" for="checkinAuto">总开关
+            <select id="checkinAuto" aria-label="自动签到总开关">
+              <option value="off">关闭</option>
+              <option value="on">开启</option>
+            </select>
+          </label>
+          <span class="seg-hint">规则文件与总开关保存后立即生效，无需重启。</span>
+        </div>
+        <div class="bound-keys" id="checkinRules"></div>
+        <p class="checkin-hint">开始填 <code>HH:MM</code>；结束留空或相同 = 固定时刻，填更晚时间 = 该时段内每天随机一个分钟。不支持跨零点窗口。仅对已启用且有凭据的账号生效。</p>
       </div>
     </section>
   </div>
@@ -1677,6 +1702,7 @@ function paintStatus(data){
   $('statusBox').textContent = raw;
   $('statusRaw').textContent = raw;
   renderAccounts(accounts, poolSite);
+  paintCheckinConfig({auto: checkinAutoEnabled, rules: checkinRules});
   refreshEgress();
 }
 
@@ -1789,6 +1815,48 @@ async function generateBoundKey(){
   const created = (data.apiKeys || []).filter(function(item){ return item && item.key && (accountId ? item.accountId === accountId : !item.accountId && item.site === normalizeSite(site)); }).pop();
   if (created && created.key) await copyText(created.key, '绑定 Key', $('btnNewBoundKey'));
   if (data.note) showToast(data.note);
+}
+let checkinRules = [];
+let checkinAutoEnabled = false;
+function paintCheckinConfig(data){
+  checkinRules = (data && data.rules) || [];
+  checkinAutoEnabled = !!(data && data.auto);
+  if ($('checkinAuto')) $('checkinAuto').value = (data && data.auto) ? 'on' : 'off';
+  const box = $('checkinRules');
+  if (!box) return;
+  const byId = {};
+  checkinRules.forEach(function(r){ byId[r.accountId] = r; });
+  const rows = (lastAccounts || []).map(function(a){
+    const r = byId[a.id] || {enabled:false, start:'', end:''};
+    const name = escapeHtml((a.label || a.id) + ' · ' + siteLabel(a.site));
+    return '<div class="checkin-rule" data-id="' + escapeHtml(a.id) + '">' +
+      '<label><input type="checkbox" data-f="enabled"' + (r.enabled ? ' checked' : '') + '/> ' + name + '</label>' +
+      '<label>开始 <input type="text" data-f="start" placeholder="09:00" value="' + escapeHtml(r.start || '') + '"/></label>' +
+      '<label>结束 <input type="text" data-f="end" placeholder="留空=固定" value="' + escapeHtml(r.end || '') + '"/></label>' +
+      '</div>';
+  });
+  box.innerHTML = rows.length ? rows.join('') : '<div class="empty">账号池还没有账号，先去「账号池」添加。</div>';
+}
+async function refreshCheckinConfig(){
+  const data = await api('/direct-admin/api/checkin-config');
+  paintCheckinConfig(data);
+  return data;
+}
+async function saveCheckinConfig(){
+  const rules = Array.from(document.querySelectorAll('#checkinRules .checkin-rule')).map(function(row){
+    function val(f){ const el = row.querySelector('[data-f="'+f+'"]'); return el ? el.value.trim() : ''; }
+    return {
+      accountId: row.getAttribute('data-id'),
+      enabled: !!row.querySelector('[data-f="enabled"]').checked,
+      start: val('start'),
+      end: val('end')
+    };
+  }).filter(function(r){ return r.enabled || r.start || r.end; });
+  await api('/direct-admin/api/checkin-config', {method:'POST', body: JSON.stringify({
+    auto: $('checkinAuto') && $('checkinAuto').value === 'on', rules: rules
+  })});
+  showToast('自动签到配置已保存');
+  return refreshCheckinConfig();
 }
 async function refreshClientConfig(){
   const data = await api('/direct-admin/api/client-config');
@@ -2284,6 +2352,7 @@ document.addEventListener('keydown', function(e){
 $('btnImport').onclick = function(){ runImport().catch(function(e){ showToast(String(e), 'error'); }); };
 $('btnPoll').onclick = function(){ pollOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 $('btnRefreshClient').onclick = function(){ refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); }); };
+if ($('btnCheckinSave')) $('btnCheckinSave').onclick = function(){ saveCheckinConfig().catch(function(e){ showToast(e.message, 'error'); }); };
 $('btnGenerateKey').onclick = function(){ generateApiKey().catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('btnNewBoundKey')) $('btnNewBoundKey').onclick = function(){ generateBoundKey().catch(function(e){ showToast(e.message, 'error'); }); };
 $('copyBaseUrl').onclick = function(){ copyText($('openAiBaseUrl').value, 'Base URL', $('copyBaseUrl')); };
@@ -2299,6 +2368,7 @@ $('copyApiKey').onclick = function(){
 };
 refreshStatus().catch(function(e){ $('statusRaw').textContent = e.message; setHealth(false, '无法连接'); });
 refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); });
+refreshCheckinConfig().catch(function(){});
 refreshModels().catch(function(){});
 setInterval(function(){ refreshStatus().catch(function(){}); }, 15000);
 </script>

@@ -5,6 +5,16 @@
 
 ---
 
+## 未发布 · 每账号自动签到
+
+- 管理台「客户端接入」新增「自动签到」：每个账号可单独设固定时刻或时段随机，时间统一北京时间；保存后立即生效、无需重启。
+- 总开关 `CODEBUDDY_PROXY_CHECKIN_AUTO`（默认关闭），规则存账号池同目录 `proxy-checkin.json`，不污染账号池文件。
+- 启动不补签，错过的窗口等明天；想补签仍用「账号池 → 每日签到」手动跑一轮。
+- 新增 `GET/POST /direct-admin/api/checkin-config`；非法时间、重复账号、跨零点窗口在保存时拒绝。
+- 复用既有 `billing.DailyCheckinForAccount`，上游 `todayCheckedIn` / `code=10001` 保证幂等。
+
+---
+
 ## v0.7.1 · 2026-11-03 · 模型冷却修复与部署配置
 
 - 修复 #54：普通号池不再通过“全冷却降级”绕过当前模型的 6004 / rate-model 冷却；全部候选受限时立即失败，在 Chat 非流式错误中返回 `Retry-After` / `retry_after` 秒数，已打开的 SSE 在错误事件中返回 `retry_after`，不新增长时间排队。其他模型和固定账号直接请求语义不变。

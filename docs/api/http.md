@@ -440,6 +440,8 @@ usage chunk 形如：
 | POST | `/direct-admin/api/client-config/generate-key` | 生成 `cbp_...` Key，写入 `~/.codebuddy/proxy.env`（或已有 `.env`）并立即生效 |
 | POST · PUT | `/direct-admin/api/pool-site` | 切换**默认**号池区域 `domestic` / `global`，回写 `.env`。请求仍可用 Key 绑定、`X-Site` 或 `cn:`/`global:` 前缀覆盖 |
 | POST · PUT | `/direct-admin/api/pool-product` | 切换上游产品 `codebuddy` / `workbuddy`，回写 `.env`；国内国际账号共用同一选择 |
+| GET | `/direct-admin/api/checkin-config` | 返回每账号自动签到配置：`auto`（总开关）、`rules[]`、`path`（规则文件路径） |
+| POST | `/direct-admin/api/checkin-config` | 保存 `{"auto":bool,"rules":[{"accountId","enabled","start","end"}]}`；写 `proxy-checkin.json` 并把总开关回写 `.env`，立即生效。非法时间/重复账号返回 `400` |
 
 状态中的 `accounts.activeEnabledCount` 仅表示当前区域已启用数量；
 `activeAvailableCount` 再排除无凭据、整号冷却及有效配额阻塞，不保证指定模型可用。

@@ -56,6 +56,7 @@ func main() {
 		go svc.Watch.Run(watchCtx)
 	}
 	srv := server.New(cfg, svc)
+	go srv.Checkin.Run(watchCtx)
 
 	printStartupBanner(cfg, generatedKey)
 	logger.Debug("codebuddy proxy starting",
