@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	modelsCacheTTL = 60 * time.Second
+	modelsCacheTTL = 10 * time.Minute
 	probeCacheTTL  = 20 * time.Second
 	probeTimeout   = 4 * time.Second
 	// defaultMaxAccountRetries 单请求最多尝试的账号数（含换号重试），防止无限递归。
@@ -1070,6 +1070,7 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 			EnterpriseID:        account.EnterpriseID,
 			TenantID:            account.TenantID,
 			DepartmentFullName:  account.DepartmentFullName,
+			Fresh:               fresh,
 			APIEndpoint:         provider.AlignAPIEndpoint(product, account.APIEndpoint),
 			ChatCompletionsPath: strutil.First(account.ChatCompletionsPath, s.Config().ChatCompletionsPath),
 		})

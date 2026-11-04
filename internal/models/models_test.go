@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
@@ -437,6 +438,73 @@ func listDomesticViaHost(t *testing.T, srv *httptest.Server) ListResult {
 		Site:        "domestic",
 		BaseURL:     "https://copilot.tencent.com",
 	})
+}
+
+func TestConsoleNegativeCacheSkipsRecentlyFailedHost(t *testing.T) {
+	var mu sync.Mutex
+	primaryHits, secondaryHits := 0, 0
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == consoleModelsPath {
+			mu.Lock()
+			primaryHits++
+			mu.Unlock()
+		}
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer primary.Close()
+
+	handler := consoleCatalogHandler(http.StatusOK, "hy4-preview")
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == consoleModelsPath {
+			mu.Lock()
+			secondaryHits++
+			mu.Unlock()
+		}
+		handler(w, r)
+	}))
+	defer secondary.Close()
+
+	client := &provider.Client{HTTP: &http.Client{Transport: rewriteHostsTransport{
+		hosts: map[string]*httptest.Server{
+			"www.codebuddy.ai":    primary,
+			"copilot.tencent.com": secondary,
+		},
+	}}}
+	lister := NewLister()
+	opts := ListOptions{BearerToken: "test-token", Site: "global", BaseURL: "https://www.codebuddy.ai"}
+
+	first := lister.List(context.Background(), client, opts)
+	if first.ModelsSource != "console" {
+		t.Fatalf("first modelsSource=%q want console; message=%q", first.ModelsSource, first.Message)
+	}
+	second := lister.List(context.Background(), client, opts)
+	if second.ModelsSource != "console" {
+		t.Fatalf("second modelsSource=%q want console; message=%q", second.ModelsSource, second.Message)
+	}
+
+	mu.Lock()
+	p1, s2 := primaryHits, secondaryHits
+	mu.Unlock()
+	if p1 != 1 {
+		t.Fatalf("failed host hit %d times, want 1 (10min negative cache)", p1)
+	}
+	if s2 != 2 {
+		t.Fatalf("healthy host hit %d times, want 2", s2)
+	}
+
+	// 管理台「重新拉取」带 fresh=1，必须真正重试失败的 host。
+	freshOpts := opts
+	freshOpts.Fresh = true
+	if got := lister.List(context.Background(), client, freshOpts); got.ModelsSource != "console" {
+		t.Fatalf("fresh modelsSource=%q want console; message=%q", got.ModelsSource, got.Message)
+	}
+	mu.Lock()
+	p2 := primaryHits
+	mu.Unlock()
+	if p2 != 2 {
+		t.Fatalf("fresh 刷新应重试失败 host，primaryHits=%d want 2", p2)
+	}
 }
 
 func listConsoleViaHosts(t *testing.T, primary, secondary *httptest.Server) ListResult {

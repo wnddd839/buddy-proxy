@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.02-watch-import-egress"
+const UIRevision = "2026.11.02-watch-import-egress-models-meta"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -757,6 +757,7 @@ pre{
             <button class="ghost" id="btnModels" type="button">重新拉取</button>
           </div>
         </div>
+        <p class="seg-hint" id="modelsMeta">—</p>
         <div class="chips" id="modelChips"><div class="empty">加载中…</div></div>
         <details class="raw">
           <summary>原始模型响应</summary>
@@ -1987,11 +1988,18 @@ async function testAccountChat(accountId){
 }
 
 async function refreshModels(){
+  const started = (window.performance && performance.now) ? performance.now() : Date.now();
   const data = await api('/direct-admin/api/codebuddy/models?fresh=1');
+  const elapsed = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - started);
   const raw = JSON.stringify(data, null, 2);
   $('modelsBox').textContent = raw;
   $('modelsRaw').textContent = raw;
   renderModels(data);
+  if ($('modelsMeta')) {
+    const source = (data && data.modelsSource) ? data.modelsSource : 'unknown';
+    const note = (data && data.message) ? (' · ' + data.message) : '';
+    $('modelsMeta').textContent = '来源 ' + source + ' · 耗时 ' + elapsed + 'ms' + note;
+  }
 }
 
 async function startOAuth(){

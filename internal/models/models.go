@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
@@ -77,6 +79,8 @@ type ListOptions struct {
 	DepartmentFullName  string
 	Domain              string
 	APIEndpoint         string
+	// Fresh 为 true 时忽略 console 失败负缓存，用于管理台「重新拉取」。
+	Fresh               bool
 	ChatCompletionsPath string
 }
 
@@ -180,7 +184,7 @@ func (c *Lister) List(ctx context.Context, client *provider.Client, opts ListOpt
 		DepartmentFullName:  opts.DepartmentFullName,
 	}
 
-	consoleResult, consoleErr := c.fetchConsole(ctx, client, chatOpts)
+	consoleResult, consoleErr := c.fetchConsole(ctx, client, chatOpts, opts.Fresh)
 	if consoleErr == nil && len(consoleResult.Models) > 0 {
 		msg := fmt.Sprintf("Loaded %d model(s) from %s.", len(consoleResult.Models), consoleModelsPath)
 		if note := strings.TrimSpace(consoleResult.Note); note != "" {
@@ -237,9 +241,57 @@ func (c *Lister) List(ctx context.Context, client *provider.Client, opts ListOpt
 	}
 }
 
-type Lister struct{}
+// consoleFailTTL 是 console 目录失败的负缓存时长。
+// 国际站该端点长期 401/500，而 List 每次都会先试它（两个 host 各 ~2.5s）
+// 再回落 /v3/config；失败后 10 分钟内直接跳过，省掉一轮无谓等待。
+const consoleFailTTL = 10 * time.Minute
 
-func NewLister() *Lister { return &Lister{} }
+type Lister struct {
+	mu       sync.Mutex
+	badUntil map[string]time.Time
+}
+
+func NewLister() *Lister { return &Lister{badUntil: map[string]time.Time{}} }
+
+func (c *Lister) consoleBlocked(host string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	until, ok := c.badUntil[host]
+	return ok && time.Now().Before(until)
+}
+
+func (c *Lister) markConsoleBad(host string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.badUntil == nil {
+		c.badUntil = map[string]time.Time{}
+	}
+	c.badUntil[host] = time.Now().Add(consoleFailTTL)
+}
+
+func (c *Lister) clearConsoleBad(host string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.badUntil, host)
+}
+
+// fetchHosts 并发请求同一路径的多个 host，rows/errs 与 bases 同序。
+// 目录拉取是纯读，串行只是白等 RTT（国际站经 WARP 每个请求 ~2.5s）。
+func (c *Lister) fetchHosts(ctx context.Context, httpClient *http.Client, bases []string, path string, headers http.Header) ([][]map[string]any, []error) {
+	rows := make([][]map[string]any, len(bases))
+	errs := make([]error, len(bases))
+	var wg sync.WaitGroup
+	for i, base := range bases {
+		wg.Add(1)
+		go func(i int, base string) {
+			defer wg.Done()
+			got, err := c.fetchJSONModels(ctx, httpClient, provider.NormalizeBaseURL(base)+path, headers)
+			rows[i], errs[i] = got, err
+		}(i, base)
+	}
+	wg.Wait()
+	return rows, errs
+}
 
 type fetchResult struct {
 	Models []map[string]any
@@ -344,14 +396,20 @@ func (c *Lister) fetchV3(ctx context.Context, client *provider.Client, opts prov
 	candidates := v3ConfigCandidateBases(opts)
 	headers, _ := client.BuildProtocolDirectHeaders(opts)
 	headers.Set("Accept", "application/json")
+	// IDE 目录只补 reasoning 元数据，与 v3 配置互不依赖，边拉边等。
+	wantIDE := config.NormalizeProduct(opts.Product) != "workbuddy"
+	ideCh := make(chan []map[string]any, 1)
+	if wantIDE {
+		go func() { ideCh <- c.fetchIDECatalog(ctx, client, opts, candidates) }()
+	}
 	var (
 		batches [][]map[string]any
 		lastErr error
 	)
-	for _, base := range candidates {
-		rows, err := c.fetchJSONModels(ctx, client.HTTP, provider.NormalizeBaseURL(base)+upstreamConfigPath, headers)
-		if err != nil {
-			lastErr = err
+	rowsByHost, errs := c.fetchHosts(ctx, client.HTTP, candidates, upstreamConfigPath, headers)
+	for i, rows := range rowsByHost {
+		if errs[i] != nil {
+			lastErr = errs[i]
 			continue
 		}
 		if len(rows) == 0 {
@@ -367,11 +425,10 @@ func (c *Lister) fetchV3(ctx context.Context, client *provider.Client, opts prov
 		}
 		return fetchResult{}, lastErr
 	}
-	if config.NormalizeProduct(opts.Product) == "workbuddy" {
+	if !wantIDE {
 		return fetchResult{Models: merged}, nil
 	}
-	ideRows := c.fetchIDECatalog(ctx, client, opts, candidates)
-	return fetchResult{Models: enrichModelsWithIDEReasoning(merged, ideRows)}, nil
+	return fetchResult{Models: enrichModelsWithIDEReasoning(merged, <-ideCh)}, nil
 }
 
 // fetchConsole 拉控制台对话目录（可打 /v2/chat/completions 的那一份，带 credits）。
@@ -381,7 +438,7 @@ func (c *Lister) fetchV3(ctx context.Context, client *provider.Client, opts prov
 // CodeBuddy 产品再套 IDE /v3/config 的 reasoning enrich。
 // 单独把 IDE /v3/config 当目录会混进 codewise-*（请求即 11102）并漏掉 hy4-preview 等。
 // 失败则 List 回落到 fetchV3，并在 Message 里带上控制台错误。
-func (c *Lister) fetchConsole(ctx context.Context, client *provider.Client, opts provider.ChatOptions) (fetchResult, error) {
+func (c *Lister) fetchConsole(ctx context.Context, client *provider.Client, opts provider.ChatOptions, fresh bool) (fetchResult, error) {
 	candidates := v3ConfigCandidateBases(opts)
 	cliOpts := withCLIIdentity(opts)
 	headers, _ := client.BuildProtocolDirectHeaders(cliOpts)
@@ -392,20 +449,33 @@ func (c *Lister) fetchConsole(ctx context.Context, client *provider.Client, opts
 		lastErr  error
 		hostErrs []string
 	)
+	// 失败过的 host 记 10 分钟负缓存：console 端点在国际站长期 401/500，
+	// 每次刷新都白等两个 RTT 再回落 /v3/config 没有意义。
+	active := make([]string, 0, len(candidates))
 	for _, base := range candidates {
 		host := provider.NormalizeBaseURL(base)
-		rows, err := c.fetchJSONModels(ctx, client.HTTP, host+consoleModelsPath, headers)
-		if err != nil {
-			lastErr = err
-			hostErrs = append(hostErrs, host+": "+err.Error())
+		if !fresh && c.consoleBlocked(host) {
+			hostErrs = append(hostErrs, host+": skipped (recent failure)")
 			continue
 		}
-		if len(rows) == 0 {
+		active = append(active, base)
+	}
+	rowsByHost, errs := c.fetchHosts(ctx, client.HTTP, active, consoleModelsPath, headers)
+	for i, base := range active {
+		host := provider.NormalizeBaseURL(base)
+		if errs[i] != nil {
+			c.markConsoleBad(host)
+			lastErr = errs[i]
+			hostErrs = append(hostErrs, host+": "+errs[i].Error())
+			continue
+		}
+		if len(rowsByHost[i]) == 0 {
 			lastErr = fmt.Errorf("empty models")
 			hostErrs = append(hostErrs, host+": empty models")
 			continue
 		}
-		batches = append(batches, rows)
+		c.clearConsoleBad(host)
+		batches = append(batches, rowsByHost[i])
 	}
 	merged := mergeModelsByPublicID(batches...)
 	if len(merged) == 0 {
@@ -454,10 +524,10 @@ func withCLIIdentity(opts provider.ChatOptions) provider.ChatOptions {
 func (c *Lister) fetchCLIV3Supplement(ctx context.Context, client *provider.Client, cliOpts provider.ChatOptions, bases []string) []map[string]any {
 	headers, _ := client.BuildProtocolDirectHeaders(cliOpts)
 	headers.Set("Accept", "application/json")
-	var batches [][]map[string]any
-	for _, base := range bases {
-		rows, err := c.fetchJSONModels(ctx, client.HTTP, provider.NormalizeBaseURL(base)+upstreamConfigPath, headers)
-		if err != nil || len(rows) == 0 {
+	rowsByHost, errs := c.fetchHosts(ctx, client.HTTP, bases, upstreamConfigPath, headers)
+	batches := make([][]map[string]any, 0, len(bases))
+	for i, rows := range rowsByHost {
+		if errs[i] != nil || len(rows) == 0 {
 			continue
 		}
 		batches = append(batches, rows)
