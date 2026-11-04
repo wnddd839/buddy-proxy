@@ -44,6 +44,8 @@ kiro-proxy 已发布
 
 v0.7.1 感谢 [@240xu](https://github.com/240xu) 提供 [#52](https://github.com/wnddd839/buddy-proxy/pull/52) 请求体上限、[#53](https://github.com/wnddd839/buddy-proxy/pull/53) 空闲超时配置，以及 [#54](https://github.com/wnddd839/buddy-proxy/issues/54) 限流实测反馈。
 
+v0.7.2 感谢 [@240xu](https://github.com/240xu) 在 [#60](https://github.com/wnddd839/buddy-proxy/pull/60) 提供流式截断与停滞的实测数据，以及 [@ck629](https://github.com/ck629) 报告 [#61](https://github.com/wnddd839/buddy-proxy/issues/61) 自更新下载中断。
+
 ---
 
 ## 一件事
@@ -74,6 +76,7 @@ v0.7.1 感谢 [@240xu](https://github.com/240xu) 提供 [#52](https://github.com
 | **真实余额** | 管理台直读官网 Credits，显示「剩余 / 总额」 |
 | **批量导入与固定出口** | 账号池粘贴客户端凭据或账号池 JSON，重复账号更新、错误逐条显示；支持按账号绑定 HTTP / HTTPS / SOCKS5 / SOCKS5h 出口、维护候选与均衡分配，代理失效不回退直连 |
 | **可选波动监测** | 观测真实请求的错误率、推理缺失与耗时，支持日志、webhook 和 SMTP；默认关闭，见[配置说明](docs/operations/monitoring.md) |
+| **每账号自动签到** | 管理台「客户端接入」为每个账号单独设固定时刻或时段随机（北京时间），到点单独签到；默认关闭，启动不补签，手动「每日签到」仍可随时补跑 |
 | **国内 / 国际** | 同一进程可同时持有两区账号。默认区域可在管理台切换；单请求用 Key 绑定、`X-Site` 或 `cn:` / `global:` 前缀选区。**端点以账号自身区域为准** |
 | **CodeBuddy / WorkBuddy** | 一键切产品：CodeBuddy 走 CLI 头，WorkBuddy 走 IDE 头；模型目录随之切换 |
 | **模型列表** | 走协议 `/v3/config`，60 秒缓存，可强制刷新 |
@@ -118,7 +121,29 @@ chmod +x ./codebuddy-proxy-linux-amd64
 
 运行中的实例可在管理台顶栏下方点「检查更新 / 更新并重启」，仅从官方 GitHub Release 下载并按 `SHA256SUMS.txt` 校验，成功后自动重启并回连；下载校验失败或新版本启动失败时保留/回滚旧程序。改动只替换可执行文件，不会覆盖 `.env`、账号池或用量文件。**首个带更新器的版本仍需手动升级一次**；Docker 部署请用镜像更新（`docker compose pull && docker compose up -d`）。
 
-当前正式版为 **[v0.7.1](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.1)**，修复普通号池全冷却时绕过模型限流的问题，支持中文重置时间，并在 Chat 冷却错误中给出剩余等待秒数；不在服务端长时间排队。保留 v0.7.0 的波动监测、批量导入和固定出口。
+当前正式版为 **[v0.7.2](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.2)**：新增每账号自动签到（固定时刻 / 时段随机，北京时间）；修复上游以 FIN 收尾造成的半截回答、上游假活导致的无限挂起，以及自更新下载 `unexpected EOF`。保留 v0.7.1 的模型冷却与部署配置、v0.7.0 的波动监测、批量导入和固定出口。
+
+#### v0.7.2 · 每账号自动签到
+
+管理台「客户端接入 → 自动签到」里，每个账号可单独配置：
+
+| 配置 | 行为 |
+| :--- | :--- |
+| 开始 `09:00`，结束留空或相同 | 每天北京时间 09:00 签到 |
+| 开始 `09:00`，结束 `11:00` | 每天在 09:00–11:00 内确定性随机一个分钟签到 |
+| 该行不勾选启用 | 该账号不参与自动签到 |
+
+- 总开关 `CODEBUDDY_PROXY_CHECKIN_AUTO`（默认关闭）；保存后立即生效、无需重启，配置写入账号池同目录的 `proxy-checkin.json`，不污染账号池文件。
+- 时间统一北京时间，不受 Docker 默认 UTC 影响；不支持跨零点窗口，重复账号或非法时间保存时会被拒绝。
+- **启动不补签**：进程启动前已过点的窗口当天不再追补；想补签请到「账号池」手动点「每日签到」。上游幂等保证重复触发不会重复领取。
+- 完整参数与排障见 [配置参考](docs/guides/configuration.md) 与 [运维排障](docs/operations/runbook.md)。
+
+```env
+# 可选：每账号自动签到总开关（默认关闭），规则在管理台配置
+CODEBUDDY_PROXY_CHECKIN_AUTO=true
+```
+
+#### v0.7.1 · 可选部署配置
 
 新增两个可选配置，修改后重启生效，默认行为保持不变：
 

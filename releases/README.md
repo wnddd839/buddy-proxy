@@ -32,7 +32,7 @@ make release
 Windows PowerShell：
 
 ```powershell
-.\scripts\release.ps1 -Version v0.7.1
+.\scripts\release.ps1 -Version v0.7.2
 ```
 
 ARM 构建不依赖 CGO。请先通过 `uname -m` 确认设备架构：`aarch64` 选择 arm64，`armv7l` 选择 armv7，ARMv6 选择 armv6。MIPS 路由器不能运行 ARM 二进制。发行包已完成交叉构建，但仍需在目标设备确认系统与指令集兼容性。
