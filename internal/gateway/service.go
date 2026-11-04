@@ -463,6 +463,22 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			return CompleteResult{Result: result, Account: accounts.SummarizeAccount(account), AccountID: account.ID}, err
 		}
 		selection.ModelRateLimited = billing.IsModelRateLimitError(err)
+		// 传输层失败 + 该站点没有第二个可换的账号 ⇒ 用同一账号重连。
+		//
+		// 背景：机场出口（尤其日本节点）单次连接会突然 EOF，实测同一节点
+		// 连打 6 次可能挂 1-2 次。多账号时换号能换到另一条出口，是有意义的；
+		// 但单个账号的站点（国际站只有一个号）换号只会耗尽预算、把唯一账号
+		// 打进冷却，整条链路直接不可用。这类抖动重连一次通常就过。
+		// 只对「首内容前」的失败生效（Delivered 已在上面提前返回）。
+		if isTransportReplayError(err.Error()) && opts.ResetReplays < maxResetReplays &&
+			!s.hasAlternativeAccount(site, account.ID, opts.ExcludeIDs) {
+			opts.ResetReplays++
+			opts.RetryDepth++
+			opts.AccountID = account.ID
+			s.Log.Warn("retrying same account after transport error (no alternative candidate)",
+				"accountId", account.ID, "site", site, "attempt", opts.ResetReplays, "error", err.Error())
+			return s.CompleteFromPool(ctx, opts)
+		}
 		if s.shouldRetryNextAccount(err, selection, opts) {
 			if pinKey != "" {
 				s.Pins.Forget(pinKey)
@@ -715,6 +731,45 @@ func isRetryExhausted(err error) bool {
 		return true
 	}
 	return strings.Contains(err.Error(), "no enabled CodeBuddy accounts")
+}
+
+// hasAlternativeAccount 判断该站点除当前账号外还有没有能用的候选。
+//
+// 只读实现（不走 Pool.Select）：Select 会写 LastSelectedAt，拿它做探测会污染
+// 选号统计。冷却中的账号不算候选 —— 换过去也会被 Select 拒掉，等于没有。
+func (s *Service) hasAlternativeAccount(site, currentID string, exclude []string) bool {
+	if s == nil || s.Pool == nil {
+		return false
+	}
+	store, err := s.Pool.Read()
+	if err != nil {
+		return false
+	}
+	skip := make(map[string]struct{}, len(exclude)+1)
+	skip[currentID] = struct{}{}
+	for _, id := range exclude {
+		skip[id] = struct{}{}
+	}
+	now := time.Now().UnixMilli()
+	want := config.NormalizeSite(site)
+	for _, item := range store.Accounts {
+		if _, ok := skip[item.ID]; ok {
+			continue
+		}
+		if !item.Enabled || !accounts.HasCredentials(item) {
+			continue
+		}
+		if config.NormalizeSite(item.Site) != want {
+			continue
+		}
+		// 与 listSelectableAccounts 同口径：冷却中或额度耗尽的号即使存在，
+		// Select 也选不到（只剩全冷却兜底），对本次重试等于没有候选。
+		if accounts.InCooldown(item, now) || accounts.QuotaBlocked(item, now) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.Account, err error) time.Duration {
