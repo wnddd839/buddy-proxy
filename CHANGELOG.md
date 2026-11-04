@@ -5,6 +5,10 @@
 
 ---
 
+## Unreleased
+
+- 修复：国际站（`www.codebuddy.ai`）要求首条消息必须是 `system`，否则上游直接返回 400 / `code 11128`；国内站没有这个限制。`protocol_direct` 现在只在 `site=global` 且首条不是 `system` 时补一条 canonical system，已有 system 与国内站路径完全不变。
+
 ## v0.7.2 · 2026-11-04 · 每账号自动签到与流式收尾加固
 
 ### 新功能 · 每账号自动签到

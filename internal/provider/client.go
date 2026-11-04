@@ -734,6 +734,25 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 	return out
 }
 
+// EnsureSystemFirst 保证第一条消息是 system。
+//
+// 国际站（www.codebuddy.ai）对「首条不是 system」的请求直接回
+// 400 `first message is not system prompt` (code 11128)；国内站没有这个限制。
+// 客户端不一定会发 system —— 有的 agent 首条直接就是 user —— 那种请求一旦
+// 落到国际站账号上会整轮被拒。这里补一条最小的 system（与已有 system 折叠时
+// 用的是同一条 canonical 文案），只在 global 站点调用。
+func EnsureSystemFirst(messages []map[string]any) []map[string]any {
+	if len(messages) == 0 {
+		return messages
+	}
+	if NormalizeMessageRole(fmt.Sprint(messages[0]["role"])) == "system" {
+		return messages
+	}
+	out := make([]map[string]any, 0, len(messages)+1)
+	out = append(out, map[string]any{"role": "system", "content": canonicalUpstreamSystem})
+	return append(out, messages...)
+}
+
 func messageContentEmpty(content any) bool {
 	switch v := content.(type) {
 	case nil:
@@ -836,6 +855,11 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	// CodeBuddy protocol_direct 拒绝非流式 chat（11101）。始终上游流式；
 	// 需要 JSON 的调用方仍通过 readSSE 聚合成 Turn。
 	messages := EnsureUpstreamMessages(opts.Messages)
+	// 国际站要求首条必须是 system（否则 400 / 11128），国内站无此限制。
+	// 放在 EnsureUpstreamMessages 之后：那个函数在「没有 system」时不会补。
+	if config.NormalizeSite(opts.Site) == "global" {
+		messages = EnsureSystemFirst(messages)
+	}
 	if len(messages) == 0 {
 		return Result{}, fmt.Errorf("CodeBuddy chat completion failed: no valid messages after normalization")
 	}
