@@ -647,12 +647,21 @@ func (s *Service) shouldRetryNextAccount(err error, selection accounts.Selection
 			return false
 		}
 	}
-	return reRetryNextAccount.MatchString(err.Error())
+	return reRetryNextAccount.MatchString(err.Error()) || isRetryable500(msg)
 }
 
 // isTransportReplayError 判断是否属于"传输层可重放"失败：建连失败、
 // 首内容前被重置、无终止帧的 FIN、上游停滞。四类共用 maxResetReplays 预算，
 // 否则多账号场景会按账号数放大请求数。
+// isRetryable500 只把已知的瞬时 500（invoke model error）纳入换号重试。
+//
+// 500 常是上游持续性错误：无差别换号会在账号池里放大请求（最多
+// maxAccountRetries 次），且多数情况下仍然 500。其余 500 直接交给客户端。
+func isRetryable500(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "500") && strings.Contains(lower, "invoke model error")
+}
+
 func isTransportReplayError(msg string) bool {
 	lower := strings.ToLower(msg)
 	return strings.Contains(lower, "transport error") ||

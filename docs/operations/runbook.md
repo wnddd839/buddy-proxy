@@ -8,8 +8,14 @@ make build
 ./bin/codebuddy-proxy
 ```
 
-信号：`SIGINT` / `SIGTERM` 触发 graceful shutdown（10s 超时），
-期间会强制 flush 账号池，避免丢失内存中的统计与凭据变更。
+信号：`SIGINT` / `SIGTERM` 触发 graceful shutdown（默认宽限 **10 分钟**，可用
+`CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS` 调整），期间会强制 flush 账号池，避免丢失
+内存中的统计与凭据变更。宽限期用尽仍有在途请求时记 ERROR，但进程以 0 正常退出。
+
+- **Docker Compose**：`stop_grace_period` 必须 >= 宽限期，否则 Docker 会提前
+  SIGKILL，在途回合仍被硬切；仓库 `compose.yaml` 已设为 `11m`。
+- **systemd**：`TimeoutStopSec` 必须 >= 宽限期（例如 `TimeoutStopSec=11min`），
+  否则 systemd 会在 `TimeoutStopSec` 后发送 SIGKILL。
 
 常用命令：
 

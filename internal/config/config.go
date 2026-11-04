@@ -21,6 +21,8 @@ const (
 	DefaultWorkBuddyProductVer = "4.9.29177644"
 	DefaultRefreshWindow       = 10 * time.Minute
 	DefaultStreamKeepAlive     = 5 * time.Second
+	// DefaultShutdownGrace 是优雅关闭宽限期：必须覆盖一个 agent 回合的常见时长。
+	DefaultShutdownGrace       = 10 * time.Minute
 	DefaultOAuthSessionTTL     = 15 * time.Minute
 	DefaultHTTPTimeout         = 120 * time.Second
 	DefaultServerIdleTimeout   = 120 * time.Second
@@ -60,6 +62,7 @@ type Config struct {
 	OAuthSessionTTL     time.Duration
 	HTTPTimeout         time.Duration
 	ServerIdleTimeout   time.Duration
+	ShutdownGrace       time.Duration
 	MaxBodyMB           int
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
@@ -96,6 +99,7 @@ func Load() Config {
 		OAuthSessionTTL:     DefaultOAuthSessionTTL,
 		HTTPTimeout:         DefaultHTTPTimeout,
 		ServerIdleTimeout:   envDuration("CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS", "", DefaultServerIdleTimeout),
+		ShutdownGrace:       envDuration("CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS", "", DefaultShutdownGrace),
 		MaxBodyMB:           envInt("CODEBUDDY_PROXY_MAX_BODY_MB", "", DefaultMaxBodyMB),
 		MaxIdleConns:        DefaultMaxIdleConns,
 		MaxIdleConnsPerHost: DefaultMaxIdleConnsPerHost,

@@ -8,7 +8,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/gateway"
@@ -86,7 +85,7 @@ func main() {
 				srv.Updater.Fail(err)
 				continue
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), srv.DrainTimeout())
 			err = finishUpdate(ctx, srv.Shutdown, handoff)
 			cancel()
 			if err != nil {
@@ -103,12 +102,16 @@ func main() {
 			}
 			return
 		case sig := <-sigCh:
-			logger.Info("shutting down", "signal", sig.String())
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// 宽限期必须覆盖在途 agent 回合：单回合实测可达数分钟（推理模型
+			// 慢思考 + 长上下文）。旧值硬编码 10s，超时即 os.Exit(1) 硬切，
+			// 客户端看到的就是「说到一半直接没了」——每次部署都会中几条。
+			ctx, cancel := context.WithTimeout(context.Background(), srv.DrainTimeout())
 			defer cancel()
+			logger.Info("shutting down", "signal", sig.String(), "grace", srv.DrainTimeout().String())
 			if err := srv.Shutdown(ctx); err != nil {
-				logger.Error("shutdown error", "error", err)
-				os.Exit(1)
+				// 宽限期用尽仍有在途请求：记 ERROR 但正常退出（0），
+				// 让 systemd 认为这是一次干净的停止重启，而不是崩溃。
+				logger.Error("shutdown grace exhausted; in-flight requests were cut", "error", err)
 			}
 			return
 		}

@@ -5,6 +5,11 @@
 
 ---
 
+## Unreleased
+
+- 修复：优雅关闭宽限期由硬编码 10 秒改为默认 10 分钟（`CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS` 可调），宽限耗尽后正常退出（0），不再每次部署都硬切在途 agent 回合；`compose.yaml` 的 `stop_grace_period` 同步为 11m，systemd 需 `TimeoutStopSec>=11min`。
+- 修复：上游 `500 invoke model error` 纳入换号重试，但只限这一已知瞬时形态；其余 500 直接返回，避免无差别换号放大请求。
+
 ## v0.7.2 · 2026-11-04 · 每账号自动签到与流式收尾加固
 
 ### 新功能 · 每账号自动签到

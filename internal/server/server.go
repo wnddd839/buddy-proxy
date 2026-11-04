@@ -47,6 +47,8 @@ type Server struct {
 	// Checkin 是每账号自动签到规则与调度器（proxy-checkin.json）。
 	Checkin          *checkin.Runner
 	maxJSONBodyBytes int64
+	// drainTimeout 是优雅关闭宽限期，0 时由 DrainTimeout 回退默认值。
+	drainTimeout time.Duration
 }
 
 func New(cfg config.Config, svc *gateway.Service) *Server {
@@ -64,6 +66,9 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 		maxBodyMB = config.DefaultMaxBodyMB
 	}
 	s.maxJSONBodyBytes = int64(maxBodyMB) << 20
+	if cfg.ShutdownGrace > 0 {
+		s.drainTimeout = cfg.ShutdownGrace
+	}
 	idleTimeout := cfg.ServerIdleTimeout
 	if idleTimeout <= 0 {
 		idleTimeout = config.DefaultServerIdleTimeout
@@ -117,6 +122,16 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 
 func (s *Server) bodyTooLargeMessage() string {
 	return fmt.Sprintf("Request body exceeds %dMB.", s.maxJSONBodyBytes>>20)
+}
+
+// DrainTimeout 返回优雅关闭宽限期：必须大于一个 agent 回合的常见时长，
+// 否则每次部署都会硬切在途请求。默认 10 分钟，可用
+// CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS 覆盖。
+func (s *Server) DrainTimeout() time.Duration {
+	if s != nil && s.drainTimeout > 0 {
+		return s.drainTimeout
+	}
+	return config.DefaultShutdownGrace
 }
 
 func (s *Server) ListenAndServe() error {
