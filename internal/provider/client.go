@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
@@ -26,6 +27,9 @@ type Client struct {
 	IDEVersion string
 	// Log 上游失败排障日志；为空时回退 slog.Default()。网关 New 时注入进程 logger。
 	Log *slog.Logger
+	// StallTimeout 上游流停滞看门狗：连续这么久收不到字节就主动断开。
+	// 零值关闭（&Client{} 测试保持旧行为），生产由 NewClient 赋值。
+	StallTimeout time.Duration
 
 	// base 是直连用的 Transport，各出口按需 Clone（连接池互不干扰）。
 	base    *http.Transport
@@ -106,9 +110,10 @@ func NewClient(cfg config.Config) *Client {
 			Timeout:   0,
 			Transport: transport,
 		},
-		base:       transport,
-		IDEVersion: strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
-		Log:        slog.Default(),
+		base:         transport,
+		IDEVersion:   strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
+		Log:          slog.Default(),
+		StallTimeout: defaultStallTimeout,
 	}
 }
 
@@ -1095,6 +1100,12 @@ func partTypes(parts []any) []string {
 func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 	acc := newAccumulator()
 	fixer := newATXFixer()
+	var guard *stallGuard
+	if g := newStallGuard(body, c.StallTimeout); g != nil {
+		guard = g
+		defer g.timer.Stop()
+		body = g
+	}
 	reader := bufio.NewReaderSize(body, 64*1024)
 	var (
 		eventCount int
@@ -1107,13 +1118,20 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 		// delivered: 内容是否**真的下发给了客户端**（回调非空且该事件会被转发）。
 		// 空回合判定用它；与 sawContent 分开，避免把"解析到但没下发"当成已交付。
 		delivered bool
-		bytesRead int64
-		dataBuf   strings.Builder
+		// sawTerminal：收到过显式终止信号（finish_reason 帧、turn_ended 或 [DONE]）。
+		// 缺它说明上游在生成途中以 FIN 收尾，不能把半截正文当完整回答。
+		sawTerminal bool
+		bytesRead   int64
+		dataBuf     strings.Builder
 	)
 	flush := func() {
 		data := strings.TrimSpace(dataBuf.String())
 		dataBuf.Reset()
-		if data == "" || data == "[DONE]" {
+		if data == "" {
+			return
+		}
+		if data == "[DONE]" {
+			sawTerminal = true
 			return
 		}
 		raw := []byte(data)
@@ -1154,6 +1172,8 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 				if opts.DeliverToolDeltas && opts.OnEvent != nil {
 					delivered = true
 				}
+			case "turn_ended":
+				sawTerminal = true
 			}
 			if event.Type == "text_delta" && event.Text != "" {
 				event.Text = fixer.Feed(event.Text)
@@ -1190,7 +1210,22 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 		}
 		if err == io.EOF {
 			flush()
+			// 上游以 FIN 正常关闭却没给终止帧：FinishReasonFromTurn 会补 stop，
+			// 客户端会把半截回答当完整结果。首内容前可换号重放，已交付则显式报错。
+			if !sawTerminal && (sawContent || delivered) {
+				if !delivered {
+					return Result{}, fmt.Errorf("CodeBuddy chat completion stream ended without terminal event before first content: %w", io.ErrUnexpectedEOF)
+				}
+				return Result{Turn: Turn{Delivered: delivered}}, fmt.Errorf("CodeBuddy chat completion stream truncated after delivering content: %w", io.ErrUnexpectedEOF)
+			}
 			break
+		}
+		if err != nil && guard != nil && guard.fired.Load() {
+			// 上游假活（TCP 还在但不再吐字节）：收敛成可判定的失败，避免无限挂起。
+			if !sawContent {
+				return Result{}, fmt.Errorf("CodeBuddy chat completion stream stalled before first content: %w", err)
+			}
+			return Result{Turn: Turn{Delivered: delivered}}, fmt.Errorf("CodeBuddy chat completion stream stalled after delivering content: %w", err)
 		}
 		if err != nil {
 			// 上游流在任何正文/工具增量之前被传输层掐断（边缘空闲回收/连接重置）。
@@ -1978,4 +2013,39 @@ func truthy(value any) bool {
 	default:
 		return false
 	}
+}
+
+// defaultStallTimeout 是上游流停滞看门狗的固定值：大于正常思考间隔，远小于
+// TCP 超时。与 quotaRefreshTimeout / maxResetReplays 一样是内部常量，不新增 env。
+const defaultStallTimeout = 3 * time.Minute
+
+// stallGuard 包装上游响应体：每次读到字节就把定时器往后推，超时则关闭 body，
+// 让阻塞中的 Read 立刻返回错误，把「上游假活」从无限挂起收敛成可判定的失败。
+type stallGuard struct {
+	r       io.Reader
+	closer  io.Closer
+	timeout time.Duration
+	timer   *time.Timer
+	fired   atomic.Bool
+}
+
+func newStallGuard(body io.Reader, timeout time.Duration) *stallGuard {
+	closer, ok := body.(io.Closer)
+	if timeout <= 0 || !ok {
+		return nil
+	}
+	g := &stallGuard{r: body, closer: closer, timeout: timeout}
+	g.timer = time.AfterFunc(timeout, func() {
+		g.fired.Store(true)
+		_ = g.closer.Close()
+	})
+	return g
+}
+
+func (g *stallGuard) Read(p []byte) (int, error) {
+	n, err := g.r.Read(p)
+	if n > 0 {
+		g.timer.Reset(g.timeout)
+	}
+	return n, err
 }
