@@ -79,32 +79,60 @@ func TestUpstreamFINWithoutTerminalFrame(t *testing.T) {
 	}
 }
 
-// 端对端：上游假活（TCP 还在但不吐字节）时，看门狗把无限挂起收敛成可重放失败。
-func TestUpstreamStallBeforeFirstContentRetries(t *testing.T) {
-	s := testServerCfg(t, config.Config{Site: "domestic"})
-	seedTwoDomestic(t, s)
+// 端对端：停滞时未下发内容可换号重放，已下发的流式正文不得重放。
+func TestUpstreamStallRetriesOnlyBeforeDelivery(t *testing.T) {
 	const complete = "data: {\"choices\":[{\"delta\":{\"content\":\"恢复\"}}]}\n\n" +
 		"data: [DONE]\n\n"
-	var calls atomic.Int32
-	s.Svc.Provider.StallTimeout = 60 * time.Millisecond
-	s.Svc.Provider.HTTP = &http.Client{Transport: &stallTransport{calls: &calls, complete: complete}}
-	srv := httptest.NewServer(s.HTTP.Handler)
-	defer srv.Close()
-	srv.Client().Timeout = 5 * time.Second
+	const partial = "data: {\"choices\":[{\"delta\":{\"content\":\"半句话\"}}]}\n\n"
+	for _, tc := range []struct {
+		name      string
+		initial   string
+		stream    bool
+		wantCalls int32
+	}{
+		{"首内容前停滞换号", "", false, 2},
+		{"非流式缓存正文后停滞换号", partial, false, 2},
+		{"流式已下发正文不得重放", partial, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testServerCfg(t, config.Config{Site: "domestic"})
+			seedTwoDomestic(t, s)
+			var calls atomic.Int32
+			s.Svc.Provider.StallTimeout = 60 * time.Millisecond
+			s.Svc.Provider.HTTP = &http.Client{Transport: &stallTransport{calls: &calls, complete: complete, initial: tc.initial}}
+			srv := httptest.NewServer(s.HTTP.Handler)
+			defer srv.Close()
+			srv.Client().Timeout = 5 * time.Second
 
-	start := time.Now()
-	resp, err := srv.Client().Post(srv.URL+"/v1/chat/completions", "application/json",
-		strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
-		t.Fatalf("看门狗未及时触发: %s", elapsed)
-	}
-	if !strings.Contains(string(raw), "恢复") || calls.Load() != 2 {
-		t.Fatalf("停滞未换号恢复: calls=%d body=%s", calls.Load(), raw)
+			body := `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`
+			if tc.stream {
+				body = `{"model":"auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+			}
+			start := time.Now()
+			resp, err := srv.Client().Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if elapsed := time.Since(start); elapsed > 3*time.Second {
+				t.Fatalf("看门狗未及时触发: %s", elapsed)
+			}
+			text := string(raw)
+			if calls.Load() != tc.wantCalls {
+				t.Fatalf("上游请求次数=%d want=%d body=%s", calls.Load(), tc.wantCalls, text)
+			}
+			if tc.stream {
+				if !strings.Contains(text, "半句话") || !strings.Contains(text, "stalled after delivering content") || strings.Contains(text, "恢复") {
+					t.Fatalf("已下发正文的停滞流应显式失败且不得重放: %s", text)
+				}
+			} else if resp.StatusCode != http.StatusOK || !strings.Contains(text, "恢复") || strings.Contains(text, "半句话") || strings.Contains(text, "\"error\"") {
+				t.Fatalf("未下发正文的停滞请求应换号恢复: status=%d body=%s", resp.StatusCode, text)
+			}
+		})
 	}
 }
 
@@ -146,6 +174,7 @@ func (tr *terminalFrameTransport) RoundTrip(req *http.Request) (*http.Response, 
 type stallTransport struct {
 	calls    *atomic.Int32
 	complete string
+	initial  string
 }
 
 func (tr *stallTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -154,8 +183,12 @@ func (tr *stallTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if tr.calls.Add(1) == 1 {
 		pr, pw := io.Pipe()
-		// 不写、不关：模拟上游假活。看门狗关闭 pr 后 Read 立即返回错误。
-		go func() { defer pw.Close(); <-req.Context().Done() }()
+		// 可先写部分正文，再保持连接不关；看门狗关闭 pr 后 Read 返回错误。
+		go func() {
+			defer pw.Close()
+			_, _ = io.WriteString(pw, tr.initial)
+			<-req.Context().Done()
+		}()
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": {"text/event-stream"}},

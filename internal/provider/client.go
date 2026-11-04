@@ -1221,8 +1221,8 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 			break
 		}
 		if err != nil && guard != nil && guard.fired.Load() {
-			// 上游假活（TCP 还在但不再吐字节）：收敛成可判定的失败，避免无限挂起。
-			if !sawContent {
+			// 上游假活（TCP 还在但不再吐字节）：未下发的缓存内容仍可换号重放。
+			if !delivered {
 				return Result{}, fmt.Errorf("CodeBuddy chat completion stream stalled before first content: %w", err)
 			}
 			return Result{Turn: Turn{Delivered: delivered}}, fmt.Errorf("CodeBuddy chat completion stream stalled after delivering content: %w", err)
