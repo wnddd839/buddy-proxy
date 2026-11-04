@@ -12,6 +12,7 @@
 - 启动不补签，错过的窗口等明天；想补签仍用「账号池 → 每日签到」手动跑一轮。
 - 新增 `GET/POST /direct-admin/api/checkin-config`；非法时间、重复账号、跨零点窗口在保存时拒绝。
 - 复用既有 `billing.DailyCheckinForAccount`，上游 `todayCheckedIn` / `code=10001` 保证幂等。
+- 修复 #61：自更新下载 `SHA256SUMS.txt` 等响应体中途断开（`unexpected EOF`）时整段重取最多 3 次；读取后按 `Content-Length` 校验实际字节数，重试耗尽返回带原始原因的明确错误。校验失败或取消仍不动现有二进制。
 
 ---
 

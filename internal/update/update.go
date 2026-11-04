@@ -294,7 +294,31 @@ func (m *Manager) Cancel() error {
 
 func (m *Manager) Fail(err error) { m.finish(err) }
 
+// get 读取固定来源的更新文件。GitHub Release 的响应体偶尔会被中途掐断，
+// 表现为 io.ReadAll 返回 unexpected EOF / io.ErrUnexpectedEOF；此时整段重取，
+// 避免把一次瞬断升级成「更新失败」。重试只在读完之前出错时进行，且受 ctx 约束。
+const getAttempts = 3
+
 func (m *Manager) get(ctx context.Context, u string, limit int64) ([]byte, error) {
+	var lastErr error
+	for range getAttempts {
+		b, err := m.getOnce(ctx, u, limit)
+		if err == nil {
+			return b, nil
+		}
+		lastErr = err
+		// 非读取期错误（404 / 重定向被拒 / 响应头异常）重试无意义。
+		if !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	return nil, fmt.Errorf("更新文件下载中断（已重试 %d 次）: %w", getAttempts, lastErr)
+}
+
+func (m *Manager) getOnce(ctx context.Context, u string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
@@ -312,10 +336,16 @@ func (m *Manager) get(ctx context.Context, u string, limit int64) ([]byte, error
 		return nil, errors.New("更新响应超出大小限制")
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
 	if int64(len(b)) > limit {
 		return nil, errors.New("更新响应超出大小限制")
 	}
-	return b, err
+	if resp.ContentLength >= 0 && int64(len(b)) != resp.ContentLength {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return b, nil
 }
 
 func (m *Manager) stage(ctx context.Context, rel release) (path string, err error) {
