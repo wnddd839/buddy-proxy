@@ -10,6 +10,10 @@
 - **国际站首条 system**：`protocol_direct` 在 `site=global`（含空 site 默认归 global）且客户端未提供 system 时补一条 canonical system；显式 `site=domestic` 的既有请求体不变。已有 system 的折叠逻辑不变；新增端到端请求体回归。
 - **单账号传输层抖动**：建连/首内容前断流且该站点没有其它可选账号时，改为同号重连，不再空换号把唯一账号打进冷却；仍受 `maxResetReplays` 统一预算约束，有备用账号时行为不变。
 - **隧道场景 SSE 连接**：仅当请求带 `X-Forwarded-*`、`Forwarded` 或 `X-Real-IP` 时，三条流式入口设 `Connection: close` / `r.Close`，避免隧道丢 FIN 导致客户端复用死连接挂到 `headersTimeout`；直连保持 `keep-alive`，不增加本地建连开销。
+- **模型目录刷新提速**：console 失败按 host 记 10 分钟负缓存，多 host 与 IDE 目录改为并发拉取；`fresh=1` 真正绕过负缓存。`/v1/models` 的 60 秒缓存 TTL 不变，不改变公开缓存行为。
+- **国际站 OAuth 专用出口**：新增 `CODEBUDDY_PROXY_OAUTH_PROXY`，`auth/state`、`auth/token` 与 token refresh 全部走它；国内站与普通推理不变。非法值记 ERROR 并回退默认客户端，不把 global OAuth 变成 fail-closed。
+- **优雅关闭与 500 重试**：`SIGINT`/`SIGTERM` 宽限由 10 秒改为默认 10 分钟（`CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS` 可调），宽限耗尽记 ERROR 但正常退出；`compose.yaml` 的 `stop_grace_period` 同步 11m。**自更新交接仍保留 30 秒**。上游 `500 invoke model error` 纳入换号重试，其余 500 不重试。
+- **按账号并发观测**：新增 `internal/concurrency`，记录 in-flight、1/5/60 分钟 RPM 与 429 触发瞬间的账号/全局在途数；`GET /direct-admin/api/concurrency` 返回完整快照，`/status` 只带三个**数字**汇总（15 秒轮询不搬运事件数组）。仅内存计数、不落盘、不发探针；管理台状态条显示在途与限流数。
 
 ## v0.7.2 · 2026-11-04 · 每账号自动签到与流式收尾加固
 

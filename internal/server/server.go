@@ -47,6 +47,7 @@ type Server struct {
 	// Checkin 是每账号自动签到规则与调度器（proxy-checkin.json）。
 	Checkin          *checkin.Runner
 	maxJSONBodyBytes int64
+	drainTimeout     time.Duration
 }
 
 func New(cfg config.Config, svc *gateway.Service) *Server {
@@ -64,6 +65,9 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 		maxBodyMB = config.DefaultMaxBodyMB
 	}
 	s.maxJSONBodyBytes = int64(maxBodyMB) << 20
+	if cfg.ShutdownGrace > 0 {
+		s.drainTimeout = cfg.ShutdownGrace
+	}
 	idleTimeout := cfg.ServerIdleTimeout
 	if idleTimeout <= 0 {
 		idleTimeout = config.DefaultServerIdleTimeout
@@ -117,6 +121,14 @@ func New(cfg config.Config, svc *gateway.Service) *Server {
 
 func (s *Server) bodyTooLargeMessage() string {
 	return fmt.Sprintf("Request body exceeds %dMB.", s.maxJSONBodyBytes>>20)
+}
+
+// DrainTimeout 返回信号触发的优雅关闭宽限期；自更新交接仍用其独立的短超时。
+func (s *Server) DrainTimeout() time.Duration {
+	if s != nil && s.drainTimeout > 0 {
+		return s.drainTimeout
+	}
+	return config.DefaultShutdownGrace
 }
 
 func (s *Server) ListenAndServe() error {
@@ -675,6 +687,12 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 	switch {
 	case strings.HasPrefix(path, "/direct-admin/api/update"):
 		s.handleUpdate(w, r, path)
+		return
+	case path == "/direct-admin/api/concurrency" && r.Method == http.MethodGet:
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok":          true,
+			"concurrency": s.Svc.ConcurrencyStatus(),
+		})
 		return
 	case path == "/direct-admin/api/status" && r.Method == http.MethodGet:
 		fresh := queryTruthy(r.URL.Query().Get("fresh"))
@@ -1263,12 +1281,18 @@ func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, pat
 			httputil.WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "account not found"})
 			return
 		}
+		httpClient := s.Svc.Provider.For(selected.Proxy)
+		if config.NormalizeSite(strutil.First(selected.Site, s.Svc.Config().Site)) == "global" {
+			if client := s.Svc.OAuthHTTPFor("global"); client != nil {
+				httpClient = client
+			}
+		}
 		token, err := s.Svc.OAuth.Refresh(r.Context(), oauth.RefreshOptions{
 			Site:         strutil.First(selected.Site, s.Svc.Config().Site),
 			BaseURL:      strutil.First(selected.BaseURL, s.Svc.Config().BaseURL),
 			AccessToken:  selected.BearerToken,
 			RefreshToken: selected.RefreshToken,
-			HTTPClient:   s.Svc.Provider.For(selected.Proxy),
+			HTTPClient:   httpClient,
 		})
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})

@@ -23,7 +23,8 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    stop_grace_period: 20s
+    # 需 >= CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS（默认 10 分钟），否则 Docker 会提前 SIGKILL。
+    stop_grace_period: 11m
 
 volumes:
   buddy-data:

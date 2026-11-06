@@ -40,12 +40,17 @@ func (s *Service) ImageFromPool(ctx context.Context, opts ImageOptions) (ImageRe
 	}
 	account := selection.Account
 	chatOpts := s.chatOptionsFromAccount(account, CompleteOptions{Model: opts.Model, Site: site})
+	endFlight := s.Concurrency.Begin(account.ID, account.Label)
 	result, err := s.Provider.Image(ctx, chatOpts, provider.ImageRequest{
 		Model:     opts.Model,
 		Prompt:    opts.Prompt,
 		ImageURLs: opts.ImageURLs,
 		ImageData: opts.ImageData,
 	})
+	if err != nil {
+		s.recordRateLimit(account, err)
+	}
+	endFlight(err == nil)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
 			s.Log.Info("codebuddy image request canceled by client", "accountId", account.ID, "model", opts.Model)

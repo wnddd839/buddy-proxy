@@ -103,12 +103,12 @@ func main() {
 			}
 			return
 		case sig := <-sigCh:
-			logger.Info("shutting down", "signal", sig.String())
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			logger.Info("shutting down", "signal", sig.String(), "grace", srv.DrainTimeout().String())
+			ctx, cancel := context.WithTimeout(context.Background(), srv.DrainTimeout())
 			defer cancel()
 			if err := srv.Shutdown(ctx); err != nil {
-				logger.Error("shutdown error", "error", err)
-				os.Exit(1)
+				// 宽限耗尽记 ERROR 但正常退出，不把干净的停止重启报成崩溃。
+				logger.Error("shutdown grace exhausted; in-flight requests were cut", "error", err)
 			}
 			return
 		}

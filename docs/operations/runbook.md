@@ -8,8 +8,10 @@ make build
 ./bin/codebuddy-proxy
 ```
 
-信号：`SIGINT` / `SIGTERM` 触发 graceful shutdown（10s 超时），
-期间会强制 flush 账号池，避免丢失内存中的统计与凭据变更。
+信号：`SIGINT` / `SIGTERM` 触发 graceful shutdown（默认宽限 10 分钟，可用
+`CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS` 调整；自更新交接仍是独立的 30 秒），
+期间会强制 flush 账号池，避免丢失内存中的统计与凭据变更。宽限耗尽记 ERROR
+但正常退出；Docker `stop_grace_period` / systemd `TimeoutStopSec` 需不小于宽限。
 
 常用命令：
 
@@ -132,6 +134,10 @@ Go 版修复：
 管理台出口检测通过指定代理访问 `https://api.ipify.org?format=json`，与聊天使用同一个 `egress.Proxy.Transport` 代理构造逻辑，但目标站和请求超时不同。回显站 DNS、TLS、访问策略或超时失败，不能单凭 `dial tcp <目标IP>:443` 判定“绕过代理”或“聊天出口损坏”；HTTP 代理内部转发或 SOCKS 本地代理也可能报告目标地址的错误。请对照同一账号的聊天测试、代理日志和 `direct` 直连对照结果。未绑定出口的聊天保留进程代理环境，检测的直连对照刻意忽略环境代理。
 
 6004 重置时间较远并不能单独证明日配额耗尽，独立出口也被限流不能证明不存在 IP 维度限制；按账号与模型记录实际重置时间，不按 `<1h` / `>12h` 猜测上游限流类别。
+
+## 并发观测与 429 现场
+
+`/direct-admin/api/status` 每 15 秒只返回 `concurrency` 的三个数字：`globalInFlight`、`accounts`（账号数）、`rateLimits`（事件数）。完整按账号水位与最近一小时限流事件走 `GET /direct-admin/api/concurrency`。限流事件在请求结束前记录，因此 `accountInFlight` 是触发瞬间的真实并发；若恒为 1，瓶颈更可能是账号池宽度或单账号 RPM，而非全局并发。观测只在内存中，不写文件、不发探针请求，进程重启后清空。
 
 ## 隧道场景的 SSE 连接
 

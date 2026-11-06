@@ -24,6 +24,8 @@
 | `CODEBUDDY_PROXY_PORT` | `32126` | 监听端口 |
 | `CODEBUDDY_PROXY_MAX_BODY_MB` | `64` | 公开推理接口 JSON 上限，单位 MiB；非正值或溢出回退默认。管理接口仍为 64 MiB，图片 multipart 限制不变 |
 | `CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS` | `120000` | HTTP keep-alive 空闲超时（毫秒）；非正值回退默认，不是 SSE 总时长或上游首包超时 |
+| `CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS` | `600000` | `SIGINT`/`SIGTERM` 优雅关闭宽限期（毫秒）；非正值回退默认。不影响自更新交接的 30 秒超时，Docker/systemd 的停止超时需不小于该值 |
+| `CODEBUDDY_PROXY_OAUTH_PROXY` | 空 | 国际站（`global`）OAuth 专用出口，支持 `http(s)://` / `socks5(h)://`；`auth/state`、`auth/token` 与 token refresh 都走它。国内站与普通推理不受影响，非法值记 ERROR 并回退默认客户端 |
 | `CODEBUDDY_PROXY_PUBLIC_BASE_URL` | 空 | 公网访问地址，用于 OAuth 回调与客户端配置回显。会去掉结尾 `/` |
 
 ## 鉴权

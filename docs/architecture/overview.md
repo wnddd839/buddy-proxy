@@ -109,6 +109,7 @@ server ──► gateway ──► accounts pool + oauth refresh
 | singleflight | `modelsFlight` | 模型列表并发 cache miss 合并回源 |
 | 常量时间比较 | `crypto/subtle` | API Key / admin 密码比对 |
 | 异步刷盘 | `accounts.Pool.flushLoop` | 250ms 合并写，退出时强制 flush |
+| 并发观测 | `concurrency.Tracker` | 按账号记录 in-flight、1/5/60 分钟 RPM 与 429 触发瞬间在途数；仅内存计数，不落盘、不额外发探针 |
 
 ## 账号池持久化
 

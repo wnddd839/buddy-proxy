@@ -436,7 +436,8 @@ usage chunk 形如：
 
 | Method | Path | 说明 |
 |--------|------|------|
-| GET | `/direct-admin/api/status` | 运行状态 + 账号摘要 + 配置快照；含 `version`、`build`（`version` / 可选 `commit` / `builtAt`）、进程级 `stats`。`?fresh=1` 时强制探活上游，并对当前号池已启用账号并行拉取最新 Credits（写入额度快照，响应带 `accountUsages`）。15 秒轮询不要带 `fresh` |
+| GET | `/direct-admin/api/concurrency` | 按账号并发观测完整快照：`globalInFlight`、各账号 `inFlight` / `rpm1` / `rpm5` / `rpm60` / `peakInFlight`、最近一小时限流事件（含触发瞬间在途数）。仅内存计数，进程重启后清空 |
+| GET | `/direct-admin/api/status` | 运行状态 + 账号摘要 + 配置快照；含 `version`、`build`（`version` / 可选 `commit` / `builtAt`）、进程级 `stats`、`concurrency` 数字汇总（`globalInFlight` / `accounts` / `rateLimits`，**均为数字**）。`?fresh=1` 时强制探活上游，并对当前号池已启用账号并行拉取最新 Credits（写入额度快照，响应带 `accountUsages`）。15 秒轮询不要带 `fresh` |
 | GET | `/direct-admin/api/usage` | 用量汇总 + 分页明细 + 趋势 `series`；默认落盘 `proxy-usage.json`（约 400 条环形缓冲 + 90 日汇总） |
 | GET | `/direct-admin/api/client-config` | 前端配置（baseUrl / apiKey / site / requireApiKey） |
 | POST | `/direct-admin/api/client-config/generate-key` | 生成 `cbp_...` Key，写入 `~/.codebuddy/proxy.env`（或已有 `.env`）并立即生效 |

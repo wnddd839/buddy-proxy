@@ -21,6 +21,8 @@ const (
 	DefaultWorkBuddyProductVer = "4.9.29177644"
 	DefaultRefreshWindow       = 10 * time.Minute
 	DefaultStreamKeepAlive     = 5 * time.Second
+	// DefaultShutdownGrace 覆盖慢思考 + 长上下文的在途回合。
+	DefaultShutdownGrace       = 10 * time.Minute
 	DefaultOAuthSessionTTL     = 15 * time.Minute
 	DefaultHTTPTimeout         = 120 * time.Second
 	DefaultServerIdleTimeout   = 120 * time.Second
@@ -58,7 +60,10 @@ type Config struct {
 	RefreshWindow       time.Duration
 	StreamKeepAlive     time.Duration
 	OAuthSessionTTL     time.Duration
+	// OAuthProxy 是国际站 OAuth 专用出口（auth/state、auth/token、token refresh）。
+	OAuthProxy          string
 	HTTPTimeout         time.Duration
+	ShutdownGrace       time.Duration
 	ServerIdleTimeout   time.Duration
 	MaxBodyMB           int
 	MaxIdleConns        int
@@ -94,8 +99,10 @@ func Load() Config {
 		RefreshWindow:       envDuration("CODEBUDDY_REFRESH_WINDOW_MS", "CURSOR_DIRECT_CODEBUDDY_REFRESH_WINDOW_MS", DefaultRefreshWindow),
 		StreamKeepAlive:     envDuration("CODEBUDDY_PROXY_STREAM_KEEPALIVE_MS", "CURSOR_DIRECT_STREAM_KEEPALIVE_MS", DefaultStreamKeepAlive),
 		OAuthSessionTTL:     DefaultOAuthSessionTTL,
+		OAuthProxy:          strings.TrimSpace(firstEnv("CODEBUDDY_PROXY_OAUTH_PROXY")),
 		HTTPTimeout:         DefaultHTTPTimeout,
 		ServerIdleTimeout:   envDuration("CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS", "", DefaultServerIdleTimeout),
+		ShutdownGrace:       envDuration("CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS", "", DefaultShutdownGrace),
 		MaxBodyMB:           envInt("CODEBUDDY_PROXY_MAX_BODY_MB", "", DefaultMaxBodyMB),
 		MaxIdleConns:        DefaultMaxIdleConns,
 		MaxIdleConnsPerHost: DefaultMaxIdleConnsPerHost,

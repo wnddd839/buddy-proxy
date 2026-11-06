@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -16,7 +17,9 @@ import (
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/billing"
+	"github.com/wnddd839/codebuddy-proxy/internal/concurrency"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
+	"github.com/wnddd839/codebuddy-proxy/internal/egress"
 	"github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
@@ -103,9 +106,11 @@ type Service struct {
 	Pool     *accounts.Pool
 	Provider *provider.Client
 	OAuth    *oauth.Client
-	Models   *models.Lister
-	Log      *slog.Logger
-	Started  time.Time
+	// oauthGlobal 是国际站 OAuth 专用客户端；nil 表示未配置出口。
+	oauthGlobal *oauth.Client
+	Models      *models.Lister
+	Log         *slog.Logger
+	Started     time.Time
 
 	runtimeCfg atomic.Pointer[config.Config]
 
@@ -122,6 +127,8 @@ type Service struct {
 	Journal       *usagejournal.Journal
 	// Watch 是进程内波动监测器，nil 表示未启用（见 internal/watch）。
 	Watch *watch.Monitor
+	// Concurrency 是进程内按账号并发观测（无落盘）。
+	Concurrency *concurrency.Tracker
 
 	probeMu    sync.Mutex
 	probeCache map[string]provider.Reachability
@@ -146,20 +153,28 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 		logger.Info("usage journal persistence enabled", "path", cfg.UsagePath)
 	}
 	svc := &Service{
-		Pool:     accounts.NewPool(cfg.AccountsPath),
-		Provider: p,
-		OAuth:    oauth.NewClient(p.HTTP),
-		Models:   models.NewLister(),
-		Log:      logger,
-		Started:  time.Now(),
-		oauth:    &OAuthSession{Status: "idle"},
-		Pins:     sessionpin.New(0),
+		Pool:        accounts.NewPool(cfg.AccountsPath),
+		Concurrency: concurrency.New(),
+		Provider:    p,
+		OAuth:       oauth.NewClient(p.HTTP),
+		Models:      models.NewLister(),
+		Log:         logger,
+		Started:     time.Now(),
+		oauth:       &OAuthSession{Status: "idle"},
+		Pins:        sessionpin.New(0),
 		// 与账号钉相同 TTL（45 分钟空闲）；账号切换后 ID 会轮换。
 		Conversations: sessionpin.NewConversationTable(0),
 		Journal:       journal,
 	}
 	if cfg.Watch.Enabled {
 		svc.Watch = watch.New(cfg.Watch, logger, nil)
+	}
+	if proxy := strings.TrimSpace(cfg.OAuthProxy); proxy != "" {
+		if _, err := egress.Parse(proxy); err != nil {
+			logger.Error("invalid CODEBUDDY_PROXY_OAUTH_PROXY; global OAuth uses the default client", "error", err.Error())
+		} else {
+			svc.oauthGlobal = oauth.NewClient(p.For(proxy))
+		}
 	}
 	svc.modelsCache = map[string]modelsCacheEntry{}
 	svc.probeCache = map[string]provider.Reachability{}
@@ -450,7 +465,12 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if pinKey != "" {
 		chatOpts.ConversationID = s.Conversations.ID(pinKey+"\x1e"+chatOpts.Product, account.ID)
 	}
+	endFlight := s.Concurrency.Begin(account.ID, account.Label)
 	result, err := s.Provider.Complete(ctx, chatOpts)
+	if err != nil {
+		s.recordRateLimit(account, err)
+	}
+	endFlight(err == nil)
 	if err != nil {
 		// 客户端主动断开 SSE/HTTP，不算账号或上游故障。
 		if errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
@@ -528,6 +548,27 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	}, nil
 }
 
+// recordRateLimit 只把确认的限流写入观测器，且必须在 endFlight 之前调用。
+func (s *Service) recordRateLimit(account accounts.Account, err error) {
+	if s == nil || s.Concurrency == nil || err == nil {
+		return
+	}
+	msg := strings.ToLower(err.Error())
+	if !billing.IsModelRateLimitError(err) && !strings.Contains(msg, "429") &&
+		!strings.Contains(msg, "too many requests") && !strings.Contains(msg, "rate limit") {
+		return
+	}
+	s.Concurrency.RecordRateLimit(account.ID, err.Error())
+}
+
+// ConcurrencyStatus 返回完整快照，供管理台按需读取。
+func (s *Service) ConcurrencyStatus() concurrency.Snapshot {
+	if s == nil {
+		return concurrency.Snapshot{}
+	}
+	return s.Concurrency.Snapshot()
+}
+
 // MergeRefreshedToken 把刷新得到的凭证合并回已有账号。
 // 只更新凭证相关字段，保留运维字段（启用状态、出口、配额、冷却、租户信息等）——
 // AccountFromTokenData 只认识 token，直接 ReplaceAccount 会把这些字段清掉。
@@ -566,13 +607,17 @@ func (s *Service) refreshSelected(ctx context.Context, selection accounts.Select
 	if !oauth.ShouldRefresh(account, force, s.Config().RefreshWindow, time.Now()) {
 		return selection, nil
 	}
+	// 未配置 global 专用出口时保持账号级出口；配置了则以专用出口为准。
+	httpClient := s.Provider.For(account.Proxy)
+	if config.NormalizeSite(strutil.First(account.Site, s.Config().Site)) == "global" && s.oauthGlobal != nil {
+		httpClient = s.oauthGlobal.HTTP
+	}
 	token, err := s.OAuth.Refresh(ctx, oauth.RefreshOptions{
 		Site:         strutil.First(account.Site, s.Config().Site),
 		BaseURL:      strutil.First(account.BaseURL, s.Config().BaseURL),
 		AccessToken:  account.BearerToken,
 		RefreshToken: account.RefreshToken,
-		// 刷新令牌也走账号自己的出口：同一账号不该在两个 IP 之间跳。
-		HTTPClient: s.Provider.For(account.Proxy),
+		HTTPClient:   httpClient,
 	})
 	if err != nil {
 		if force || (account.TokenExpiresAt > 0 && account.TokenExpiresAt <= time.Now().UnixMilli()) {
@@ -658,7 +703,13 @@ func (s *Service) shouldRetryNextAccount(err error, selection accounts.Selection
 			return false
 		}
 	}
-	return reRetryNextAccount.MatchString(err.Error())
+	return reRetryNextAccount.MatchString(err.Error()) || isRetryable500(msg)
+}
+
+// isRetryable500 只把已知的瞬时 500（invoke model error）纳入换号重试，
+// 其余 500 视为持续性错误直接返回，避免无差别换号放大请求。
+func isRetryable500(msg string) bool {
+	return strings.Contains(msg, "invoke model error")
 }
 
 // isTransportReplayError 判断是否属于"传输层可重放"失败：建连失败、
@@ -1092,6 +1143,7 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 			EnterpriseID:        account.EnterpriseID,
 			TenantID:            account.TenantID,
 			DepartmentFullName:  account.DepartmentFullName,
+			Fresh:               fresh,
 			APIEndpoint:         provider.AlignAPIEndpoint(product, account.APIEndpoint),
 			ChatCompletionsPath: strutil.First(account.ChatCompletionsPath, s.Config().ChatCompletionsPath),
 		})
@@ -1343,6 +1395,7 @@ func (s *Service) Status() map[string]any {
 		"poolProduct": product,
 		"upstream":    upstream,
 		"watch":       s.WatchStatus(),
+		"concurrency": s.Concurrency.Summary(),
 		"config": map[string]any{
 			"host":                host,
 			"port":                port,
@@ -1432,6 +1485,22 @@ func (s *Service) resetOAuthSessionLocked(site, label, publicOrigin string) {
 	s.oauth.CallbackURL = fmt.Sprintf("%s/direct-admin/codebuddy/oauth/callback?id=%s&token=%s", strings.TrimRight(publicOrigin, "/"), url.QueryEscape(s.oauth.ID), url.QueryEscape(s.oauth.Token))
 }
 
+// OAuthHTTPFor 返回该站点 OAuth 使用的 HTTP 客户端；未配置专用出口时返回 nil。
+func (s *Service) OAuthHTTPFor(site string) *http.Client {
+	if s != nil && config.NormalizeSite(site) == "global" && s.oauthGlobal != nil {
+		return s.oauthGlobal.HTTP
+	}
+	return nil
+}
+
+// oauthFor 为国际站 OAuth 选择专用出口客户端，其余沿用默认客户端。
+func (s *Service) oauthFor(site string) *oauth.Client {
+	if s != nil && config.NormalizeSite(site) == "global" && s.oauthGlobal != nil {
+		return s.oauthGlobal
+	}
+	return s.OAuth
+}
+
 func (s *Service) StartOAuth(ctx context.Context, site, label, publicOrigin string, reuse bool) (map[string]any, error) {
 	s.mu.Lock()
 	if s.oauth == nil {
@@ -1448,7 +1517,7 @@ func (s *Service) StartOAuth(ctx context.Context, site, label, publicOrigin stri
 	sessionSite := s.oauth.Site
 	s.mu.Unlock()
 
-	started, err := s.OAuth.Start(ctx, sessionSite)
+	started, err := s.oauthFor(sessionSite).Start(ctx, sessionSite)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.oauth == nil || s.oauth.ID != sessionID {
@@ -1480,7 +1549,7 @@ func (s *Service) PollOAuth(ctx context.Context, publicOrigin string) (map[strin
 		defer s.mu.Unlock()
 		return s.oauthPayloadLocked(publicOrigin), nil
 	}
-	polled, err := s.OAuth.Poll(ctx, session.Site, session.AuthState)
+	polled, err := s.oauthFor(session.Site).Poll(ctx, session.Site, session.AuthState)
 	if err != nil {
 		s.mu.Lock()
 		s.oauth.Status = "failed"

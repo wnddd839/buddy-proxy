@@ -130,4 +130,3 @@ type roundTripAlwaysEOF struct{}
 func (roundTripAlwaysEOF) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, io.ErrUnexpectedEOF
 }
-

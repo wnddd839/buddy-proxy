@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.02-watch-import-egress"
+const UIRevision = "2026.11.02-watch-import-egress-concurrency-shutdown-oauth-models"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -523,6 +523,8 @@ pre{
           <span class="num">推理缺失<b id="watchMiss">—</b></span>
           <span class="num">耗时 P50<b id="watchP50">—</b></span>
           <span class="num">样本<b id="watchSamples">—</b></span>
+          <span class="num">在途<b id="ccInFlight">—</b></span>
+          <span class="num">限流<b id="ccLimited">—</b></span>
         </div>
         <div class="actions" style="margin-top:24px">
           <button class="primary" id="btnRefresh" type="button">刷新状态</button>
@@ -1647,6 +1649,9 @@ function paintStatus(data){
     ? (totalTokens + ' · cache ' + cachedTokens)
     : String(totalTokens);
   paintWatch(data.watch);
+  const cc = data.concurrency || {};
+  if ($('ccInFlight')) $('ccInFlight').textContent = String(cc.globalInFlight || 0);
+  if ($('ccLimited')) $('ccLimited').textContent = String(cc.rateLimits || 0);
   const loggedIn = !!accounts.loggedIn;
   const primary = accounts.primary || ((accounts.accounts||[])[0] || null);
   $('mLogin').textContent = loggedIn
