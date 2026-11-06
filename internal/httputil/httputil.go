@@ -226,6 +226,13 @@ func BearerToken(r *http.Request) string {
 	return ""
 }
 
+// ViaTunnel 判断请求是否经过反向代理/隧道。隧道链路可能丢掉服务端关闭连接的
+// FIN，客户端复用死连接会一直等到 headersTimeout；直连不受影响。
+func ViaTunnel(r *http.Request) bool {
+	return r.Header.Get("X-Forwarded-Host") != "" || r.Header.Get("X-Forwarded-For") != "" ||
+		r.Header.Get("Forwarded") != "" || r.Header.Get("X-Real-IP") != ""
+}
+
 func PublicOrigin(r *http.Request, configured string) string {
 	if configured != "" {
 		return strings.TrimRight(configured, "/")

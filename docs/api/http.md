@@ -380,6 +380,8 @@ JSON 请求体上限 **64MiB**（`httputil.MaxJSONBodyBytes`）。超过时返�
 5. 默认再发一条 `stream_options.include_usage` 风格的 usage chunk（`choices: []`）；若请求显式传入 `"stream_options":{"include_usage":false}` 则跳过
 6. 最后 `data: [DONE]`
 
+经反向代理/隧道（请求带 `X-Forwarded-*` / `Forwarded` / `X-Real-IP`）时，三条流式入口均返回 `Connection: close` 并关闭该连接，避免隧道丢 FIN 后客户端复用死连接；直连请求仍为 `Connection: keep-alive`。
+
 usage chunk 形如：
 
 ```json

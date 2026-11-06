@@ -132,3 +132,7 @@ Go 版修复：
 管理台出口检测通过指定代理访问 `https://api.ipify.org?format=json`，与聊天使用同一个 `egress.Proxy.Transport` 代理构造逻辑，但目标站和请求超时不同。回显站 DNS、TLS、访问策略或超时失败，不能单凭 `dial tcp <目标IP>:443` 判定“绕过代理”或“聊天出口损坏”；HTTP 代理内部转发或 SOCKS 本地代理也可能报告目标地址的错误。请对照同一账号的聊天测试、代理日志和 `direct` 直连对照结果。未绑定出口的聊天保留进程代理环境，检测的直连对照刻意忽略环境代理。
 
 6004 重置时间较远并不能单独证明日配额耗尽，独立出口也被限流不能证明不存在 IP 维度限制；按账号与模型记录实际重置时间，不按 `<1h` / `>12h` 猜测上游限流类别。
+
+## 隧道场景的 SSE 连接
+
+经 nps / Nginx 等隧道或反代时，服务端关闭连接的 FIN 可能送不到客户端，客户端把死连接留在 keep-alive 池里，下一条请求会挂到自身的 `headersTimeout`。网关只在识别到转发头（`X-Forwarded-*` / `Forwarded` / `X-Real-IP`）时对 `/v1/chat/completions`、`/v1/responses`、`/v1/agentic_search` 的流式响应设 `Connection: close`；直连部署保持连接复用。若隧道未透传这些头，需要在反代层补 `X-Forwarded-For`，否则该保护不生效。

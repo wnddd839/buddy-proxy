@@ -500,7 +500,12 @@ func (s *Server) streamChat(
 		started = true
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-transform")
-		w.Header().Set("Connection", "keep-alive")
+		if httputil.ViaTunnel(r) {
+			r.Close = true
+			w.Header().Set("Connection", "close")
+		} else {
+			w.Header().Set("Connection", "keep-alive")
+		}
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(http.StatusOK)

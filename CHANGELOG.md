@@ -5,6 +5,12 @@
 
 ---
 
+## Unreleased
+
+- **国际站首条 system**：`protocol_direct` 在 `site=global`（含空 site 默认归 global）且客户端未提供 system 时补一条 canonical system；显式 `site=domestic` 的既有请求体不变。已有 system 的折叠逻辑不变；新增端到端请求体回归。
+- **单账号传输层抖动**：建连/首内容前断流且该站点没有其它可选账号时，改为同号重连，不再空换号把唯一账号打进冷却；仍受 `maxResetReplays` 统一预算约束，有备用账号时行为不变。
+- **隧道场景 SSE 连接**：仅当请求带 `X-Forwarded-*`、`Forwarded` 或 `X-Real-IP` 时，三条流式入口设 `Connection: close` / `r.Close`，避免隧道丢 FIN 导致客户端复用死连接挂到 `headersTimeout`；直连保持 `keep-alive`，不增加本地建连开销。
+
 ## v0.7.2 · 2026-11-04 · 每账号自动签到与流式收尾加固
 
 ### 新功能 · 每账号自动签到

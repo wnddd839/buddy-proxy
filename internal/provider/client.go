@@ -836,6 +836,14 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	// CodeBuddy protocol_direct 拒绝非流式 chat（11101）。始终上游流式；
 	// 需要 JSON 的调用方仍通过 readSSE 聚合成 Turn。
 	messages := EnsureUpstreamMessages(opts.Messages)
+	// global 要求首条必须是 system；显式 domestic 保持既有 payload 不变。
+	// 空 site 按 global 处理（config.NormalizeSite("") 默认归 global）。
+	if config.NormalizeSite(opts.Site) == "global" && len(messages) > 0 &&
+		NormalizeMessageRole(fmt.Sprint(messages[0]["role"])) != "system" {
+		out := make([]map[string]any, 0, len(messages)+1)
+		out = append(out, map[string]any{"role": "system", "content": canonicalUpstreamSystem})
+		messages = append(out, messages...)
+	}
 	if len(messages) == 0 {
 		return Result{}, fmt.Errorf("CodeBuddy chat completion failed: no valid messages after normalization")
 	}
