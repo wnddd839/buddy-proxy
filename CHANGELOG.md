@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+- **RPM 口径修正**：`rpm1` / `rpm5` / `rpm60` 按最近 1/5/60 分钟请求数计算平均每分钟速率，允许小数；采用秒级分桶，不再把窗口累计请求数当作 RPM，也不在整分钟边界清空 `rpm1`。
+
 - **模型冷却与同号重连**：判断有无备用账号时排除当前模型仍在冷却的账号，避免唯一可用账号遇到 EOF 后错误换号而失败。
 
 - **国际站首条 system**：`protocol_direct` 在 `site=global`（含空 site 默认归 global）且客户端未提供 system 时补一条 canonical system；显式 `site=domestic` 的既有请求体不变。已有 system 的折叠逻辑不变；新增端到端请求体回归。

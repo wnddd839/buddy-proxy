@@ -137,7 +137,7 @@ Go 版修复：
 
 ## 并发观测与 429 现场
 
-`/direct-admin/api/status` 每 15 秒只返回 `concurrency` 的三个数字：`globalInFlight`、`accounts`（账号数）、`rateLimits`（事件数）。完整按账号水位与最近一小时限流事件走 `GET /direct-admin/api/concurrency`。限流事件在请求结束前记录，因此 `accountInFlight` 是触发瞬间的真实并发；若恒为 1，瓶颈更可能是账号池宽度或单账号 RPM，而非全局并发。观测只在内存中，不写文件、不发探针请求，进程重启后清空。
+`/direct-admin/api/status` 每 15 秒只返回 `concurrency` 的三个数字：`globalInFlight`、`accounts`（账号数）、`rateLimits`（事件数）。完整按账号水位与最近一小时限流事件走 `GET /direct-admin/api/concurrency`。限流事件在请求结束前记录，因此 `accountInFlight` 是触发瞬间的真实并发；若恒为 1，瓶颈更可能是账号池宽度或单账号 RPM，而非全局并发。`rpm1` / `rpm5` / `rpm60` 是最近 1/5/60 分钟内请求数除以对应窗口分钟数的平均每分钟速率（可带小数），按秒分桶；进程启动不足窗口时仍除以完整窗口，不是累计请求数。观测只在内存中，不写文件、不发探针请求，进程重启后清空。
 
 ## 隧道场景的 SSE 连接
 

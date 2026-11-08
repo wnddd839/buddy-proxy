@@ -1,6 +1,9 @@
 package concurrency
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestBeginEndAndSnapshot(t *testing.T) {
 	tr := New()
@@ -15,7 +18,28 @@ func TestBeginEndAndSnapshot(t *testing.T) {
 		t.Fatalf("snapshot=%+v", snap)
 	}
 	if snap.Accounts[0].RPM1 != 1 {
-		t.Fatalf("rpm1=%d want 1", snap.Accounts[0].RPM1)
+		t.Fatalf("rpm1=%v want 1", snap.Accounts[0].RPM1)
+	}
+}
+
+func TestSnapshotReportsWindowAverageRPM(t *testing.T) {
+	tr := New()
+	now := time.Now()
+	st := tr.locked("a")
+	for _, sample := range []struct {
+		age      time.Duration
+		requests int64
+	}{
+		{30 * time.Second, 3},
+		{2 * time.Minute, 7},
+		{10 * time.Minute, 20},
+		{61 * time.Minute, 100},
+	} {
+		tr.bucketLocked(st, now.Add(-sample.age)).requests += sample.requests
+	}
+	view := tr.Snapshot().Accounts[0]
+	if view.RPM1 != 3 || view.RPM5 != 2 || float64(view.RPM60) != 0.5 {
+		t.Fatalf("window RPM: got %v/%v/%v, want 3/2/0.5", view.RPM1, view.RPM5, view.RPM60)
 	}
 }
 

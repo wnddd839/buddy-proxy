@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const bucketSeconds = 60
+const bucketSeconds = 1
 
 type bucket struct {
 	requests    int64
@@ -27,9 +27,9 @@ type AccountView struct {
 	AccountID    string  `json:"accountId"`
 	Label        string  `json:"label,omitempty"`
 	InFlight     int     `json:"inFlight"`
-	RPM1         int64   `json:"rpm1"`
-	RPM5         int64   `json:"rpm5"`
-	RPM60        int64   `json:"rpm60"`
+	RPM1         float64 `json:"rpm1"`
+	RPM5         float64 `json:"rpm5"`
+	RPM60        float64 `json:"rpm60"`
 	PeakInFlight int     `json:"peakInFlight"`
 	RateLimits60 int64   `json:"rateLimits60"`
 	AvgLatencyMs float64 `json:"avgLatencyMs,omitempty"`
@@ -174,16 +174,18 @@ func (t *Tracker) Snapshot() Snapshot {
 				view.PeakInFlight = b.peak
 			}
 			if age < 3600 {
-				view.RPM60 += b.requests
+				view.RPM60 += float64(b.requests)
 				view.RateLimits60 += b.rateLimited
 				if age < 300 {
-					view.RPM5 += b.requests
+					view.RPM5 += float64(b.requests)
 				}
 				if age < 60 {
-					view.RPM1 += b.requests
+					view.RPM1 += float64(b.requests)
 				}
 			}
 		}
+		view.RPM5 /= 5
+		view.RPM60 /= 60
 		out.Accounts = append(out.Accounts, view)
 	}
 	for _, ev := range t.events {
