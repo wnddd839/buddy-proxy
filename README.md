@@ -46,6 +46,8 @@ v0.7.1 感谢 [@240xu](https://github.com/240xu) 提供 [#52](https://github.com
 
 v0.7.2 感谢 [@240xu](https://github.com/240xu) 在 [#60](https://github.com/wnddd839/buddy-proxy/pull/60) 提供流式截断与停滞的实测数据，以及 [@ck629](https://github.com/ck629) 报告 [#61](https://github.com/wnddd839/buddy-proxy/issues/61) 自更新下载中断。
 
+v0.7.3 特别感谢 [@240xu](https://github.com/240xu) 提交 [#51](https://github.com/wnddd839/buddy-proxy/pull/51) 隧道 SSE 连接复用修复与部署实测、[#57](https://github.com/wnddd839/buddy-proxy/pull/57) 按账号并发观测、[#60](https://github.com/wnddd839/buddy-proxy/pull/60) 优雅关闭与瞬时 500 重试、[#62](https://github.com/wnddd839/buddy-proxy/pull/62) 国际站 system 补全、[#63](https://github.com/wnddd839/buddy-proxy/pull/63) 模型目录提速、[#64](https://github.com/wnddd839/buddy-proxy/pull/64) OAuth 专用出口、[#65](https://github.com/wnddd839/buddy-proxy/pull/65) 无备选账号时同号重连，以及 [Issue #54](https://github.com/wnddd839/buddy-proxy/issues/54) 的限流实测与观测建议。上述报告、复现证据与方案促成了本版改进；即使最终代码由主线自主实现、未直接合并原 PR，贡献归属与感谢不变。
+
 ---
 
 ## 一件事

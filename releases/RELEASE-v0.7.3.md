@@ -28,4 +28,16 @@
 - 同号重连新增回归已先复现后修复；RPM 回归覆盖历史窗口、过期样本及小数速率。
 - 提供 Windows x64、Linux amd64/arm64/armv7/armv6、macOS arm64/amd64 七个平台二进制及 `SHA256SUMS.txt`。
 
-感谢相关 PR 和 Issue 的贡献者提供问题报告与实测证据；本版为主线自行实现，并非直接合并原 PR。
+## 致谢
+
+特别感谢 [@240xu](https://github.com/240xu) 提交以下 PR 和 Issue，提供问题报告、复现证据、实测数据与修复方案：
+
+- [PR #51](https://github.com/wnddd839/buddy-proxy/pull/51)：隧道 SSE 连接复用问题及部署级对照验证。
+- [PR #57](https://github.com/wnddd839/buddy-proxy/pull/57) / [Issue #54](https://github.com/wnddd839/buddy-proxy/issues/54)：按账号并发观测方案、限流实测与策略建议。
+- [PR #60](https://github.com/wnddd839/buddy-proxy/pull/60)：流式可靠性问题，以及本版补齐的优雅关闭宽限与瞬时 500 重试方案。
+- [PR #62](https://github.com/wnddd839/buddy-proxy/pull/62)：国际站首条 system 消息补全。
+- [PR #63](https://github.com/wnddd839/buddy-proxy/pull/63)：模型目录提速方案与性能实测。
+- [PR #64](https://github.com/wnddd839/buddy-proxy/pull/64)：国际站 OAuth 专用出口方案。
+- [PR #65](https://github.com/wnddd839/buddy-proxy/pull/65)：无备选账号时同号重连方案与传输失败实测。
+
+这些贡献促成了本版改进。最终代码由主线自主实现、未直接合并原 PR，不影响上述贡献归属与感谢。

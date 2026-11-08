@@ -7,6 +7,8 @@
 
 ## v0.7.3 · 2026-11-08 · 重连修复、OAuth 出口与并发观测
 
+特别感谢 [@240xu](https://github.com/240xu) 通过 [#51](https://github.com/wnddd839/buddy-proxy/pull/51)、[#57](https://github.com/wnddd839/buddy-proxy/pull/57)、[#60](https://github.com/wnddd839/buddy-proxy/pull/60)、[#62](https://github.com/wnddd839/buddy-proxy/pull/62)、[#63](https://github.com/wnddd839/buddy-proxy/pull/63)、[#64](https://github.com/wnddd839/buddy-proxy/pull/64)、[#65](https://github.com/wnddd839/buddy-proxy/pull/65) 及 [Issue #54](https://github.com/wnddd839/buddy-proxy/issues/54) 提供问题报告、复现证据、实测数据与方案。主线自主实现不影响贡献归属；逐项致谢见 [发布说明](releases/RELEASE-v0.7.3.md#致谢)。
+
 - **RPM 口径修正**：`rpm1` / `rpm5` / `rpm60` 按最近 1/5/60 分钟请求数计算平均每分钟速率，允许小数；采用秒级分桶，不再把窗口累计请求数当作 RPM，也不在整分钟边界清空 `rpm1`。
 
 - **模型冷却与同号重连**：判断有无备用账号时排除当前模型仍在冷却的账号，避免唯一可用账号遇到 EOF 后错误换号而失败。
