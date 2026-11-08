@@ -486,7 +486,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		// 传输层失败且该站点没有其它可选账号：换号必然耗尽预算、把唯一账号
 		// 打进冷却。改为同号重连，仍受 maxResetReplays 统一预算约束。
 		if isTransportReplayError(err.Error()) && opts.ResetReplays < maxResetReplays &&
-			!s.hasAlternativeAccount(site, account.ID, opts.ExcludeIDs) {
+			!s.hasAlternativeAccount(site, account.ID, opts.Model, opts.ExcludeIDs) {
 			s.Log.Warn("retrying same account after transport error (no alternative candidate)",
 				"accountId", account.ID, "site", site, "attempt", opts.ResetReplays+1, "error", err.Error())
 			opts.ResetReplays++
@@ -881,9 +881,10 @@ func (s *Service) listSelectableAccounts(exclude []string, site string) []accoun
 
 // hasAlternativeAccount 判断除当前账号外是否还有可换的候选。
 // 只读 Pool.Read，不用 Select，避免探测污染 LastSelectedAt。
-func (s *Service) hasAlternativeAccount(site, currentID string, exclude []string) bool {
+func (s *Service) hasAlternativeAccount(site, currentID, model string, exclude []string) bool {
+	now := time.Now().UnixMilli()
 	for _, account := range s.listSelectableAccounts(append(append([]string{}, exclude...), currentID), site) {
-		if account.ID != currentID {
+		if account.ModelCooldowns[model] <= now {
 			return true
 		}
 	}

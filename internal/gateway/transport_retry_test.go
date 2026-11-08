@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
@@ -103,6 +104,33 @@ func TestCompleteFromPoolSwitchesAccountWhenAlternativeExists(t *testing.T) {
 	}
 	if result.AccountID != second.ID {
 		t.Fatalf("AccountID=%s want %s", result.AccountID, second.ID)
+	}
+}
+
+func TestCompleteFromPoolRetriesWhenAlternativeModelIsCooling(t *testing.T) {
+	svc := newTransportRetryService(t)
+	only, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "available", Site: "global", BearerToken: "token-first", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "cooling", Site: "global", BearerToken: "token-second", Enabled: true,
+		ModelCooldowns: map[string]int64{"auto": time.Now().Add(time.Hour).UnixMilli()},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	transport := &eofOnceTransport{inner: &scriptedChatTransport{}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+	result, err := svc.CompleteFromPool(t.Context(), CompleteOptions{
+		Model: "auto", Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("model-cooled alternative must not prevent same-account retry: %v", err)
+	}
+	if result.AccountID != only.ID || result.Turn.Text != "ok" || transport.chatAttempts() != 2 {
+		t.Fatalf("account=%s text=%q attempts=%d", result.AccountID, result.Turn.Text, transport.chatAttempts())
 	}
 }
 
