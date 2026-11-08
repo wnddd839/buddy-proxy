@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
@@ -48,6 +49,48 @@ func TestUpsertAndLoadDotEnv(t *testing.T) {
 	}
 	if got := os.Getenv("EXISTING"); got != "updated" {
 		t.Fatalf("existing=%q", got)
+	}
+}
+
+func TestUpsertEnvFileEscapesLineBreaks(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	value := "cbp_a:global\n:domestic\r\nSECOND=1"
+	if err := config.UpsertEnvFile(envPath, map[string]string{
+		"CODEBUDDY_PROXY_API_KEYS": value,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Count(text, "\n") != 1 {
+		t.Fatalf("value must stay on one physical line:\n%s", text)
+	}
+	if strings.Contains(text, "\n:domestic") || strings.Contains(text, "\nSECOND=1") {
+		t.Fatalf("literal newline leaked into env file:\n%s", text)
+	}
+
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", envPath)
+	for _, key := range []string{"CODEBUDDY_PROXY_API_KEYS", "SECOND"} {
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := config.LoadDotEnv(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("CODEBUDDY_PROXY_API_KEYS"); got != value {
+		t.Fatalf("round trip keys=%q want %q", got, value)
+	}
+	if got := os.Getenv("SECOND"); got != "" {
+		t.Fatalf("orphan line became a setting: SECOND=%q", got)
+	}
+	keys := config.ParseAPIKeys(os.Getenv("CODEBUDDY_PROXY_API_KEYS"))
+	if len(keys) != 1 || keys[0].Key != "cbp_a" || keys[0].Site != "global" {
+		t.Fatalf("bound keys corrupted: %+v", keys)
 	}
 }
 

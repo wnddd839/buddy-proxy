@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.02-concurrency"
+const UIRevision = "2026.11.08-account-panel-fix"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -1845,16 +1845,22 @@ function paintWatch(w){
   $('watchSamples').textContent = String(m.samples || 0);
 }
 
+// paintConcurrency 兼容两种响应：/api/status 里的数字汇总（accounts/rateLimits
+// 为数字），以及 /api/concurrency 里的按账号快照（accounts 为数组）。
+// status 每 15 秒轮询一次，不能因字段类型不同就抛错中断 paintStatus，
+// 否则整个账号池面板会停在空态。
 function paintConcurrency(c){
   if (!c) return;
-  const accounts = c.accounts || [];
+  const views = Array.isArray(c.accounts) ? c.accounts : [];
   const inFlight = c.globalInFlight || 0;
   // 峰值取所有账号里最大的 1 分钟峰值（后端按账号给 peakInFlight）
   let peak = 0, limited = 0;
-  accounts.forEach(function(a){
+  views.forEach(function(a){
     if ((a.peakInFlight||0) > peak) peak = a.peakInFlight;
     limited += (a.rateLimits60||0);
   });
+  // 数字汇总没有逐账号限流明细，直接用汇总里的事件数，别显示成 0。
+  if (!Array.isArray(c.accounts)) limited = c.rateLimits || 0;
   if ($('ccInFlight')) $('ccInFlight').textContent = String(inFlight);
   if ($('ccPeak')) $('ccPeak').textContent = String(peak || 0);
   if ($('ccLimited')) {
@@ -2182,10 +2188,19 @@ async function generateApiKey(){
   if (data.note) showToast(data.note);
 }
 
+// /api/status 的 concurrency 是数字汇总，没有逐账号 peakInFlight / rateLimits60。
+// 「1m 峰值」「限流」要显示真实值，得再取一次完整快照。取失败不影响主状态页。
+async function refreshConcurrency(){
+  const data = await api('/direct-admin/api/concurrency');
+  paintConcurrency(data.concurrency || data);
+  return data;
+}
+
 async function refreshStatus(fresh){
   const data = await api('/direct-admin/api/status' + (fresh ? '?fresh=1' : ''));
   paintStatus(data);
   if (fresh && data.creditsRefreshed) showToast('额度已从上游刷新');
+  refreshConcurrency().catch(function(){});
 }
 
 function formatCheckinSummary(data){

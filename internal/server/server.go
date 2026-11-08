@@ -285,7 +285,11 @@ func (s *Server) authorizeAdmin(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	token := httputil.BearerToken(r)
-	if token != "" && (secretEqual(token, cfg.AdminPassword) || secretEqual(token, cfg.APIKey)) {
+	// Only the admin password grants console access. The gateway API key is
+	// distributed to every client; accepting it here would let any client
+	// read /direct-admin/api/client-config (which returns every key in
+	// plaintext) and mutate the account pool.
+	if token != "" && secretEqual(token, cfg.AdminPassword) {
 		return true
 	}
 	// 故意不支持 ?password= 查询参数鉴权：URL 中的密钥会进入代理日志、
