@@ -46,7 +46,9 @@ func TestReasoningNeedsQualifyingBaseline(t *testing.T) {
 func TestSustainedDegradationCannotBecomeItsOwnBaseline(t *testing.T) {
 	for _, kind := range []string{"reasoning", "latency"} {
 		t.Run(kind, func(t *testing.T) {
-			m, notifier, now := newTestMonitor(t)
+			// 这里验证的是「持续故障不能进入自己基线」这个性质，
+			// 与「连续几轮才报警」无关，所以把 streak 压到 1。
+			m, notifier, now := newImmediateMonitor(t)
 			healthy := Sample{Ok: true, ReasoningAsked: true, ReasoningTokens: 100, DurationMs: 900}
 			addSamples(m, 30, healthy)
 			m.Evaluate(t.Context())
@@ -80,7 +82,7 @@ func TestSustainedDegradationCannotBecomeItsOwnBaseline(t *testing.T) {
 }
 
 func TestMissingReasoningObservationsDoNotCloseIncident(t *testing.T) {
-	m, notifier, _ := newTestMonitor(t)
+	m, notifier, _ := newImmediateMonitor(t)
 	healthy := Sample{Ok: true, ReasoningAsked: true, ReasoningTokens: 100, DurationMs: 900}
 	addSamples(m, 30, healthy)
 	m.Evaluate(t.Context())
@@ -155,5 +157,99 @@ func TestSMTPExchangeHonorsTimeoutAndCancellation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestReasoningAlertNeedsConsecutiveStreak 验证「连续 N 轮才报警」：
+// 单轮超标不报，达到 streak 才报，中间一旦回落就重新计数。
+func TestReasoningAlertNeedsConsecutiveStreak(t *testing.T) {
+	m, notifier, _ := newTestMonitor(t) // 默认 streak=7
+	m.cfg.ReasoningMissStreak = 3
+	healthy := Sample{Ok: true, ReasoningAsked: true, ReasoningTokens: 100, DurationMs: 900}
+	addSamples(m, 30, healthy)
+	m.Evaluate(t.Context())
+	if len(notifier.get()) != 0 {
+		t.Fatalf("healthy baseline must not alert: %+v", notifier.get())
+	}
+
+	bad := healthy
+	bad.ReasoningTokens = 0
+
+	// 第 1、2 轮超标：还不该报。
+	for i := 1; i <= 2; i++ {
+		addSamples(m, 10, bad)
+		if st := m.Evaluate(t.Context()); !st.OK {
+			t.Fatalf("round %d must not alert before streak reached: %+v", i, st)
+		}
+	}
+	if len(notifier.get()) != 0 {
+		t.Fatalf("no alert before streak reached: %+v", notifier.get())
+	}
+
+	// 第 3 轮：达到 streak，应报。
+	addSamples(m, 10, bad)
+	if st := m.Evaluate(t.Context()); st.OK {
+		t.Fatalf("round 3 must alert once streak reached")
+	}
+	if len(notifier.get()) != 1 || notifier.get()[0].Kind != "alert" {
+		t.Fatalf("expected exactly one alert: %+v", notifier.get())
+	}
+
+	// 恢复正常：应立刻恢复（streak 归零，问题清空）。
+	addSamples(m, 10, healthy)
+	if st := m.Evaluate(t.Context()); !st.OK {
+		t.Fatalf("healthy round must recover: %+v", st)
+	}
+}
+
+// TestReasoningStreakResetsOnGoodRound 验证中间出现正常轮就会重新计数。
+func TestReasoningStreakResetsOnGoodRound(t *testing.T) {
+	m, notifier, _ := newTestMonitor(t)
+	m.cfg.ReasoningMissStreak = 3
+	healthy := Sample{Ok: true, ReasoningAsked: true, ReasoningTokens: 100, DurationMs: 900}
+	bad := healthy
+	bad.ReasoningTokens = 0
+
+	addSamples(m, 30, healthy)
+	m.Evaluate(t.Context())
+
+	// 两轮坏 → 一轮好 → 两轮坏：中间被好轮打断，不应告警。
+	addSamples(m, 10, bad)
+	m.Evaluate(t.Context())
+	addSamples(m, 10, bad)
+	m.Evaluate(t.Context())
+	addSamples(m, 10, healthy)
+	m.Evaluate(t.Context())
+	addSamples(m, 10, bad)
+	m.Evaluate(t.Context())
+	addSamples(m, 10, bad)
+	if st := m.Evaluate(t.Context()); !st.OK {
+		t.Fatalf("streak must reset after a good round: %+v", st)
+	}
+	if len(notifier.get()) != 0 {
+		t.Fatalf("broken streak must not alert: %+v", notifier.get())
+	}
+}
+
+// TestOptionalReasoningSamplesIgnored 验证「模型本来就不产出推理」的样本
+// 不会被算成缺失，从根上避免误报。
+func TestOptionalReasoningSamplesIgnored(t *testing.T) {
+	m, notifier, _ := newTestMonitor(t)
+	healthy := Sample{Ok: true, ReasoningAsked: true, ReasoningTokens: 100, DurationMs: 900}
+	addSamples(m, 30, healthy)
+	m.Evaluate(t.Context())
+
+	// 一堆「请求了推理但该模型本来就可能不回」的样本 —— 应完全不计入分母。
+	optional := Sample{Ok: true, ReasoningAsked: true, ReasoningOptional: true, DurationMs: 900}
+	addSamples(m, 60, optional)
+	st := m.Evaluate(t.Context())
+	if !st.OK {
+		t.Fatalf("optional reasoning samples must not trigger alert: %+v", st)
+	}
+	if st.Metrics.ReasoningAsked != 0 {
+		t.Fatalf("optional samples must be excluded from denominator, got asked=%d", st.Metrics.ReasoningAsked)
+	}
+	if len(notifier.get()) != 0 {
+		t.Fatalf("no alert expected: %+v", notifier.get())
 	}
 }

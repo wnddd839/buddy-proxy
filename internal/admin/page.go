@@ -536,7 +536,7 @@ pre{
         <div class="watchbar" id="watchBar" hidden>
           <span class="state" id="watchState">波动监测</span>
           <span class="num">错误率<b id="watchErr">—</b></span>
-          <span class="num">推理缺失<b id="watchMiss">—</b></span>
+          <span class="num">推理占比<b id="watchMiss">—</b></span>
           <span class="num">耗时 P50<b id="watchP50">—</b></span>
           <span class="num">样本<b id="watchSamples">—</b></span>
           <span class="num">在途<b id="ccInFlight">—</b></span>
@@ -1836,8 +1836,10 @@ function paintWatch(w){
   state.textContent = w.ok ? '波动监测 · 正常' : ('波动监测 · ' + (w.reason || '异常'));
   state.classList.toggle('bad', !w.ok);
   $('watchErr').textContent = watchPercent(m.errorRate);
+  // 这里只展示「推理占比」这一个中性事实：有推理 token 的请求占「要求了推理」的比例。
+  // 不写「缺失」——上游按模型/负载降档时本来就会时有时无，说是缺失容易误导。
   $('watchMiss').textContent = (m.reasoningAsked > 0)
-    ? (watchPercent(m.reasoningMissRate) + ' · ' + (m.reasoningMissed||0) + '/' + m.reasoningAsked)
+    ? (watchPercent(1 - (m.reasoningMissRate || 0)) + ' · ' + ((m.reasoningAsked||0) - (m.reasoningMissed||0)) + '/' + m.reasoningAsked)
     : '无样本';
   $('watchP50').textContent = (m.latencyP50 || 0) + 'ms';
   $('watchSamples').textContent = String(m.samples || 0);

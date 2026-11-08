@@ -21,6 +21,7 @@ func loadWatchConfig() watch.Config {
 	cfg.MinSample = envPositiveInt("CODEBUDDY_PROXY_WATCH_MIN_SAMPLES", cfg.MinSample)
 	cfg.ErrorRate = envRatio("CODEBUDDY_PROXY_WATCH_ERROR_RATE", cfg.ErrorRate)
 	cfg.ReasoningMissRate = envRatio("CODEBUDDY_PROXY_WATCH_REASONING_MISS", cfg.ReasoningMissRate)
+	cfg.ReasoningMissStreak = envPositiveInt("CODEBUDDY_PROXY_WATCH_REASONING_STREAK", cfg.ReasoningMissStreak)
 	cfg.LatencyFactor = envFloat("CODEBUDDY_PROXY_WATCH_LATENCY_FACTOR", cfg.LatencyFactor)
 	cfg.Reminder = envDurationText("CODEBUDDY_PROXY_WATCH_REMINDER", cfg.Reminder)
 

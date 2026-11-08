@@ -48,6 +48,15 @@ func newTestMonitor(t *testing.T) (*Monitor, *recordNotifier, *time.Time) {
 	return m, notifier, &now
 }
 
+// newImmediateMonitor 与 newTestMonitor 相同，但把「连续 N 轮才报警」压到 1,
+// 让传统回归测试继续验证单轮语义（不测 streak 本身）。
+func newImmediateMonitor(t *testing.T) (*Monitor, *recordNotifier, *time.Time) {
+	t.Helper()
+	m, notifier, now := newTestMonitor(t)
+	m.cfg.ReasoningMissStreak = 1
+	return m, notifier, now
+}
+
 func addSamples(m *Monitor, n int, s Sample) {
 	for i := 0; i < n; i++ {
 		m.Record(s)
@@ -128,7 +137,9 @@ func TestErrorRateSpikeAlertsOnceThenRecovers(t *testing.T) {
 }
 
 func TestReasoningDropDetected(t *testing.T) {
-	m, notifier, _ := newTestMonitor(t)
+	// 这里测的是「单轮就能识别出推理缺失」，与连续轮数阈值无关，
+	// 所以用 streak=1 的变体；streak 机制本身由 regression_test.go 覆盖。
+	m, notifier, _ := newImmediateMonitor(t)
 	healthy := Sample{Ok: true, ReasoningAsked: true, ReasoningTokens: 200, DurationMs: 900}
 	addSamples(m, 20, healthy)
 	m.Evaluate(context.Background())
