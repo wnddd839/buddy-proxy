@@ -121,7 +121,9 @@ chmod +x ./codebuddy-proxy-linux-amd64
 
 运行中的实例可在管理台顶栏下方点「检查更新 / 更新并重启」，仅从官方 GitHub Release 下载并按 `SHA256SUMS.txt` 校验，成功后自动重启并回连；下载校验失败或新版本启动失败时保留/回滚旧程序。改动只替换可执行文件，不会覆盖 `.env`、账号池或用量文件。**首个带更新器的版本仍需手动升级一次**；Docker 部署请用镜像更新（`docker compose pull && docker compose up -d`）。
 
-当前正式版为 **[v0.7.2](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.2)**：新增每账号自动签到（固定时刻 / 时段随机，北京时间）；修复上游以 FIN 收尾造成的半截回答、上游假活导致的无限挂起，以及自更新下载 `unexpected EOF`。保留 v0.7.1 的模型冷却与部署配置、v0.7.0 的波动监测、批量导入和固定出口。
+当前正式版为 **[v0.7.3](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.3)**：修复国际站首条 system 缺失、无可用备选账号时的同号重连（包含备选账号模型冷却场景），为带转发头的 SSE 关闭连接复用；新增国际站 OAuth 专用出口、模型目录提速、优雅关闭宽限和按账号并发观测。RPM 按 1/5/60 分钟窗口计算平均每分钟速率。保留 v0.7.2 的每账号自动签到、流式截断/停滞处理与更新下载重试。
+
+升级注意：可选 `CODEBUDDY_PROXY_OAUTH_PROXY` 仅用于国际站 OAuth（含 token refresh），配置后需重启；信号停止默认等待 10 分钟，Docker/systemd 的停止超时需不小于该宽限（仓库 Compose 已设为 11 分钟），自更新交接仍为 30 秒。隧道需传递 `X-Forwarded-For` 等转发头才会启用 SSE 关闭连接策略。详情见 [更新日志](CHANGELOG.md) 和 [运维手册](docs/operations/runbook.md)。
 
 #### v0.7.2 · 每账号自动签到
 
