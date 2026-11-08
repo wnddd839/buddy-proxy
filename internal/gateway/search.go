@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
@@ -153,27 +152,6 @@ func (s *Service) withSearchAccount(
 		if errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
 			s.Log.Info("codebuddy "+label+" request canceled by client", "accountId", account.ID)
 			return err
-		}
-		complete := CompleteOptions{
-			FixedAccount: opts.FixedAccount,
-			Site:         site,
-			ExcludeIDs:   opts.ExcludeIDs,
-			RefreshRetry: opts.RefreshRetry,
-			RetryDepth:   opts.RetryDepth,
-		}
-		if s.shouldRetryNextAccount(err, selection, complete) {
-			cooldown := s.resolveFailureCooldown(ctx, account, err)
-			_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
-			s.refreshCandidateQuotas(ctx, append(slices.Clone(opts.ExcludeIDs), account.ID), false, site)
-			s.Log.Warn("retrying codebuddy "+label+" request with next account", "accountId", account.ID, "error", err.Error())
-			opts.ExcludeIDs = append(slices.Clone(opts.ExcludeIDs), account.ID)
-			opts.AccountID = ""
-			opts.RetryDepth++
-			retryErr := s.withSearchAccount(ctx, opts, label, call)
-			if isRetryExhausted(retryErr) {
-				return err
-			}
-			return retryErr
 		}
 		if !opts.RefreshRetry && s.shouldRefreshAfterFailure(err, selection) {
 			if refreshed, refreshErr := s.refreshSelected(ctx, selection, true); refreshErr == nil && refreshed.Account.BearerToken != account.BearerToken {

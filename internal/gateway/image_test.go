@@ -90,50 +90,11 @@ func newImageService(t *testing.T, transport *scriptedImageTransport) *Service {
 	return svc
 }
 
-func TestImageFromPoolRetriesNextAccountAfter429(t *testing.T) {
-	transport := &scriptedImageTransport{byAuth: map[string]int{
-		"token-a": http.StatusTooManyRequests,
-		"token-b": http.StatusOK,
-	}}
-	svc := newImageService(t, transport)
-	a, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
-		Label: "a", Site: "domestic", BearerToken: "token-a", Enabled: true,
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
-		Label: "b", Site: "domestic", BearerToken: "token-b", Enabled: true,
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestImageFromPoolDoesNotSwitchAccountOn429(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
 
-	result, err := svc.ImageFromPool(context.Background(), ImageOptions{
-		Model:  "hunyuan-image-alpha",
-		Prompt: "a red circle",
-	})
-	if err != nil {
-		t.Fatalf("expected second account to succeed, got %v", err)
-	}
-	if result.AccountID != b.ID {
-		t.Fatalf("AccountID=%s want %s", result.AccountID, b.ID)
-	}
-	if len(result.URLs) != 1 || result.URLs[0] != "https://example.test/out.png" {
-		t.Fatalf("urls=%v", result.URLs)
-	}
-	images, _ := transport.snapshot()
-	if len(images) != 2 || images[0] != "token-a" || images[1] != "token-b" {
-		t.Fatalf("image calls=%v first account was %s", images, a.ID)
-	}
-}
-
-func TestImageFromPoolPreserves429WhenAllAccountsFail(t *testing.T) {
-	transport := &scriptedImageTransport{byAuth: map[string]int{
-		"token-a": http.StatusTooManyRequests,
-		"token-b": http.StatusTooManyRequests,
-	}}
-	svc := newImageService(t, transport)
 	for _, token := range []string{"token-a", "token-b"} {
 		if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
 			Label: token, Site: "domestic", BearerToken: token, Enabled: true,
@@ -142,25 +103,55 @@ func TestImageFromPoolPreserves429WhenAllAccountsFail(t *testing.T) {
 		}
 	}
 
+	transport := &scriptedChatTransport{byAuth: map[string]int{
+		"token-a": http.StatusTooManyRequests,
+		"token-b": http.StatusOK,
+	}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	// 图片请求的站内换号重试同样已删除。
 	_, err := svc.ImageFromPool(context.Background(), ImageOptions{
 		Model:  "hunyuan-image-alpha",
-		Prompt: "a red circle",
+		Prompt: "a cat",
 	})
 	if err == nil {
-		t.Fatal("expected upstream 429")
+		t.Fatal("429 应直接返回错误，不应换号")
 	}
-	if strings.Contains(err.Error(), "重试深度") {
-		t.Fatalf("retry budget must not mask original 429: %v", err)
-	}
-	if !strings.Contains(err.Error(), "429") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	images, _ := transport.snapshot()
-	if len(images) != 2 {
-		t.Fatalf("image calls=%d want 2, got %v", len(images), images)
+	calls, _ := transport.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("只应调用一次，实际 %v", calls)
 	}
 }
+func TestImageFromPoolPreserves429(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
 
+	for _, token := range []string{"token-a", "token-b"} {
+		if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+			Label: token, Site: "domestic", BearerToken: token, Enabled: true,
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := &scriptedChatTransport{byAuth: map[string]int{
+		"token-a": http.StatusTooManyRequests,
+		"token-b": http.StatusTooManyRequests,
+	}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	_, err := svc.ImageFromPool(context.Background(), ImageOptions{
+		Model:  "hunyuan-image-alpha",
+		Prompt: "a cat",
+	})
+	if err == nil {
+		t.Fatal("expected 429")
+	}
+	calls, _ := transport.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("calls=%d want 1 (不换号), got %v", len(calls), calls)
+	}
+}
 func TestImageFromPoolRefreshesSameAccountAfter401(t *testing.T) {
 	transport := &scriptedImageTransport{byAuth: map[string]int{
 		"token-old": http.StatusUnauthorized,

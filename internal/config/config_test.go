@@ -225,3 +225,30 @@ func TestProductPortalBaseURL(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckinAllowDirectFallbackCanBeEnabled(t *testing.T) {
+	t.Setenv("CODEBUDDY_PROXY_CHECKIN_ALLOW_DIRECT_FALLBACK", "true")
+	t.Setenv("CODEBUDDY_PROXY_ACCOUNTS_PATH", filepath.Join(t.TempDir(), "a.json"))
+	cfg := config.Load()
+	if !cfg.CheckinAllowDirectFallback {
+		t.Fatal("env=true 时应为 true")
+	}
+}
+
+func TestCheckinAllowDirectFallbackDefaultsFalse(t *testing.T) {
+	t.Setenv("CODEBUDDY_PROXY_CHECKIN_ALLOW_DIRECT_FALLBACK", "")
+	t.Setenv("CODEBUDDY_PROXY_ACCOUNTS_PATH", filepath.Join(t.TempDir(), "a.json"))
+	cfg := config.Load()
+	if cfg.CheckinAllowDirectFallback {
+		t.Fatal("默认应为 false")
+	}
+}
+
+func TestQuotaFloorCanBeEnabled(t *testing.T) {
+	t.Setenv("CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS", "5")
+	t.Setenv("CODEBUDDY_PROXY_ACCOUNTS_PATH", filepath.Join(t.TempDir(), "a.json"))
+	cfg := config.Load()
+	if cfg.QuotaFloorCredits != 5 {
+		t.Error("QuotaFloorCredits 应为 5")
+	}
+}

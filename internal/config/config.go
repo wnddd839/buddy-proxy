@@ -12,6 +12,8 @@ import (
 )
 
 const (
+	// DefaultShutdownGrace 覆盖慢思考 + 长上下文的在途回合。
+	DefaultShutdownGrace       = 10 * time.Minute
 	DefaultHost                = "127.0.0.1"
 	DefaultPort                = 32126
 	DefaultChatCompletionsPath = "/v2/chat/completions"
@@ -21,15 +23,17 @@ const (
 	DefaultWorkBuddyProductVer = "4.9.29177644"
 	DefaultRefreshWindow       = 10 * time.Minute
 	DefaultStreamKeepAlive     = 5 * time.Second
-	// DefaultShutdownGrace 覆盖慢思考 + 长上下文的在途回合。
-	DefaultShutdownGrace       = 10 * time.Minute
 	DefaultOAuthSessionTTL     = 15 * time.Minute
 	DefaultHTTPTimeout         = 120 * time.Second
 	DefaultServerIdleTimeout   = 120 * time.Second
 	DefaultMaxBodyMB           = 64
-	DefaultIdleConnTimeout     = 90 * time.Second
-	DefaultMaxIdleConns        = 100
-	DefaultMaxIdleConnsPerHost = 20
+	// 签到失败重试：10 分钟后重试一次。签到失败多是上游瞬时抖动，
+	// 试太多次意义有限；间隔太短则可能撞上同一波故障。
+	DefaultCheckinRetryInterval = 10 * time.Minute
+	DefaultCheckinRetryMax      = 1
+	DefaultIdleConnTimeout      = 90 * time.Second
+	DefaultMaxIdleConns         = 100
+	DefaultMaxIdleConnsPerHost  = 20
 )
 
 // APIKeyBinding 将网关 Key 绑定到区域或具体账号；账号绑定的区域由账号推导。
@@ -60,11 +64,14 @@ type Config struct {
 	RefreshWindow       time.Duration
 	StreamKeepAlive     time.Duration
 	OAuthSessionTTL     time.Duration
-	// OAuthProxy 是国际站 OAuth 专用出口（auth/state、auth/token、token refresh）。
+	// OAuthProxy 是国际站（global）OAuth 专用出口，形如 socks5h://127.0.0.1:17998。
+	// 为空则沿用默认客户端（国内站路径不变）。
+	// 存在的理由：www.codebuddy.ai 从中国大陆直连会被 TLS 握手超时拦掉，
+	// 而 OAuth 的 auth/state 与 auth/token 两个调用都走这个客户端。
 	OAuthProxy          string
 	HTTPTimeout         time.Duration
-	ShutdownGrace       time.Duration
 	ServerIdleTimeout   time.Duration
+	ShutdownGrace       time.Duration
 	MaxBodyMB           int
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
@@ -75,6 +82,16 @@ type Config struct {
 	Watch watch.Config
 	// CheckinAuto 是每账号自动签到总开关（默认关闭，见 internal/checkin）。
 	CheckinAuto bool
+	// CheckinAllowDirectFallback 允许自动签到在账号绑定出口失败时回落直连重试一次。
+	CheckinAllowDirectFallback bool
+	// CheckinRetryInterval 是签到失败后多久再试一次（0 = 不重试）。
+	// 重试状态从签到日志推导，不存额外状态文件，所以进程重启后仍能继续。
+	CheckinRetryInterval time.Duration
+	// CheckinRetryMax 是当天最多重试几次（不含首次尝试，默认 1）。
+	CheckinRetryMax int
+	// QuotaFloorCredits 是账号积分低于该值时不再参与选号（0 = 不启用）。
+	// 数据源是缓存的 billing credits（QuotaRemaining），与配额耗尽同一口径。
+	QuotaFloorCredits float64
 }
 
 func Load() Config {
@@ -82,34 +99,38 @@ func Load() Config {
 	_, _ = LoadDotEnv()
 
 	cfg := Config{
-		Host:                envOr("CODEBUDDY_PROXY_HOST", "CURSOR_DIRECT_HOST", DefaultHost),
-		Port:                envInt("CODEBUDDY_PROXY_PORT", "CURSOR_DIRECT_PORT", DefaultPort),
-		APIKey:              firstEnv("CODEBUDDY_PROXY_API_KEY", "CURSOR_DIRECT_API_KEY", "CURSOR_GATEWAY_API_KEY"),
-		APIKeys:             ParseAPIKeys(firstEnv("CODEBUDDY_PROXY_API_KEYS")),
-		AdminPassword:       firstEnv("CODEBUDDY_PROXY_ADMIN_PASSWORD", "CURSOR_DIRECT_ADMIN_PASSWORD", "CURSOR_GATEWAY_ADMIN_PASSWORD"),
-		PublicBaseURL:       strings.TrimRight(firstEnv("CODEBUDDY_PROXY_PUBLIC_BASE_URL", "CURSOR_DIRECT_PUBLIC_BASE_URL"), "/"),
-		AccountsPath:        expandHome(envOr("CODEBUDDY_PROXY_ACCOUNTS_PATH", "CURSOR_DIRECT_CODEBUDDY_ACCOUNTS_PATH", defaultAccountsPath())),
-		Site:                strings.ToLower(firstEnv("CODEBUDDY_SITE", "CURSOR_DIRECT_CODEBUDDY_SITE")),
-		Product:             strings.ToLower(firstEnv("CODEBUDDY_PRODUCT")),
-		InternetEnvironment: strings.ToLower(firstEnv("CODEBUDDY_INTERNET_ENVIRONMENT", "CURSOR_DIRECT_CODEBUDDY_INTERNET_ENVIRONMENT")),
-		APIEndpoint:         strings.TrimRight(firstEnv("CODEBUDDY_API_ENDPOINT", "CURSOR_DIRECT_CODEBUDDY_API_ENDPOINT"), "/"),
-		ChatCompletionsPath: envOr("CODEBUDDY_CHAT_COMPLETIONS_PATH", "CURSOR_DIRECT_CODEBUDDY_CHAT_COMPLETIONS_PATH", DefaultChatCompletionsPath),
-		Transport:           DefaultTransport,
-		IDEVersion:          envOr("CODEBUDDY_IDE_VERSION", "", DefaultIDEVersion),
-		RefreshWindow:       envDuration("CODEBUDDY_REFRESH_WINDOW_MS", "CURSOR_DIRECT_CODEBUDDY_REFRESH_WINDOW_MS", DefaultRefreshWindow),
-		StreamKeepAlive:     envDuration("CODEBUDDY_PROXY_STREAM_KEEPALIVE_MS", "CURSOR_DIRECT_STREAM_KEEPALIVE_MS", DefaultStreamKeepAlive),
-		OAuthSessionTTL:     DefaultOAuthSessionTTL,
-		OAuthProxy:          strings.TrimSpace(firstEnv("CODEBUDDY_PROXY_OAUTH_PROXY")),
-		HTTPTimeout:         DefaultHTTPTimeout,
-		ServerIdleTimeout:   envDuration("CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS", "", DefaultServerIdleTimeout),
-		ShutdownGrace:       envDuration("CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS", "", DefaultShutdownGrace),
-		MaxBodyMB:           envInt("CODEBUDDY_PROXY_MAX_BODY_MB", "", DefaultMaxBodyMB),
-		MaxIdleConns:        DefaultMaxIdleConns,
-		MaxIdleConnsPerHost: DefaultMaxIdleConnsPerHost,
-		IdleConnTimeout:     DefaultIdleConnTimeout,
-		DefaultModels:       []string{"auto"},
-		Watch:               loadWatchConfig(),
-		CheckinAuto:         envBool("CODEBUDDY_PROXY_CHECKIN_AUTO", "", false),
+		Host:                       envOr("CODEBUDDY_PROXY_HOST", "CURSOR_DIRECT_HOST", DefaultHost),
+		Port:                       envInt("CODEBUDDY_PROXY_PORT", "CURSOR_DIRECT_PORT", DefaultPort),
+		APIKey:                     firstEnv("CODEBUDDY_PROXY_API_KEY", "CURSOR_DIRECT_API_KEY", "CURSOR_GATEWAY_API_KEY"),
+		APIKeys:                    ParseAPIKeys(firstEnv("CODEBUDDY_PROXY_API_KEYS")),
+		AdminPassword:              firstEnv("CODEBUDDY_PROXY_ADMIN_PASSWORD", "CURSOR_DIRECT_ADMIN_PASSWORD", "CURSOR_GATEWAY_ADMIN_PASSWORD"),
+		PublicBaseURL:              strings.TrimRight(firstEnv("CODEBUDDY_PROXY_PUBLIC_BASE_URL", "CURSOR_DIRECT_PUBLIC_BASE_URL"), "/"),
+		AccountsPath:               expandHome(envOr("CODEBUDDY_PROXY_ACCOUNTS_PATH", "CURSOR_DIRECT_CODEBUDDY_ACCOUNTS_PATH", defaultAccountsPath())),
+		Site:                       strings.ToLower(firstEnv("CODEBUDDY_SITE", "CURSOR_DIRECT_CODEBUDDY_SITE")),
+		Product:                    strings.ToLower(firstEnv("CODEBUDDY_PRODUCT")),
+		InternetEnvironment:        strings.ToLower(firstEnv("CODEBUDDY_INTERNET_ENVIRONMENT", "CURSOR_DIRECT_CODEBUDDY_INTERNET_ENVIRONMENT")),
+		APIEndpoint:                strings.TrimRight(firstEnv("CODEBUDDY_API_ENDPOINT", "CURSOR_DIRECT_CODEBUDDY_API_ENDPOINT"), "/"),
+		ChatCompletionsPath:        envOr("CODEBUDDY_CHAT_COMPLETIONS_PATH", "CURSOR_DIRECT_CODEBUDDY_CHAT_COMPLETIONS_PATH", DefaultChatCompletionsPath),
+		Transport:                  DefaultTransport,
+		IDEVersion:                 envOr("CODEBUDDY_IDE_VERSION", "", DefaultIDEVersion),
+		RefreshWindow:              envDuration("CODEBUDDY_REFRESH_WINDOW_MS", "CURSOR_DIRECT_CODEBUDDY_REFRESH_WINDOW_MS", DefaultRefreshWindow),
+		StreamKeepAlive:            envDuration("CODEBUDDY_PROXY_STREAM_KEEPALIVE_MS", "CURSOR_DIRECT_STREAM_KEEPALIVE_MS", DefaultStreamKeepAlive),
+		OAuthSessionTTL:            DefaultOAuthSessionTTL,
+		OAuthProxy:                 strings.TrimSpace(firstEnv("CODEBUDDY_PROXY_OAUTH_PROXY")),
+		HTTPTimeout:                DefaultHTTPTimeout,
+		ServerIdleTimeout:          envDuration("CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS", "", DefaultServerIdleTimeout),
+		ShutdownGrace:              envDuration("CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS", "", DefaultShutdownGrace),
+		MaxBodyMB:                  envInt("CODEBUDDY_PROXY_MAX_BODY_MB", "", DefaultMaxBodyMB),
+		MaxIdleConns:               DefaultMaxIdleConns,
+		MaxIdleConnsPerHost:        DefaultMaxIdleConnsPerHost,
+		IdleConnTimeout:            DefaultIdleConnTimeout,
+		DefaultModels:              []string{"auto"},
+		Watch:                      loadWatchConfig(),
+		CheckinAuto:                envBool("CODEBUDDY_PROXY_CHECKIN_AUTO", "", false),
+		CheckinAllowDirectFallback: envBool("CODEBUDDY_PROXY_CHECKIN_ALLOW_DIRECT_FALLBACK", "", false),
+		CheckinRetryInterval:       envDuration("CODEBUDDY_PROXY_CHECKIN_RETRY_INTERVAL_MS", "", DefaultCheckinRetryInterval),
+		CheckinRetryMax:            envInt("CODEBUDDY_PROXY_CHECKIN_RETRY_MAX", "", DefaultCheckinRetryMax),
+		QuotaFloorCredits:          envFloat("CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS", 0),
 	}
 
 	// 管理台密码为空则开放管理页（本地友好）。
@@ -408,4 +429,18 @@ func ProductPortalBaseURL(site, product string) string {
 		return "https://www.codebuddy.cn"
 	}
 	return "https://www.codebuddy.ai"
+}
+
+// envPresent 报告环境变量是否被显式设置（哪怕值为空也算「用户动过」）。
+// 用于区分「零值 = 未配置」与「用户明确填了 false」。
+func envPresent(keys ...string) bool {
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if _, ok := os.LookupEnv(key); ok {
+			return true
+		}
+	}
+	return false
 }

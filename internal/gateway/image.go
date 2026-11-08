@@ -57,31 +57,6 @@ func (s *Service) ImageFromPool(ctx context.Context, opts ImageOptions) (ImageRe
 			return ImageResult{}, err
 		}
 		selection.ModelRateLimited = billing.IsModelRateLimitError(err)
-		complete := CompleteOptions{
-			FixedAccount: opts.FixedAccount,
-			Site:         site,
-			Model:        opts.Model,
-			ExcludeIDs:   opts.ExcludeIDs,
-			RefreshRetry: opts.RefreshRetry,
-			RetryDepth:   opts.RetryDepth,
-		}
-		if s.shouldRetryNextAccount(err, selection, complete) {
-			cooldown := s.resolveFailureCooldown(ctx, account, err)
-			_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
-			s.refreshCandidateQuotas(ctx, append(append([]string{}, opts.ExcludeIDs...), account.ID), false, site)
-			s.Log.Warn("retrying codebuddy image request with next account", "accountId", account.ID, "error", err.Error())
-			opts.ExcludeIDs = append(append([]string{}, opts.ExcludeIDs...), account.ID)
-			opts.AccountID = ""
-			opts.RetryDepth++
-			retried, retryErr := s.ImageFromPool(ctx, opts)
-			if retryErr != nil {
-				if isRetryExhausted(retryErr) {
-					return ImageResult{}, err
-				}
-				return ImageResult{}, retryErr
-			}
-			return retried, nil
-		}
 		if !opts.RefreshRetry && s.shouldRefreshAfterFailure(err, selection) {
 			if refreshed, refreshErr := s.refreshSelected(ctx, selection, true); refreshErr == nil && refreshed.Account.BearerToken != account.BearerToken {
 				s.Log.Info("retrying codebuddy image request after oauth refresh", "accountId", refreshed.Account.ID)

@@ -122,28 +122,28 @@ func TestCompleteFromPoolReusesUpstreamConversationID(t *testing.T) {
 	}
 }
 
-func TestCompleteFromPoolRotatesConversationIDAfterAccountSwitch(t *testing.T) {
+func TestCompleteFromPoolKeepsConversationIDOnPinnedAccount(t *testing.T) {
 	transport := &headerCapturingTransport{}
-	svc, aID, bID := newConversationTestService(t, transport)
-	// 预置会话钉在 a，a 对该会话返回 429 → 松钉换 b。
+	svc, aID, _ := newConversationTestService(t, transport)
+	// 钉在 a；a 对该会话正常工作。站内换号已删除，钉住的号会一直被用。
 	svc.Pins.Remember(SessionPinKey("conv-rot", "domestic"), aID)
-	svc.Provider.HTTP = &http.Client{Transport: &scriptedChatTransport{byAuth: map[string]int{"token-a": http.StatusTooManyRequests}}}
-	switched, err := svc.CompleteFromPool(t.Context(), CompleteOptions{
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	first, err := svc.CompleteFromPool(t.Context(), CompleteOptions{
 		Model: "auto", SessionKey: "conv-rot",
 		Messages: []map[string]any{{"role": "user", "content": "hi"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if switched.AccountID != bID {
-		t.Fatalf("expected failover to b, got %s", switched.AccountID)
+	if first.AccountID != aID {
+		t.Fatalf("钉住的号应被使用，实际 %s", first.AccountID)
 	}
-	firstID := switched.Trace.ConversationID
+	firstID := first.Trace.ConversationID
 	if firstID == "" {
-		t.Fatal("expected upstream conversation id on switched account")
+		t.Fatal("expected upstream conversation id")
 	}
-	// 换回 scripted 200 上游，同会话继续：ID 必须稳定。
-	svc.Provider.HTTP = &http.Client{Transport: transport}
+	// 同会话继续：必须还是同一个号、同一个上游会话 ID。
 	next, err := svc.CompleteFromPool(t.Context(), CompleteOptions{
 		Model: "auto", SessionKey: "conv-rot",
 		Messages: []map[string]any{{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}},
@@ -151,11 +151,10 @@ func TestCompleteFromPoolRotatesConversationIDAfterAccountSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.AccountID != bID || next.Trace.ConversationID != firstID {
-		t.Fatalf("stable account must keep conversation id: account %s id %s vs %s", next.AccountID, next.Trace.ConversationID, firstID)
+	if next.AccountID != aID || next.Trace.ConversationID != firstID {
+		t.Fatalf("会话必须钉在同一号同一 ID: account %s id %s vs %s", next.AccountID, next.Trace.ConversationID, firstID)
 	}
 }
-
 func TestCompleteFromPoolSeparatesConversationIDPerSessionAndAccount(t *testing.T) {
 	ids := map[string]string{} // token|conversation header -> value
 	transport := &headerCapturingTransport{onChat: func(req *http.Request) {
