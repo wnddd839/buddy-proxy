@@ -5,6 +5,37 @@
 
 ---
 
+## v0.7.4 · 未发布 · 每账号签到重做、有方向的模型路由与选号门槛
+
+本条目对应 [#66](https://github.com/wnddd839/buddy-proxy/pull/66)，尚未合并，随 PR 一起评审。
+
+### 新功能
+
+- **每账号定时签到重做**：四种签到模式 + 用户微调窗口 + 「一键设置」整批错开预设（N 个号均匀铺到 08:00–23:00 + 格内抖动）；分站点统计与 48 小时结果落盘（`proxy-checkin-log.json`），新增 `GET /direct-admin/api/checkin-log`。
+- **签到时刻不可反推**：由公开的 FNV-1a + 可推断种子改为 HMAC-SHA256 + 服务端私钥（32B，`0600` 落盘），秒级精度；`Run()` 从 20 秒 ticker 改为 `time.Timer` 精确等待，否则秒级抖动会被量化到 20 秒栅格。
+- **签到失败重试**：`CODEBUDDY_PROXY_CHECKIN_RETRY_INTERVAL_MS`（默认 10 分钟）/ `CODEBUDDY_PROXY_CHECKIN_RETRY_MAX`（当天最多 1 次）。重试状态从签到日志推导，不存额外状态文件，进程重启后仍能继续。
+- **有方向的模型路由**（新增 `internal/modelroute`）：`Rule` 新增必填 `FromSite`，国内→国际、国际→国内可分别配置；命中即改到目标站点+模型，目标站无可用账号直接失败，不自动回退。`GET` / `POST /direct-admin/api/model-routes`。
+- **选号积分下限**：`CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS`（默认 `0` = 关闭）+ `GET` / `POST /direct-admin/api/quota-floor`，负数返 `400`，热更新立即作用于选号。给国际站 50 积分下限这类运维需求一个独立开关。
+- **管理台**：路由面板改为「源区域 + 源模型 → 目标区域 + 目标模型」，模型下拉按区域过滤；新增「区域怎么定的」四层优先级说明（硬钉前缀 > 绑定 Key 的区域 > 账号池默认区 > 路由表）；积分下限拆出独立面板与独立保存按钮。
+
+### 修复
+
+- **账号池面板整体不可用**：管理台 `paintConcurrency()` 假设 `/direct-admin/api/status` 的 `concurrency` 是按账号快照，但它按既有约定只返回**数字**汇总，于是 15 秒轮询里 `c.accounts.forEach is not a function` 抛错、中断 `paintStatus`，账号列表永远停在空态、登录态显示未登录。现在两种响应都接受，并单独取一次完整快照填「1m 峰值」/「限流」。
+- **`.env` 写入破坏绑定 Key**：`escapeEnvValue()` 用双引号包住含换行的值却不转义换行，写入后 `KEY=value` 会被拆成多行，按行解析时后半段被当成孤立行丢掉。现转义 `\r` / `\n`，加载端做对应反转义。
+- **主 API Key 越权访问管理台**：`authorizeAdmin()` 同时接受主 Key，而 `/direct-admin/api/client-config` 会返回所有 Key 明文、管理台 API 能改账号池。主 Key 是分发给每个客户端的凭据，现只接受管理台密码。
+
+### 行为变更（破坏性）
+
+- 旧路由表里没有 `fromSite` 的规则**会失效**，升级后需在管理台重新保存一次路由表（面板已改为方向化 UI）。
+- `X-Site` 请求头**不算**硬钉（只有模型名的 `cn:` / `global:` 前缀算），否则国内来源的规则永远触发不了；显式前缀下路由完全不生效。
+- 删除两项跨区故障转移：「同名模型换账号」与「全站 429 换区」。保留下来的重试全部是**同账号**语义（传输层 EOF / 首帧前断流、空 `completed` 回合、OAuth 401 刷新、签到失败）；额度类失败（429 / 6004 / 额度耗尽）仍换下一个账号。
+
+### 验证
+
+`gofmt` / `go vet ./...` / `go test -race ./...` 全绿。管理台修复在隔离实例（复制线上数据，跑在独立端口）用真实 headless Chrome 对照验证：修复前 0 张账号卡片 + `accounts.forEach is not a function`，修复后 8 张卡片、登录态与 1m 峰值正常。
+
+---
+
 ## v0.7.3 · 2026-11-08 · 重连修复、OAuth 出口与并发观测
 
 特别感谢 [@240xu](https://github.com/240xu) 通过 [#51](https://github.com/wnddd839/buddy-proxy/pull/51)、[#57](https://github.com/wnddd839/buddy-proxy/pull/57)、[#60](https://github.com/wnddd839/buddy-proxy/pull/60)、[#62](https://github.com/wnddd839/buddy-proxy/pull/62)、[#63](https://github.com/wnddd839/buddy-proxy/pull/63)、[#64](https://github.com/wnddd839/buddy-proxy/pull/64)、[#65](https://github.com/wnddd839/buddy-proxy/pull/65) 及 [Issue #54](https://github.com/wnddd839/buddy-proxy/issues/54) 提供问题报告、复现证据、实测数据与方案。主线自主实现不影响贡献归属；逐项致谢见 [发布说明](releases/RELEASE-v0.7.3.md#致谢)。
