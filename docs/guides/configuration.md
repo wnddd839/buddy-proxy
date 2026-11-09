@@ -62,6 +62,7 @@ CODEBUDDY_PROXY_API_KEYS=cbp_fixed:account=<账号池中的id>
 | `CODEBUDDY_PROXY_ACCOUNTS_PATH` | `~/.codebuddy/proxy-accounts.json` | 账号池 JSON 路径，支持 `~` 与 `~/...` 展开 |
 | `CODEBUDDY_PROXY_USAGE_PATH` | 与账号池同目录的 `proxy-usage.json` | 管理台用量明细与按日汇总；未设时取 `dirname(ACCOUNTS_PATH)/proxy-usage.json` |
 | `CODEBUDDY_PROXY_ENV_FILE` | 自动探测 | 强制指定 env 文件路径。未设时：已有 `.env` 则用它，否则 `~/.codebuddy/proxy.env` |
+| `CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS` | `0` | 选号门槛：缓存余额低于该值的账号不参与选号，`0` = 不启用。数据源与配额耗尽同一口径（缓存的 billing credits）。管理台「选号门槛」可热更新，无需重启 |
 
 账号文件以 `0600` 权限写入。备份与迁移只需复制这个 JSON。
 
@@ -152,6 +153,9 @@ CODEBUDDY_INTERNET_ENVIRONMENT=public
 | 变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `CODEBUDDY_PROXY_CHECKIN_AUTO` | 关闭 | `true` / `on` 开启每账号定时签到 |
+| `CODEBUDDY_PROXY_CHECKIN_ALLOW_DIRECT_FALLBACK` | 关闭 | `true` 时账号绑定的出口连不上，直连重试一次。仅对「连不上」类错误生效；429 / 额度 / 上游 5xx 不降级 |
+| `CODEBUDDY_PROXY_CHECKIN_RETRY_INTERVAL_MS` | `600000` | 签到失败后多久重试一次（毫秒），`0` = 不重试。重试状态从签到日志推导，不额外存状态文件，进程重启后仍继续 |
+| `CODEBUDDY_PROXY_CHECKIN_RETRY_MAX` | `1` | 当天最多重试几次（不含首次尝试） |
 
 规则保存在账号池同目录的 `proxy-checkin.json`（原子写、`0600`），**不写进 `proxy-accounts.json`**：账号池文件会被外部编辑并被内存副本回写，混放容易互相覆盖。
 
