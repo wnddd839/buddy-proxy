@@ -60,8 +60,9 @@ func TestLogPrunesOlderThan48h(t *testing.T) {
 func TestLogKeepsBoundaryAtExactly48h(t *testing.T) {
 	dir := t.TempDir()
 	l := checkin.OpenLog(filepath.Join(dir, "log.json"))
-	now := time.Now()
-	boundary := now.Add(-checkin.Retention).UnixMilli()
+	// Append recomputes the cutoff from time.Now(); leave a small margin so the
+	// exact-boundary case cannot age out between these two clock reads.
+	boundary := time.Now().Add(-checkin.Retention + 2*time.Second).UnixMilli()
 	if err := l.Append(checkin.Entry{AccountID: "edge", At: boundary}); err != nil {
 		t.Fatal(err)
 	}

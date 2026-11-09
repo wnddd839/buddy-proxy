@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.09-editorial-v2-polish"
+const UIRevision = "2026.11.09-v0.7.4"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -1425,6 +1425,7 @@ function renderAccounts(summary, activeSite) {
     accountSelect.value = selected;
   }
   activeSite = normalizeSite(activeSite || (summary && summary.activeSite) || '');
+  renderCheckinAccounts();
   if (!all.length) {
     box.innerHTML = '<div class="empty">暂无账号。请在下方 OAuth 区域完成登录。</div>';
     renderAttention(summary, activeSite);
@@ -2397,8 +2398,12 @@ async function refreshConcurrency(){
   return data;
 }
 
+let statusRequestSeq = 0;
 async function refreshStatus(fresh){
+  const seq = ++statusRequestSeq;
   const data = await api('/direct-admin/api/status' + (fresh ? '?fresh=1' : ''));
+  // A slower earlier poll must not overwrite the account list or an edited draft.
+  if (seq !== statusRequestSeq) return data;
   paintStatus(data);
   if (fresh && data.creditsRefreshed) showToast('额度已从上游刷新');
   refreshConcurrency().catch(function(){});
