@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.09-editorial-v2-aligned"
+const UIRevision = "2026.11.09-editorial-v2-polish"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -202,8 +202,8 @@ h1{
 .egress-id strong{display:block;font-size:var(--fs-sm);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .egress-id span{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-xs);color:var(--fg-40);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .egress-count{font-size:var(--fs-xs);color:var(--fg-60);white-space:nowrap}
-.egress-add{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
-.egress-add input{flex:1;min-width:180px}
+.egress-add{display:grid;grid-template-columns:minmax(0,1fr) 140px auto auto;gap:10px;margin-top:10px;align-items:center}
+.egress-add input{min-width:0}
 .test-model-label{display:inline-flex;align-items:center;gap:8px;font-size:var(--fs-sm);color:var(--fg-60);white-space:nowrap}
 .test-model-label select{min-width:160px;font-size:var(--fs-sm)}
 .metrics{
@@ -220,12 +220,14 @@ h1{
 .metric .v.sm{font-size:var(--fs-base);line-height:1.4}
 /* 概览：波动监测条（默认隐藏，未启用时不出现） */
 .watchbar{
-  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
-  margin-top:16px;padding:12px 16px;border:1px solid var(--fg-10);
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0;
+  margin-top:16px;padding:0;border:1px solid var(--fg-10);
   font-family:var(--sans);font-size:var(--fs-xs);letter-spacing:.13em;text-transform:uppercase;
   color:var(--fg-40);
 }
 .watchbar[hidden]{display:none}
+.watchbar>span{padding:10px 14px;border-left:1px solid var(--fg-10)}
+.watchbar>span:first-child{border-left:none}
 .watchbar .state{color:var(--fg);letter-spacing:.16em}
 .watchbar .state.bad{color:var(--fg);text-decoration:underline;text-underline-offset:3px}
 .watchbar .num{color:var(--fg-40)}
@@ -375,7 +377,7 @@ pre{
 .account .actions button:hover{color:var(--fg);border-color:var(--fg-40)}
 .usage-filters{display:flex;flex-wrap:wrap;gap:16px 24px;margin:16px 0 0;align-items:end}
 .usage-filters label{display:flex;flex-direction:column;gap:6px;font-size:var(--fs-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40)}
-.usage-filters select{min-width:180px;font-size:var(--fs-sm);text-transform:none;letter-spacing:0}
+.usage-filters select{width:220px;min-width:0;font-size:var(--fs-sm);text-transform:none;letter-spacing:0}
 .usage-models{margin-top:16px;overflow:auto;border:1px solid var(--fg-10)}
 .usage-models table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
 .usage-models th,.usage-models td{padding:8px 12px;border-bottom:1px solid var(--fg-10);text-align:left}
@@ -530,7 +532,8 @@ button:disabled{opacity:.4;cursor:not-allowed}
   #checkinMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}
   .metric{padding:14px 12px}
   .egress-row{flex-wrap:wrap}
-  .egress-add input{min-width:0;flex-basis:100%}
+  .egress-add{grid-template-columns:1fr 1fr}
+  .egress-add input{grid-column:1/-1}
   .route-line label{width:100%;min-width:0}
   .route-line label input,.route-line label select{flex:1;min-width:0;width:auto}
   .checkin-rule>label:first-child{flex-basis:100%}
@@ -673,19 +676,29 @@ button:disabled{opacity:.4;cursor:not-allowed}
           </div>
         </div>
         <p class="seg-hint" id="poolSiteHint">当前号池：—</p>
-        <div class="ops-row toolbar">
-          <button class="ghost" id="btnGoCheckin" type="button">自动签到排程 →</button>
-          <button class="ghost" id="btnImportOpen" type="button">一键导入</button>
-          <button class="ghost" id="btnCheckin" type="button" disabled aria-describedby="checkinHint">每日签到</button>
-          <button class="ghost" id="btnPoolTest" type="button" disabled aria-describedby="poolTestHint">批量测试</button>
-          <label class="test-model-label" for="testModelSelect">测试模型
-            <select id="testModelSelect" aria-label="账号测试使用的模型">
-              <option value="">自动（最低倍率）</option>
-            </select>
-          </label>
+        <div class="settings">
+          <div class="setting-row">
+            <span class="setting-label">账号维护</span>
+            <span class="setting-control setting-control--wide">
+              <button class="ghost" id="btnGoCheckin" type="button">自动签到排程 →</button>
+              <button class="ghost" id="btnImportOpen" type="button">一键导入</button>
+              <button class="ghost" id="btnCheckin" type="button" disabled aria-describedby="checkinHint">每日签到</button>
+            </span>
+            <p class="setting-note" id="checkinHint">一键为当前号池全部已启用账号签到（国内站约 100 积分/天）。</p>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">可用性探测</span>
+            <span class="setting-control setting-control--wide">
+              <button class="ghost" id="btnPoolTest" type="button" disabled aria-describedby="poolTestHint">批量测试</button>
+              <label class="test-model-label" for="testModelSelect">测试模型
+                <select id="testModelSelect" aria-label="账号测试使用的模型">
+                  <option value="">自动（最低倍率）</option>
+                </select>
+              </label>
+            </span>
+            <p class="setting-note" id="poolTestHint">对当前号池已启用账号发最小 chat，验证可用性与延迟；默认选最低倍率模型。</p>
+          </div>
         </div>
-        <p class="checkin-hint" id="checkinHint">一键为当前号池全部已启用账号签到（国内站约 100 积分/天）。</p>
-        <p class="checkin-hint" id="poolTestHint">对当前号池已启用账号发最小 chat，验证可用性与延迟；默认选最低倍率模型。</p>
         <pre class="checkin-detail" id="checkinRaw" hidden></pre>
         <pre class="checkin-detail" id="poolTestRaw" hidden></pre>
 
@@ -740,12 +753,15 @@ button:disabled{opacity:.4;cursor:not-allowed}
             <p>账号积分低于这个值时，不再参与选号（防止把号扣穿、或触发上游风控）。按缓存余额判定，余额探测后自动更新。</p>
           </div>
         </div>
-        <div class="ops-row">
-          <label class="test-model-label" for="quotaFloor">积分下限
-            <input type="number" id="quotaFloor" min="0" step="1" style="width:110px" placeholder="0"/>
-          </label>
-          <button class="teal" id="btnQuotaFloorSave" type="button">保存</button>
-          <span class="seg-hint" id="quotaFloorHint">填 0 = 不启用（所有号都参与，余额不足由上游自己拦）。修改后必须点「保存」。</span>
+        <div class="settings">
+          <div class="setting-row">
+            <span class="setting-label">积分下限</span>
+            <span class="setting-control">
+              <input type="number" id="quotaFloor" min="0" step="1" style="width:110px" placeholder="0"/>
+              <button class="teal" id="btnQuotaFloorSave" type="button">保存</button>
+            </span>
+            <p class="setting-note" id="quotaFloorHint">填 0 = 不启用（所有号都参与，余额不足由上游自己拦）。修改后必须点「保存」。</p>
+          </div>
         </div>
         <p class="checkin-hint config-state" role="status" aria-live="polite" id="quotaFloorState">当前：未启用</p>
       </div>
@@ -975,13 +991,18 @@ button:disabled{opacity:.4;cursor:not-allowed}
             <button class="ghost" id="btnModelsBoth" type="button">两个都拉</button>
           </div>
         </div>
-        <div class="ops-row" style="margin-bottom:10px">
-          <span class="seg" id="modelsScopeSeg" role="group" aria-label="模型编目范围">
-            <button type="button" data-msite="domestic">国内</button>
-            <button type="button" data-msite="global">国际</button>
-            <button type="button" data-msite="both">两站合并</button>
-          </span>
-          <span class="seg-hint" id="modelsScopeHint">当前显示：国内站模型</span>
+        <div class="settings">
+          <div class="setting-row">
+            <span class="setting-label">编目范围</span>
+            <span class="setting-control setting-control--wide">
+              <span class="seg" id="modelsScopeSeg" role="group" aria-label="模型编目范围">
+                <button type="button" data-msite="domestic">国内</button>
+                <button type="button" data-msite="global">国际</button>
+                <button type="button" data-msite="both">两站合并</button>
+              </span>
+            </span>
+            <p class="setting-note" id="modelsScopeHint">当前显示：国内站模型</p>
+          </div>
         </div>
         <div class="chips" id="modelChips"><div class="empty">加载中…</div></div>
         <details class="raw">
