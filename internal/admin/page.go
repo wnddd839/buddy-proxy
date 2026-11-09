@@ -211,11 +211,11 @@ h1{
 }
 @media (max-width:980px){.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:720px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.metric{min-width:0;padding:18px 16px;border-right:1px solid var(--fg-10);border-bottom:1px solid var(--fg-10);background:transparent}
+.metric{min-width:0;padding:14px 16px;border-right:1px solid var(--fg-10);border-bottom:1px solid var(--fg-10);background:transparent}
 .metric .k{font-size:var(--fs-xs);font-family:var(--sans);letter-spacing:.15em;text-transform:uppercase;color:var(--fg-40)}
 .metric .v{
-  margin-top:8px;font-family:var(--mono);font-size:var(--fs-lg);font-weight:400;
-  letter-spacing:-.02em;color:var(--fg);text-align:right;
+  margin-top:6px;font-family:var(--mono);font-size:var(--fs-lg);font-weight:400;
+  letter-spacing:-.02em;color:var(--fg);text-align:left;line-height:1.2;
 }
 .metric .v.sm{font-size:var(--fs-base);line-height:1.4}
 /* 概览：波动监测条（默认隐藏，未启用时不出现） */
@@ -327,7 +327,7 @@ select:focus,input:focus{border-bottom-color:var(--fg)}
 .chip.btnish{cursor:pointer}
 .chip.btnish:hover{border-color:var(--fg-40);font-style:italic}
 .empty{
-  padding:32px 16px;border:1px dashed var(--fg-20);text-align:center;color:var(--fg-40);
+  padding:24px 16px;border:1px dashed var(--fg-20);text-align:center;color:var(--fg-40);
   font-family:var(--sans);font-size:var(--fs-sm);
 }
 details.raw{margin-top:12px;border:1px solid var(--fg-10);background:transparent}
@@ -483,8 +483,19 @@ pre{
 .pool-bottom-grid>section{grid-column:1;grid-row:1 / span 2}
 .pool-bottom-grid>aside{min-width:0}
 #checkinMetrics{grid-template-columns:repeat(4,minmax(0,1fr))}
-#checkinPreset{width:auto;max-width:100%}
-#checkinRetryMin,#checkinRetryMax{width:auto;min-width:100px}
+.block-title{margin:28px 0 0;font-size:var(--fs-xs);letter-spacing:.2em;color:var(--fg-40)}
+.settings{margin:10px 0 0;border-top:1px solid var(--fg-10)}
+.setting-row{display:grid;grid-template-columns:120px 340px minmax(0,1fr);gap:0 24px;align-items:center;padding:14px 0;border-bottom:1px solid var(--fg-10)}
+.setting-label{font-size:var(--fs-sm);color:var(--fg-60);letter-spacing:.06em}
+.setting-control{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.setting-control select{width:160px;max-width:100%}
+.setting-control--pair select{width:120px}
+.setting-control--pair .pair-sep + select{width:90px}
+.pair-sep{font-size:var(--fs-sm);color:var(--fg-40);white-space:nowrap}
+.setting-control--wide select{width:180px}
+.setting-note{margin:0;font-size:var(--fs-sm);line-height:1.6;color:var(--fg-60)}
+@media(max-width:980px){.setting-row{grid-template-columns:110px minmax(0,1fr)}.setting-note{grid-column:2;margin-top:6px}}
+@media(max-width:640px){.setting-row{grid-template-columns:1fr;gap:8px}.setting-note{grid-column:1;margin-top:0}}
 #checkinRules input[type=checkbox]{width:auto;accent-color:var(--fg)}
 .checkin-rule>label:first-child{flex:1 1 220px;color:var(--fg);letter-spacing:0}
 .checkin-rule select{width:auto;font-size:var(--fs-sm)}
@@ -780,64 +791,78 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="metric"><div class="k">签到失败</div><div class="v" id="ckFailed">—</div></div>
           <div class="metric"><div class="k">已启用规则 · 本地草稿</div><div class="v" id="ckRules">—</div></div>
         </div>
-        <p class="checkin-hint" style="margin:-8px 0 12px">前三项来自服务端今日执行结果；规则数反映本地草稿。范围仅影响统计与批量操作，保存始终包含两站全部规则。</p>
-        <div class="ops-row">
-          <label class="test-model-label" for="checkinAuto">总开关
-            <select id="checkinAuto" aria-label="自动签到总开关">
-              <option value="off">关闭</option>
-              <option value="on">开启</option>
-            </select>
-          </label>
-          <span class="seg-hint">规则文件与总开关保存后立即生效，无需重启。</span>
+        <p class="checkin-hint" style="margin:0 0 8px">前三项来自服务端今日执行结果；规则数反映本地草稿。范围仅影响统计与批量操作，保存始终包含两站全部规则。</p>
+        <div class="block-title">全局策略</div>
+        <div class="settings">
+          <div class="setting-row">
+            <span class="setting-label">总开关</span>
+            <span class="setting-control">
+              <select id="checkinAuto" aria-label="自动签到总开关">
+                <option value="off">关闭</option>
+                <option value="on">开启</option>
+              </select>
+            </span>
+            <p class="setting-note">规则文件与总开关保存后立即生效，无需重启。</p>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">失败重试</span>
+            <span class="setting-control setting-control--pair">
+              <select id="checkinRetryMin" aria-label="签到失败后多久重试">
+                <option value="0">不重试</option>
+                <option value="5">5 分钟后</option>
+                <option value="10">10 分钟后</option>
+                <option value="30">30 分钟后</option>
+                <option value="60">60 分钟后</option>
+              </select>
+              <span class="pair-sep">· 最多</span>
+              <select id="checkinRetryMax" aria-label="签到失败最多重试几次">
+                <option value="1">1 次</option>
+                <option value="2">2 次</option>
+              </select>
+            </span>
+            <p class="setting-note">只重试「可能有救」的失败（出口抖动、上游 5xx）；429 / 额度限制不重试，23:30 后不再重试。</p>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">出口回落</span>
+            <span class="setting-control">
+              <select id="checkinFallback" aria-label="签到出口失败时是否回落直连">
+                <option value="off">关闭</option>
+                <option value="on">开启</option>
+              </select>
+            </span>
+            <p class="setting-note">账号绑定的出口连不上时，直连重试一次。仅对「连不上」类错误生效；429 / 额度 / 上游 5xx 不会降级。</p>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">批量预设</span>
+            <span class="setting-control setting-control--wide">
+              <button class="ghost" id="btnCheckinAll" type="button">全选</button>
+              <button class="ghost" id="btnCheckinNone" type="button">全不选</button>
+              <select id="checkinPreset" aria-label="批量设置签到时间" title="把当前范围内的账号统一设成某种签到节奏">
+                <option value="">选一个节奏…</option>
+                <option value="human">仿人随机（推荐）</option>
+                <option value="allday">全天随机</option>
+                <option value="0900">每天 09:00</option>
+                <option value="1200">每天 12:00</option>
+                <option value="2000">每天 20:00</option>
+                <option value="0900-1100">09:00–11:00 随机</option>
+                <option value="2000-2300">20:00–23:00 随机</option>
+                <option value="spread">整批错开（均匀铺开）</option>
+              </select>
+            </span>
+            <p class="setting-note" id="checkinPresetHint">选完立刻套用到当前范围，仍要点「保存」才生效。</p>
+          </div>
         </div>
-        <div class="ops-row" style="margin-top:8px">
-          <span class="seg-hint" style="margin-right:8px">签到失败后：</span>
-          <select id="checkinRetryMin" aria-label="签到失败后多久重试">
-            <option value="0">不重试</option>
-            <option value="5">5 分钟后</option>
-            <option value="10">10 分钟后</option>
-            <option value="30">30 分钟后</option>
-            <option value="60">60 分钟后</option>
-          </select>
-          <span class="seg-hint">最多重试</span>
-          <select id="checkinRetryMax" aria-label="签到失败最多重试几次">
-            <option value="1">1 次</option>
-            <option value="2">2 次</option>
-          </select>
-          <span class="seg-hint">只重试「可能有救」的失败（出口抖动、上游 5xx）；429 / 额度限制不重试，23:30 后不再重试。</span>
-        </div>
-        <div class="ops-row" style="margin-top:14px;border-top:1px solid var(--fg-10);padding-top:14px">
-          <label class="test-model-label" for="checkinFallback">出口失败时回落直连
-            <select id="checkinFallback" aria-label="签到出口失败时是否回落直连">
-              <option value="off">关闭</option>
-              <option value="on">开启</option>
-            </select>
-          </label>
-          <span class="seg-hint">账号绑定的出口连不上时，直连重试一次。仅对「连不上」类错误生效；429 / 额度 / 上游 5xx 不会降级。</span>
-        </div>
-        <div class="ops-row" style="margin-top:12px">
-          <span class="seg-hint" style="margin-right:8px">批量设置：</span>
-          <button class="ghost" id="btnCheckinAll" type="button">全选</button>
-          <button class="ghost" id="btnCheckinNone" type="button">全不选</button>
-          <select id="checkinPreset" aria-label="批量设置签到时间" title="把当前范围内的账号统一设成某种签到节奏">
-            <option value="">选一个节奏…</option>
-            <option value="human">仿人随机（推荐）</option>
-            <option value="allday">全天随机</option>
-            <option value="0900">每天 09:00</option>
-            <option value="1200">每天 12:00</option>
-            <option value="2000">每天 20:00</option>
-            <option value="0900-1100">09:00–11:00 随机</option>
-            <option value="2000-2300">20:00–23:00 随机</option>
-            <option value="spread">整批错开（均匀铺开）</option>
-          </select>
-          <span class="seg-hint" id="checkinPresetHint">选完立刻套用到当前范围，仍要点「保存」才生效。</span>
-        </div>
+        <div class="block-title">逐账号规则</div>
         <div class="bound-keys" id="checkinRules"><div class="empty">正在加载签到规则…</div></div>
         <p class="checkin-hint" id="checkinRuleHint" hidden></p>
         <p class="checkin-hint">开始时间留空 = 当天全天随机一个分钟点；填 <code>09:00</code> 且结束留空 = 固定时刻；填 <code>09:00</code>–<code>11:00</code> = 该时段内每天随机一个分钟。不支持跨零点窗口。仅对已启用且有凭据的账号生效。</p>
-        <div class="ops-row" style="margin-top:14px;border-top:1px solid var(--fg-10);padding-top:14px">
-          <button class="ghost" id="btnCheckinLog" type="button">查看签到明细（48h）</button>
-          <span class="seg-hint">最近 48 小时的每一次签到尝试，含失败原因与实际出口。</span>
+        <div class="block-title">审计日志</div>
+        <div class="settings">
+          <div class="setting-row">
+            <span class="setting-label">签到明细</span>
+            <span class="setting-control setting-control--wide"><button class="ghost" id="btnCheckinLog" type="button">查看签到明细（48h）</button></span>
+            <p class="setting-note">最近 48 小时的每一次签到尝试，含失败原因与实际出口。</p>
+          </div>
         </div>
         <div class="log-table-wrap" id="checkinLogWrap" hidden>
           <div class="log-table-window">
