@@ -34,8 +34,22 @@ func TestConcurrencyAllUpstreamPathsEndFlight(t *testing.T) {
 	if got := svc.ConcurrencyStatus().GlobalInFlight; got != 0 {
 		t.Fatalf("in-flight leak=%d", got)
 	}
-	if got := svc.Status()["concurrency"].(map[string]any)["accounts"].(int); got == 0 {
+	statusSummary := svc.Status()["concurrency"].(map[string]any)
+	if got := statusSummary["accounts"].(int); got == 0 {
 		t.Fatal("status summary must count observed accounts")
+	}
+	// The admin console paints the status payload on every 15s poll. The
+	// concurrency field is documented as a numeric summary, so a snapshot
+	// array here would throw in paintConcurrency and leave the whole account
+	// pool panel empty.
+	if _, ok := statusSummary["accounts"].(int); !ok {
+		t.Fatal("status concurrency.accounts must be a number")
+	}
+	if _, ok := statusSummary["rateLimits"].(int); !ok {
+		t.Fatal("status concurrency.rateLimits must be a number")
+	}
+	if _, ok := statusSummary["globalInFlight"].(int); !ok {
+		t.Fatal("status concurrency.globalInFlight must be a number")
 	}
 }
 

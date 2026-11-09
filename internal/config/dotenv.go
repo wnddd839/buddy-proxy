@@ -104,7 +104,16 @@ func unquoteEnvValue(value string) string {
 		return value
 	}
 	if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
-		return value[1 : len(value)-1]
+		inner := value[1 : len(value)-1]
+		if value[0] == '"' {
+			// Undo escapeEnvValue's CR/LF escapes. Without this the loader
+			// would hand a literal backslash-n to callers instead of a newline.
+			inner = strings.ReplaceAll(inner, `\n`, "\n")
+			inner = strings.ReplaceAll(inner, `\r`, "\r")
+			inner = strings.ReplaceAll(inner, `\"`, `"`)
+			inner = strings.ReplaceAll(inner, `\\`, `\`)
+		}
+		return inner
 	}
 	// 无引号值去掉行内注释：KEY=val # comment
 	if i := strings.Index(value, " #"); i >= 0 {
@@ -245,9 +254,14 @@ func escapeEnvValue(value string) string {
 	if value == "" {
 		return ""
 	}
-	if strings.ContainsAny(value, " \t#\"'`") || strings.Contains(value, "\n") {
+	if strings.ContainsAny(value, " \t#\"'`\r\n") {
 		escaped := strings.ReplaceAll(value, `\`, `\\`)
 		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		// The loader is line-based: a literal CR/LF inside the quotes would
+		// split one KEY=value into several lines, silently dropping the part
+		// after the break (for example a bound API key's site suffix).
+		escaped = strings.ReplaceAll(escaped, "\r", `\r`)
+		escaped = strings.ReplaceAll(escaped, "\n", `\n`)
 		return `"` + escaped + `"`
 	}
 	return value

@@ -224,26 +224,19 @@ func renderMail(ev Event, adminURL string) (subject, body string) {
 			time.UnixMilli(ev.Since).Format("2006-01-02 15:04:05"),
 			int64(time.UnixMilli(ev.At).Sub(time.UnixMilli(ev.Since)).Minutes()))
 	}
+	// 正文只放指标，不写「可能原因 / 对号入座」这类推测文案——
+	// 之前那一段在多数场景下都是错的（例如把上游正常降档说成"推理字段缺失"），
+	// 反而误导排查。真要看细节去管理台。
 	b.WriteString("\n指标：\n")
 	fmt.Fprintf(&b, "  样本数        %d\n", ev.Metrics.Samples)
 	fmt.Fprintf(&b, "  错误率        %.1f%%\n", ev.Metrics.ErrorRate*100)
-	fmt.Fprintf(&b, "  推理缺失      %d/%d (%.1f%%，基线 %.1f%%)\n",
-		ev.Metrics.ReasoningMissed, ev.Metrics.ReasoningAsked,
-		ev.Metrics.ReasoningMissRate*100, ev.Metrics.BaselineMissRate*100)
+	fmt.Fprintf(&b, "  推理占比      %.1f%%（基线 %.1f%%，%d/%d 条）\n",
+		ev.Metrics.ReasoningMissRate*100, ev.Metrics.BaselineMissRate*100,
+		ev.Metrics.ReasoningMissed, ev.Metrics.ReasoningAsked)
 	fmt.Fprintf(&b, "  耗时 P50      %dms（基线 %dms）\n", ev.Metrics.LatencyP50, ev.Metrics.BaselineLatencyP50)
-	b.WriteString("\n排查：\n")
 	if adminURL != "" {
-		fmt.Fprintf(&b, "  1) 管理台概览页的「波动监测」条：%s\n", adminURL)
-		b.WriteString("  2) 进程日志：journalctl -u <服务名> | grep 'watch:'\n")
-	} else {
-		b.WriteString("  1) 进程日志：journalctl -u <服务名> | grep 'watch:'\n")
+		fmt.Fprintf(&b, "\n管理台：%s\n", adminURL)
 	}
-	b.WriteString("  3) 换一个问法手动打一发（不要复用同一句），看 reasoning_content 与 reasoning_tokens\n")
-	b.WriteString("\n对号入座：\n")
-	b.WriteString("  · 502 且上游返回 403 code 11140 → 上游把重复/相似请求判为 illegal，不是网关故障\n")
-	b.WriteString("  · 200 但没有 reasoning → 上游降档或模型默认关闭思考\n")
-	b.WriteString("  · 只有推理 token 下降、内容仍在 → 账号切换或降档，不是服务宕机\n")
-	b.WriteString("\n判定依据：所有指标都相对本进程自身的滚动基线比较，不是固定阈值。\n")
 	return subject, b.String()
 }
 

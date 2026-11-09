@@ -466,6 +466,22 @@ func TestAdminProductSwitchSameOrigin(t *testing.T) {
 	}
 }
 
+func TestGatewayAPIKeyDoesNotGrantAdminAccess(t *testing.T) {
+	srv := testServer(t, true, "admin-pass", "cbp_client_key")
+	for _, path := range []string{
+		"/direct-admin/api/status",
+		"/direct-admin/api/client-config",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer cbp_client_key")
+		rec := httptest.NewRecorder()
+		srv.handleAdminAPI(rec, req, path)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: gateway API key granted admin access: %d %s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestAdminPasswordRequiredWhenConfigured(t *testing.T) {
 	srv := testServer(t, false, "admin-pass", "")
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:32126/direct-admin/api/status", nil)

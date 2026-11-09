@@ -416,7 +416,7 @@ usage chunk 形如：
 
 - **免密**：`CODEBUDDY_PROXY_ADMIN_PASSWORD` 为空时直接放行（本地推荐）
 - **Basic Auth**：用户名 `admin` 或留空，密码为 admin 密码
-- **Bearer**：`Authorization: Bearer <admin 密码或 API Key>`
+- **Bearer**：`Authorization: Bearer <admin 密码>`。网关 API Key 只用于 `/v1`，不再授予管理台权限：管理台会返回所有 Key 的明文，API Key 是分发给每个客户端的凭据，不能凭它读取或改动账号池
 
 > 已移除 `?password=` query 认证——密钥会泄进代理日志、浏览器历史与 Referer。
 

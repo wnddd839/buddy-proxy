@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/gateway"
 	"github.com/wnddd839/codebuddy-proxy/internal/httputil"
 	"github.com/wnddd839/codebuddy-proxy/internal/openai"
@@ -66,6 +67,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request, keySite
 	proxyRequestID := s.newProxyRequestID()
 	finish := s.Svc.BeginRequest(providerModel.PublicModel, promptChars, req.Stream)
 	site := resolveRequestSite(providerModel.Site, r.Header.Get("X-Site"), keySite)
+	// 只有模型名的 cn:/global: 前缀算「客户端硬钉站点」——前缀是最高优先级的
+	// 单次指定，路由绝不覆盖它。X-Site 头不算：它只是选「从哪个区的号池进来」，
+	// 规则本来就按源站点匹配，若把 X-Site 也当硬钉，国内来源的规则就永远触发不了。
+	siteExplicit := config.OptionalSite(providerModel.Site) != ""
 	if !boundSiteAllowed(w, r, site) {
 		finish(false, 0, 0, 0, 0, "请求区域与绑定账号不一致", provider.Usage{})
 		return
@@ -91,6 +96,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request, keySite
 		SessionKey:          sessionKey,
 		SessionLabel:        sessionpin.SessionLabel(messages),
 		Site:                site,
+		SiteExplicit:        siteExplicit,
 	}
 
 	responseID := "resp_" + strutil.RandomHex(12)
@@ -143,6 +149,8 @@ func (s *Server) streamResponses(
 		s.writeResponsesError(w, http.StatusInternalServerError, "internal_error", "streaming unsupported")
 		return
 	}
+	// SSE 连接是否强制 close 见 streamChat 的说明：隧道下必须 close，
+	// 直连保持 keep-alive 以省掉每次新建 TCP 的开销。
 	builder := openai.NewResponseStreamBuilder(responseID, providerModel.PublicModel, req)
 	var (
 		mu               sync.Mutex
@@ -178,6 +186,7 @@ func (s *Server) streamResponses(
 		} else {
 			w.Header().Set("Connection", "keep-alive")
 		}
+		w.Header().Set("Connection", "close")
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(http.StatusOK)

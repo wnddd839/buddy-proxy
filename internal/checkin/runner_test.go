@@ -42,7 +42,7 @@ func TestRunnerChecksInAtPerAccountWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := NewRunner(file, pool, provider.NewClient(config.Config{}), nil, func() config.Config {
+	runner := NewRunner(file, OpenLog(filepath.Join(dir, "proxy-checkin-log.json")), pool, provider.NewClient(config.Config{}), nil, func() config.Config {
 		return config.Config{CheckinAuto: true}
 	})
 	if !runner.Auto() {
@@ -58,7 +58,7 @@ func TestRunnerChecksInAtPerAccountWindow(t *testing.T) {
 	// 取该账号当天在北京时间窗口内掷出的时刻，构造一次正好跨过它的 tick。
 	rule := normalizedRule{AccountID: "a1", StartMin: 9 * 60, EndMin: 11 * 60}
 	day := time.Now().In(beijing).Format("2006-01-02")
-	at := dueAt(rule, day)
+	at := runner.dueAt(rule, day)
 	if at.Before(beijing9AM(day)) || at.After(beijing9AM(day).Add(2*time.Hour)) {
 		t.Fatalf("随机时刻落在窗口外: %s", at)
 	}

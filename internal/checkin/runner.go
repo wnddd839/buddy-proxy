@@ -2,11 +2,17 @@ package checkin
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,21 +30,41 @@ const tickInterval = 20 * time.Second
 // Runner 每天按规则逐账号签到。规则与总开关在运行时可从管理台更新。
 type Runner struct {
 	file     *File
+	results  *Log
 	pool     *accounts.Pool
 	provider *provider.Client
 	log      *slog.Logger
 	config   func() config.Config
 	auto     atomic.Bool
+	// jitterKey 是签到时刻抖动的服务端密钥（32 字节）。
+	// 它只存在于本机，从不外发 —— 上游即使完全知道抖动算法，
+	// 没有这把钥匙也算不出某账号某天几点几分几秒签到。
+	jitterKey []byte
+	jitterMu  sync.RWMutex
 }
 
-func NewRunner(file *File, pool *accounts.Pool, client *provider.Client, log *slog.Logger, cfg func() config.Config) *Runner {
-	if log == nil {
-		log = slog.Default()
+// NewRunner 装配调度器。results 为 nil 时退化成「不落盘」，
+// 便于测试与「只要调度不要历史」的部署形态。
+func NewRunner(file *File, results *Log, pool *accounts.Pool, client *provider.Client, logger *slog.Logger, cfg func() config.Config) *Runner {
+	if logger == nil {
+		logger = slog.Default()
 	}
-	r := &Runner{file: file, pool: pool, provider: client, log: log, config: cfg}
+	r := &Runner{file: file, results: results, pool: pool, provider: client, log: logger, config: cfg}
 	r.auto.Store(cfg().CheckinAuto)
+	// 抖动密钥与规则文件同目录；加载失败不致命（退化为进程内随机），
+	// 但会打警告 —— 那种情况下重启后排班表会变。
+	keyPath := filepath.Join(filepath.Dir(file.Path()), "proxy-checkin-jitter.key")
+	key, err := loadOrCreateJitterKey(keyPath)
+	if err != nil {
+		logger.Warn("checkin: 抖动密钥不可用，本次进程内随机（重启后时刻会变）", "error", err)
+		key = randomKey()
+	}
+	r.jitterKey = key
 	return r
 }
+
+// Log 暴露结果存储，供管理台查询端点使用。可能为 nil。
+func (r *Runner) Log() *Log { return r.results }
 
 func (r *Runner) Path() string { return r.file.Path() }
 
@@ -61,25 +87,77 @@ func (r *Runner) SetAuto(enabled bool) error {
 	return nil
 }
 
-// Run 每 20 秒检查一次是否有账号到点，直到 ctx 结束。
+// Run 等到下一个账号的到点时刻再执行，直到 ctx 结束。
 //
-// 每个账号在当天按「日期 + 账号ID + 窗口」确定性地掷出一个时刻，跨重启稳定；
-// 只在该时刻落在本次 tick 区间内时执行。启动不补签：进程刚起来时把 last 设为
-// 当前时刻，之前错过的窗口等明天。上游 todayCheckedIn / code=10001 负责幂等。
+// 时刻由 dueAt 掷出（HMAC 抖动，秒级、不可被上游反推），跨重启稳定。
+//
+// 这里**不能**用固定 ticker 轮询：ticker 会把实际执行时刻量化到栅格上，
+// 例如 20 秒 ticker + 掷出的 09:12:37 → 实际在 09:12:40 才发请求，
+// 秒级抖动被白白抹掉，剩下的仍是「整齐的整数秒」。改为用 Timer 精确等到
+// 目标时刻（最多提前几毫秒，避免时钟漂移导致错过）。
+//
+// 启动不补签：进程刚起来时把 last 设为当前时刻，之前错过的窗口等明天。
+// 上游 todayCheckedIn / code=10001 负责幂等。
 func (r *Runner) Run(ctx context.Context) {
-	ticker := time.NewTicker(tickInterval)
-	defer ticker.Stop()
 	last := time.Now()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// 先算「下一个到点时刻」；没有规则就退化成 20 秒轮询（等待规则被添加）。
+		next, ok := r.nextDueAt(last)
+		wait := tickInterval
+		if ok {
+			wait = time.Until(next)
+			if wait < 0 {
+				wait = 0
+			}
+			// 上限保护：规则可能被改到很远（明天），期间要能被新一轮计算唤醒。
+			if wait > tickInterval {
+				wait = tickInterval
+			}
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			now := time.Now()
 			r.due(ctx, last, now)
 			last = now
 		}
 	}
+}
+
+// nextDueAt 返回所有已启用规则中「严格晚于 after」的最早到点时刻。
+// 只用于决定下一次唤醒时机，不改变 due() 的判定语义。
+func (r *Runner) nextDueAt(after time.Time) (time.Time, bool) {
+	store, err := r.file.Read()
+	if err != nil {
+		return time.Time{}, false
+	}
+	rules, err := normalizeRules(store.Rules)
+	if err != nil || len(rules) == 0 {
+		return time.Time{}, false
+	}
+	day := after.In(beijing).Format("2006-01-02")
+	nextDay := after.In(beijing).AddDate(0, 0, 1).Format("2006-01-02")
+	var best time.Time
+	found := false
+	for _, rule := range rules {
+		for _, d := range []string{day, nextDay} {
+			at := r.dueAt(rule, d)
+			if at.IsZero() || !at.After(after) {
+				continue
+			}
+			if !found || at.Before(best) {
+				best, found = at, true
+			}
+			break // 今天的没到点就够了，不用看明天
+		}
+	}
+	return best, found
 }
 
 // due 只处理 (prev, now] 之间到点的规则，不落盘「上次跑到哪天」。
@@ -111,7 +189,7 @@ func (r *Runner) due(ctx context.Context, prev, now time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		at := dueAt(rule, day)
+		at := r.dueAt(rule, day)
 		if !at.After(prev) || at.After(now) {
 			continue
 		}
@@ -120,29 +198,293 @@ func (r *Runner) due(ctx context.Context, prev, now time.Time) {
 			r.log.Info("checkin: 跳过不可用账号", "accountId", rule.AccountID)
 			continue
 		}
-		result := billing.DailyCheckinForAccount(ctx, r.provider, account, r.config())
+		cfg := r.config()
+		result, degraded, egress := r.runOne(ctx, account, cfg)
+		entry := Entry{
+			AccountID: account.ID,
+			Day:       day,
+			At:        now.UnixMilli(),
+			OK:        result.OK,
+			Already:   result.AlreadyCheckedIn,
+			Credits:   result.RewardCredits,
+			Message:   result.Message,
+			Egress:    egress,
+			Degraded:  degraded,
+		}
+		if err := r.results.Append(entry); err != nil {
+			r.log.Warn("checkin: 结果落盘失败", "accountId", account.ID, "error", err)
+		}
 		if result.OK {
-			r.log.Info("checkin: 自动签到完成", "accountId", account.ID, "already", result.AlreadyCheckedIn, "credits", result.RewardCredits)
+			r.log.Info("checkin: 自动签到完成", "accountId", account.ID, "already", result.AlreadyCheckedIn, "credits", result.RewardCredits, "degraded", degraded)
 		} else {
-			r.log.Warn("checkin: 自动签到未成功", "accountId", account.ID, "message", result.Message)
+			r.log.Warn("checkin: 自动签到未成功", "accountId", account.ID, "message", result.Message, "degraded", degraded)
+		}
+	}
+	r.retryFailed(ctx, rules, pool, day, now)
+}
+
+// retryFailed 处理当天失败的账号重试。
+//
+// 状态完全从签到日志推导，不存额外状态文件——这样进程重启后照样能继续重试
+// （今天这个服务重启过多次，内存队列会静默丢失重试机会）。
+//
+// 判定条件（全部满足才重试）：
+//  1. 今天有尝试记录
+//  2. 今天还没有任何成功记录
+//  3. 尝试次数 < 1 + CheckinRetryMax
+//  4. 最后一次尝试距今 >= CheckinRetryInterval
+//  5. 未超过当天截止时刻（23:30）
+func (r *Runner) retryFailed(ctx context.Context, rules []normalizedRule, pool accounts.Store, day string, now time.Time) {
+	cfg := r.config()
+	if cfg.CheckinRetryInterval <= 0 {
+		return
+	}
+	maxAttempts := 1 + cfg.CheckinRetryMax
+	if maxAttempts <= 1 {
+		return
+	}
+	// 当天太晚就不再重试，避免半夜跑签到。
+	cutoff := now.In(beijing).Truncate(24 * time.Hour).Add(23*time.Hour + 30*time.Minute)
+	if now.After(cutoff) {
+		return
+	}
+	for _, rule := range rules {
+		if ctx.Err() != nil {
+			return
+		}
+		account, found := findAccount(pool, rule.AccountID)
+		if !found || !account.Enabled || !accounts.HasCredentials(account) {
+			continue
+		}
+		if r.results.SucceededToday(account.ID, day) {
+			continue
+		}
+		attempts := r.results.AttemptsToday(account.ID, day)
+		if attempts == 0 || attempts >= maxAttempts {
+			continue
+		}
+		last, ok := r.results.LastAttemptToday(account.ID, day)
+		if !ok {
+			continue
+		}
+		if now.Sub(time.UnixMilli(last)) < cfg.CheckinRetryInterval {
+			continue
+		}
+
+		r.log.Info("checkin: 重试上次失败的签到",
+			"accountId", account.ID, "attempt", attempts+1, "maxAttempts", maxAttempts)
+		result, degraded, egress := r.runOne(ctx, account, cfg)
+		entry := Entry{
+			AccountID: account.ID,
+			Day:       day,
+			At:        now.UnixMilli(),
+			OK:        result.OK,
+			Already:   result.AlreadyCheckedIn,
+			Credits:   result.RewardCredits,
+			Message:   result.Message,
+			Egress:    egress,
+			Degraded:  degraded,
+		}
+		if err := r.results.Append(entry); err != nil {
+			r.log.Warn("checkin: 重试结果落盘失败", "accountId", account.ID, "error", err)
+		}
+		if result.OK {
+			r.log.Info("checkin: 重试成功", "accountId", account.ID, "credits", result.RewardCredits, "degraded", degraded)
+		} else {
+			r.log.Warn("checkin: 重试仍失败", "accountId", account.ID, "message", result.Message, "degraded", degraded)
 		}
 	}
 }
 
-// dueAt 按日期 + 账号 + 窗口播种，保证同一天每次 tick 得到同一时刻。
-// End == Start 时就是固定时刻；否则在窗口内按分钟随机。
-func dueAt(rule normalizedRule, day string) time.Time {
+// dueAt 计算某账号在某天的签到时刻（北京时间）。
+//
+// 设计目标（按重要性）：
+//  1. **不可被上游反推** —— 上游能观察到签到请求的时刻，也能猜到日期与
+//     账号标识；如果时刻是这些量的纯函数（旧实现：FNV-1a(day|id|start|end)），
+//     等于把排班表交出去。现在用 HMAC-SHA256 + 服务端私钥，私钥不出本机。
+//  2. **跨重启稳定** —— 同一账号同一天必须算回同一时刻，否则每次重启都可能
+//     补签一次。密钥落盘保证这一点。
+//  3. **时刻自然** —— 避开凌晨、避开整分整秒、按窗口宽度自适应抖动幅度。
+func (r *Runner) dueAt(rule normalizedRule, day string) time.Time {
 	date, err := time.ParseInLocation("2006-01-02", day, beijing)
 	if err != nil {
 		return time.Time{}
 	}
-	offset := 0
-	if rule.EndMin > rule.StartMin {
-		h := fnv.New64a()
-		_, _ = h.Write([]byte(fmt.Sprintf("%s|%s|%d|%d", day, rule.AccountID, rule.StartMin, rule.EndMin)))
-		offset = int(h.Sum64() % uint64(rule.EndMin-rule.StartMin+1))
+	key := r.jitterKeySnapshot()
+
+	// 固定时刻（fixed）不加任何抖动：用户明确指定了分秒，就该按那个点跑。
+	if rule.Mode == "fixed" {
+		base := rule.StartMin*60 + rule.OffsetMin*60
+		return date.Add(clampSeconds(base))
 	}
-	return date.Add(time.Duration(rule.StartMin+offset) * time.Minute)
+
+	var sec int
+	switch rule.Mode {
+	case "human":
+		sec = humanSecond(key, seedOf(rule, day))
+	case "allDay":
+		sec = spreadAllDaySecond(key, seedOf(rule, day))
+	default: // window
+		if rule.EndMin > rule.StartMin {
+			sec = windowSecond(key, seedOf(rule, day), rule.StartMin*60, rule.EndMin*60)
+		} else {
+			sec = rule.StartMin * 60
+		}
+	}
+	// 用户微调：按分钟平移（fixed 已在上面处理过）。
+	if rule.Mode != "fixed" {
+		sec += rule.OffsetMin * 60
+	}
+	return date.Add(clampSeconds(sec))
+}
+
+// randomKey 生成 32 字节密码学随机密钥。
+func randomKey() []byte {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		// crypto/rand 不可用时退化为时间派生的弱随机：
+		// 宁可弱一点也不能让签到崩掉（且仍有本机私密性）。
+		now := time.Now().UnixNano()
+		for i := range key {
+			key[i] = byte(now >> (uint(i%8) * 8))
+		}
+	}
+	return key
+}
+
+// loadOrCreateJitterKey 从磁盘读取抖动密钥，不存在则生成并落盘（0600）。
+//
+// 为什么必须落盘：签到时刻要跨重启稳定，否则每次重启都可能补签一次。
+// 密钥只在本机，绝不写进日志、响应或配置导出 —— 这是「不可被上游反推」的前提。
+func loadOrCreateJitterKey(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err == nil {
+		text := strings.TrimSpace(string(raw))
+		if key, decErr := hex.DecodeString(text); decErr == nil && len(key) == 32 {
+			return key, nil
+		}
+		return nil, fmt.Errorf("抖动密钥文件格式无效: %s", path)
+	}
+	if !os.IsNotExist(err) {
+		return nil, err
+	}
+	key := randomKey()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	// 先写临时文件再 rename，避免半截写入。
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(hex.EncodeToString(key)), 0o600); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return nil, err
+	}
+	return key, nil
+}
+
+// jitterKeySnapshot 安全读取当前密钥。
+func (r *Runner) jitterKeySnapshot() []byte {
+	r.jitterMu.RLock()
+	defer r.jitterMu.RUnlock()
+	if len(r.jitterKey) == 0 {
+		return []byte("fallback-not-configured")
+	}
+	return r.jitterKey
+}
+
+// seedOf 把「账号 + 窗口」压成抖动的数据部分。
+// 注意它不含密钥，所以即使泄露也不足以算出时刻。
+func seedOf(rule normalizedRule, day string) string {
+	return fmt.Sprintf("%s|%s|%d|%d", day, rule.AccountID, rule.StartMin, rule.EndMin)
+}
+
+// clampSeconds 把当日秒数夹进 [0, 24h-1]。
+func clampSeconds(sec int) time.Duration {
+	if sec < 0 {
+		sec = 0
+	}
+	if max := 24*60*60 - 1; sec > max {
+		sec = max
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// hmacUnit 用服务端密钥对 seed 做 HMAC-SHA256，取前 8 字节映射到 [0,1)。
+// 没有密钥就无法复现，因此上游无法反推。
+func hmacUnit(key []byte, seed string) float64 {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(seed))
+	sum := mac.Sum(nil)
+	var v uint64
+	for i := 0; i < 8; i++ {
+		v = v<<8 | uint64(sum[i])
+	}
+	return float64(v>>11) / float64(1<<53)
+}
+
+// hmacUnitN 用不同标签取互相独立的随机量。
+func hmacUnitN(key []byte, seed, label string) float64 {
+	return hmacUnit(key, seed+"|"+label)
+}
+
+// spreadAllDaySecond 为「全天随机」挑一个体面的时刻（秒级）。
+//   - 92% 落在 07:00–23:30，8% 落在 00:00–07:00（保留夜间不可预测性）
+//   - 秒级精度，不会每天都是 xx:00:00
+func spreadAllDaySecond(key []byte, seed string) int {
+	if hmacUnitN(key, seed, "night") < 0.08 {
+		return int(hmacUnitN(key, seed, "nightslot") * float64(7*60*60))
+	}
+	lo, hi := 7*60*60, 23*60*60+30*60
+	return lo + int(hmacUnitN(key, seed, "dayslot")*float64(hi-lo))
+}
+
+// windowSecond 在 [lo,hi) 秒内取值，混合均匀与三角分布。
+//   - 纯均匀 → 整段铺开，像机器定时
+//   - 纯三角 → 全挤在中心，短窗口会变成「都在同一小时」
+//   - 混合 → 有峰但不挤
+func windowSecond(key []byte, seed string, lo, hi int) int {
+	if hi <= lo {
+		return lo
+	}
+	span := float64(hi - lo)
+	u := hmacUnitN(key, seed, "u")
+	mid := (hmacUnitN(key, seed, "a") + hmacUnitN(key, seed, "b")) / 2
+	const weight = 0.45
+	p := weight*mid + (1-weight)*u
+	return lo + int(p*span)
+}
+
+// humanActivityBands 是仿人签到的时段与权重：避开凌晨。
+// 每段是 [起分钟, 止分钟, 权重]。权重按真实作息设计：
+// 起床后、午休、晚间各有一个峰，凌晨与深夜不排。
+var humanActivityBands = [][3]int{
+	{7 * 60, 9 * 60, 3},   // 早 07:00–09:00 起床
+	{9 * 60, 12 * 60, 4},  // 上午
+	{12 * 60, 14 * 60, 6}, // 午休高峰
+	{14 * 60, 18 * 60, 3}, // 午后
+	{18 * 60, 21 * 60, 6}, // 晚间高峰
+	{21 * 60, 23 * 60, 2}, // 睡前
+}
+
+// humanSecond 用仿人分布取时刻（秒级）：先按权重选时段，再在段内取值。
+//
+// 段内用「三角 + 均匀」混合，避免整点扎堆又不过度集中。
+func humanSecond(key []byte, seed string) int {
+	total := 0
+	for _, b := range humanActivityBands {
+		total += b[2]
+	}
+	pick := int(hmacUnitN(key, seed, "band") * float64(total))
+	for _, b := range humanActivityBands {
+		if pick < b[2] {
+			return windowSecond(key, seed+"|"+strconv.Itoa(b[0]), b[0]*60, b[1]*60)
+		}
+		pick -= b[2]
+	}
+	// 理论到不了：兜底午间。
+	return windowSecond(key, seed+"|fallback", 12*60*60, 13*60*60)
 }
 
 func findAccount(store accounts.Store, id string) (accounts.Account, bool) {
@@ -152,4 +494,78 @@ func findAccount(store accounts.Store, id string) (accounts.Account, bool) {
 		}
 	}
 	return accounts.Account{}, false
+}
+
+// runOne 执行一次签到，返回 (结果, 是否降级, 实际使用的出口)。
+//
+// 降级只在「账号绑定出口本身出问题」时发生：出口是账号的运维属性，
+// 出口挂了不代表号不能签。但 429/额度/上游 5xx 属于账号或上游状态，
+// 换出口重试没有意义，还会多烧一次请求。
+func (r *Runner) runOne(ctx context.Context, account accounts.Account, cfg config.Config) (billing.CheckinResult, bool, string) {
+	egress := account.Proxy
+	result := billing.DailyCheckinForAccount(ctx, r.provider, account, cfg)
+	if result.OK {
+		return result, false, egress
+	}
+	if !cfg.CheckinAllowDirectFallback || egress == "" || !isEgressError(result.Message) {
+		return result, false, egress
+	}
+	direct := account
+	direct.Proxy = ""
+	retry := billing.DailyCheckinForAccount(ctx, r.provider, direct, cfg)
+	return retry, true, ""
+}
+
+// isEgressError 判断签到失败是否属于出口层问题。
+// 只认「连不上」类错误；429 / 11140 / 上游 5xx 都不算。
+func isEgressError(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	for _, marker := range []string{
+		"egress:",
+		"i/o timeout",
+		"connection refused",
+		"connection reset",
+		"no route to host",
+		"network is unreachable",
+		"socks",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// NextRun 返回该账号下一次自动签到的时间（北京时间）。
+// 用于管理台展示「下次 HH:MM」，让用户知道什么时候会发生，
+// 而不是只能盯着日志猜。规则不存在或未启用时 ok=false。
+//
+// 注意：这里只按规则算出「理论上的下一次」，不反映上游是否已签到、
+// 账号是否被冷却——那些属于运行态，前端另有徽章展示。
+func (r *Runner) NextRun(accountID string, now time.Time) (time.Time, bool) {
+	store, err := r.file.Read()
+	if err != nil {
+		return time.Time{}, false
+	}
+	rules, err := normalizeRules(store.Rules)
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, rule := range rules {
+		if rule.AccountID != accountID {
+			continue
+		}
+		day := now.In(beijing).Format("2006-01-02")
+		at := r.dueAt(rule, day)
+		if at.After(now) {
+			return at, true
+		}
+		// 今天的已经过了，算明天
+		next := now.In(beijing).AddDate(0, 0, 1).Format("2006-01-02")
+		return r.dueAt(rule, next), true
+	}
+	return time.Time{}, false
 }

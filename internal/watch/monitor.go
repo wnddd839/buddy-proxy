@@ -26,7 +26,11 @@ type Sample struct {
 	Ok              bool   `json:"ok"`
 	ReasoningAsked  bool   `json:"reasoningAsked,omitempty"`
 	ReasoningTokens int64  `json:"reasoningTokens,omitempty"`
-	DurationMs      int64  `json:"durationMs,omitempty"`
+	// ReasoningOptional 表示「这个模型/这条请求本来就可能不产出推理」，
+	// 例如客户端没开思考、或模型自身不是推理模型。
+	// 这类样本不计入推理缺失率，否则会把上游的正常降档当成故障。
+	ReasoningOptional bool  `json:"reasoningOptional,omitempty"`
+	DurationMs        int64 `json:"durationMs,omitempty"`
 }
 
 // Config 是监测参数。零值不可用，请用 DefaultConfig 再改。
@@ -42,6 +46,9 @@ type Config struct {
 	ErrorRate float64
 	// 请求了推理但上游没返回推理 token 的比例，超过该值判定「思考字段消失」。
 	ReasoningMissRate float64
+	// ReasoningMissStreak 是「连续多少轮评估都判定推理缺失」才真正告警。
+	// 上游降档 / 短请求本来就可能不回 reasoning_tokens，单轮超阈值不代表故障。
+	ReasoningMissStreak int
 	// 近期耗时中位数超过基线的该倍数判定异常。
 	LatencyFactor float64
 	// 基线耗时低于该值（毫秒）不判耗时，避免本地极快请求被放大。
@@ -68,10 +75,13 @@ func DefaultConfig() Config {
 		MinSample:         20,
 		ErrorRate:         0.25,
 		ReasoningMissRate: 0.50,
-		LatencyFactor:     3.0,
-		MinBaselineMs:     300,
-		Reminder:          6 * time.Hour,
-		WebhookTimeout:    10 * time.Second,
+		// 上游本来就会时有时无地不回 reasoning_tokens（实测基线常年 40% 左右），
+		// 单轮超阈值毫无意义；连续 7 轮都超才算真·能力消失。
+		ReasoningMissStreak: 7,
+		LatencyFactor:       3.0,
+		MinBaselineMs:       300,
+		Reminder:            6 * time.Hour,
+		WebhookTimeout:      10 * time.Second,
 	}
 }
 
@@ -132,6 +142,9 @@ type Monitor struct {
 	next      int
 	reference Metrics
 	problems  problems
+	// reasoningStreak 是「连续多少轮评估判定推理缺失」。
+	// 只有达到 cfg.ReasoningMissStreak 才会把推理问题真正写进 problems。
+	reasoningStreak int
 }
 
 type problems struct {
@@ -213,14 +226,28 @@ func (m *Monitor) Evaluate(ctx context.Context) Status {
 	recent, base := m.splitLocked()
 	metrics := computeMetrics(recent, base)
 	prev := m.status
-	if !prev.OK {
-		// 持续故障不能进入自己的健康基线，否则故障最终会被误判成恢复。
+	// 基线冻结：一旦进入「异常观察期」（已报警、或 streak 已在累计），
+	// 就不能再用实时窗口算出来的基线。
+	//
+	// 否则坏样本会逐渐挤进基线窗口，把基线自己拉到和近期一样的水平，
+	// 差值趋近 0 → 判定自动"恢复" → streak 归零 → 永远报不出来。
+	if !prev.OK || m.reasoningStreak > 0 {
 		metrics.BaselineMissRate = m.reference.BaselineMissRate
 		metrics.BaselineReasoningAsked = m.reference.BaselineReasoningAsked
 		metrics.BaselineLatencyP50 = m.reference.BaselineLatencyP50
 		metrics.BaselineLatencySamples = m.reference.BaselineLatencySamples
 	}
-	m.problems = triage(metrics, m.cfg, m.problems)
+	// 首次判定（或刚从健康态进入观察期）时记录基线快照。
+	if prev.OK && m.reasoningStreak == 0 && !reasoningOverThreshold(metrics, m.cfg) {
+		m.reference = metrics
+	}
+	// 先更新「连续多少轮推理占比超标」，再交给 triage 决定是否成立。
+	if reasoningOverThreshold(metrics, m.cfg) {
+		m.reasoningStreak++
+	} else {
+		m.reasoningStreak = 0
+	}
+	m.problems = triage(metrics, m.cfg, m.problems, m.reasoningStreak)
 	reasons := m.problems.reasons()
 	st := Status{
 		Enabled:     true,
@@ -357,7 +384,13 @@ func computeMetrics(recent, base []Sample) Metrics {
 		if !s.Ok {
 			failed++
 		}
-		if s.Ok && s.ReasoningAsked {
+		// 只统计「客户端确实要求了推理」的样本。
+		//
+		// 历史教训：ReasoningAsked 一度把所有 200 都算进来（包括客户端没要
+		// 推理的普通请求、以及上游按模型策略本来就不产出推理的请求），结果
+		// 缺失率常年虚高在 40%~60%，告警几乎天天误报。
+		// 现在要求 Sample 侧显式置位 ReasoningAsked，且该样本不是「已知不产出」。
+		if s.Ok && s.ReasoningAsked && !s.ReasoningOptional {
 			asked++
 			if s.ReasoningTokens <= 0 {
 				missed++
@@ -377,7 +410,7 @@ func computeMetrics(recent, base []Sample) Metrics {
 	baseAsked, baseMissed := 0, 0
 	baseLat := make([]int64, 0, len(base))
 	for _, s := range base {
-		if s.Ok && s.ReasoningAsked {
+		if s.Ok && s.ReasoningAsked && !s.ReasoningOptional {
 			baseAsked++
 			if s.ReasoningTokens <= 0 {
 				baseMissed++
@@ -394,7 +427,9 @@ func computeMetrics(recent, base []Sample) Metrics {
 	return mt
 }
 
-func triage(mt Metrics, cfg Config, prev problems) problems {
+// triage 依据当前指标判定问题。参数 streak 是调用方维护的「连续命中次数」。
+// 返回的 problems 里只包含「确认成立」的项；推理一项由调用方按 streak 决定。
+func triage(mt Metrics, cfg Config, prev problems, reasoningStreak int) problems {
 	var result problems
 	if mt.Samples < cfg.MinSample {
 		return prev
@@ -402,12 +437,35 @@ func triage(mt Metrics, cfg Config, prev problems) problems {
 	if mt.ErrorRate > cfg.ErrorRate {
 		result.errorRate = fmt.Sprintf("错误率偏高: %.0f%%", mt.ErrorRate*100)
 	}
-	if mt.ReasoningAsked < cfg.MinSample || mt.BaselineReasoningAsked < cfg.MinSample {
-		result.reasoning = prev.reasoning
-	} else if mt.ReasoningMissRate > cfg.ReasoningMissRate &&
-		mt.ReasoningMissRate-mt.BaselineMissRate > 0.2 {
-		result.reasoning = fmt.Sprintf("推理字段缺失: %.0f%%（基线 %.0f%%）", mt.ReasoningMissRate*100, mt.BaselineMissRate*100)
+
+	// 推理占比：只在「真·推理样本」够量时才算，且必须连续多轮成立。
+	//
+	// 为什么不是单轮：上游按模型策略/负载降档时 reasoning_tokens 会时有时无，
+	// 实测基线常年 40% 左右波动。单轮超过阈值毫无诊断价值，只会天天误报。
+	streak := cfg.ReasoningMissStreak
+	if streak <= 0 {
+		streak = 1
 	}
+	enough := mt.ReasoningAsked >= cfg.MinSample && mt.BaselineReasoningAsked >= cfg.MinSample
+	over := enough &&
+		mt.ReasoningMissRate > cfg.ReasoningMissRate &&
+		mt.ReasoningMissRate-mt.BaselineMissRate > 0.2
+	switch {
+	case !enough:
+		// 样本不足（含「这轮压根没有推理请求」）→ 无法判定，既不能报新警，
+		// 也绝不能当作恢复。沿用上一状态，避免故障被「没有观测」悄悄关掉。
+		result.reasoning = prev.reasoning
+	case !over:
+		// 样本足够且明确没超阈值 → 这才是真恢复。
+		result.reasoning = ""
+	case reasoningStreak >= streak:
+		result.reasoning = fmt.Sprintf("推理占比: %.0f%%（基线 %.0f%%，连续 %d 轮）",
+			mt.ReasoningMissRate*100, mt.BaselineMissRate*100, reasoningStreak)
+	default:
+		// 超了但还没到连续轮数门槛 —— 保留上一状态（通常是空的）。
+		result.reasoning = prev.reasoning
+	}
+
 	if mt.LatencySamples < cfg.MinSample || mt.BaselineLatencySamples < cfg.MinSample {
 		result.latency = prev.latency
 	} else if cfg.MinBaselineMs > 0 && mt.BaselineLatencyP50 >= cfg.MinBaselineMs &&
@@ -415,6 +473,15 @@ func triage(mt Metrics, cfg Config, prev problems) problems {
 		result.latency = fmt.Sprintf("耗时异常: P50 %dms（基线 %dms）", mt.LatencyP50, mt.BaselineLatencyP50)
 	}
 	return result
+}
+
+// reasoningOverThreshold 只回答「这一轮推理占比是否超过阈值」，供 streak 计数。
+func reasoningOverThreshold(mt Metrics, cfg Config) bool {
+	if mt.ReasoningAsked < cfg.MinSample || mt.BaselineReasoningAsked < cfg.MinSample {
+		return false
+	}
+	return mt.ReasoningMissRate > cfg.ReasoningMissRate &&
+		mt.ReasoningMissRate-mt.BaselineMissRate > 0.2
 }
 
 func firstReason(reasons []string) string {

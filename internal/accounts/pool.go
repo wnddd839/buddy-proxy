@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/atomicwrite"
@@ -28,19 +29,26 @@ var (
 )
 
 // ModelCooldownError 表示当前模型的所有候选账号仍在上游限流窗口内。
+// 与「账号整体冷却」区分：换模型还有救，不该降级打上游。
 type ModelCooldownError struct {
 	Model string
 	Until int64
 }
 
 func (e *ModelCooldownError) Error() string {
-	return fmt.Sprintf("CodeBuddy model rate limit: model=%s will reset at %s", e.Model, time.UnixMilli(e.Until).UTC().Format(time.RFC3339))
+	return fmt.Sprintf("CodeBuddy model rate limit: model=%s will reset at %s",
+		e.Model, time.UnixMilli(e.Until).UTC().Format(time.RFC3339))
 }
 
 func (e *ModelCooldownError) Unwrap() error { return ErrAccountCoolingDown }
 
+// RetryAfterHeader 给出建议的等待秒数（至少 1 秒）。
 func (e *ModelCooldownError) RetryAfterHeader() string {
-	return fmt.Sprint(max(1, int64((time.Until(time.UnixMilli(e.Until))+time.Second-1)/time.Second)))
+	secs := (e.Until - time.Now().UnixMilli()) / 1000
+	if secs < 1 {
+		secs = 1
+	}
+	return fmt.Sprintf("%d", secs)
 }
 
 func (a *Account) UnmarshalJSON(data []byte) error {
@@ -145,6 +153,29 @@ type Pool struct {
 	stopCh    chan struct{}
 	doneCh    chan struct{}
 	closeOnce sync.Once
+
+	// quotaFloorMilli 是选号时积分低于该值的账号直接跳过（0 = 不启用）。
+	// 存「积分×1000」的整数（atomic 无 Float64 类型），管理台热更新时写入。
+	quotaFloorMilli atomic.Int64
+}
+
+// SetQuotaFloor 热更新积分阈值（并发安全）。负值按 0 处理。
+func (p *Pool) SetQuotaFloor(credits float64) {
+	if p == nil {
+		return
+	}
+	if credits < 0 {
+		credits = 0
+	}
+	p.quotaFloorMilli.Store(int64(credits * 1000))
+}
+
+// QuotaFloor 返回当前阈值（积分）。
+func (p *Pool) QuotaFloor() float64 {
+	if p == nil {
+		return 0
+	}
+	return float64(p.quotaFloorMilli.Load()) / 1000
 }
 
 func NewPool(path string) *Pool {
@@ -536,13 +567,28 @@ const quotaCacheMaxAge = 6 * time.Hour
 
 // QuotaBlocked reports whether cached billing says the account is exhausted until QuotaResetAt.
 func QuotaBlocked(account Account, nowMillis int64) bool {
+	return quotaBlockedFloor(account, nowMillis, 0)
+}
+
+// QuotaBelowFloor 报告账号积分是否低于阈值（floor>0 时启用）。
+// 低于阈值 = 不再参与选号，即使还没到 0——避免把号打到负数或触发上游风控。
+// 与 QuotaBlocked 同一数据源（缓存的 billing credits）与同一时效约束。
+func QuotaBelowFloor(account Account, nowMillis int64, floor float64) bool {
+	if floor <= 0 {
+		return false
+	}
+	return quotaBlockedFloor(account, nowMillis, floor)
+}
+
+// quotaBlockedFloor 是两者共用的实现：floor=0 等价于「只在耗尽时拦截」。
+func quotaBlockedFloor(account Account, nowMillis int64, floor float64) bool {
 	if account.QuotaUnlimited {
 		return false
 	}
 	if account.QuotaRemaining == nil {
 		return false
 	}
-	if *account.QuotaRemaining > 0 {
+	if *account.QuotaRemaining > floor {
 		return false
 	}
 	if account.QuotaResetAt <= nowMillis {
@@ -562,6 +608,18 @@ func unavailableUntil(account Account, nowMillis int64, model string) int64 {
 	return until
 }
 
+// unavailableUntilFloor 同上，但把「积分低于 floor」也视为不可用。
+// floor<=0 时与 unavailableUntil 等价。
+func unavailableUntilFloor(account Account, nowMillis int64, model string, floor float64) int64 {
+	until := unavailableUntil(account, nowMillis, model)
+	if QuotaBelowFloor(account, nowMillis, floor) {
+		// 没有上游重置时间可用（还没到 0），保守挡 10 分钟，
+		// 到点后会重新探测余额（refreshCandidateQuotas）。
+		until = max(until, nowMillis+int64(10*time.Minute/time.Millisecond))
+	}
+	return until
+}
+
 func clearQuotaCache(account *Account) {
 	account.QuotaRemaining = nil
 	account.QuotaUnlimited = false
@@ -570,6 +628,11 @@ func clearQuotaCache(account *Account) {
 }
 
 func (p *Pool) Select(opts SelectOptions) (Selection, error) {
+	floor := p.QuotaFloor()
+	return p.selectFloor(opts, floor)
+}
+
+func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err := p.ensureLoadedLocked(); err != nil {
@@ -591,7 +654,7 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 			if opts.Site != "" && config.NormalizeSite(account.Site) != config.NormalizeSite(opts.Site) {
 				return Selection{}, fmt.Errorf("CodeBuddy account site mismatch: account=%s, configured=%s", account.Site, config.NormalizeSite(opts.Site))
 			}
-			if opts.CheckCooldown && unavailableUntil(account, now, opts.Model) > now {
+			if opts.CheckCooldown && unavailableUntilFloor(account, now, opts.Model, floor) > now {
 				return Selection{}, fmt.Errorf("%w: %s", ErrAccountCoolingDown, opts.AccountID)
 			}
 			store.Accounts[i].LastSelectedAt = now
@@ -619,7 +682,9 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 	var (
 		fallbackIdx   = -1
 		fallbackUntil int64
-		modelResetAt  int64
+		// modelResetAt 记录「该模型」最早解除限流的时刻，用于区分
+		// 「号池真空了」与「只是这个模型在限流窗口内」。
+		modelResetAt int64
 	)
 	for offset := 0; offset < len(store.Accounts); offset++ {
 		idx := (store.NextIndex + offset) % len(store.Accounts)
@@ -633,14 +698,15 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 		if _, skip := exclude[account.ID]; skip {
 			continue
 		}
-		// 上游已明确限制该模型，不能借“全冷却降级”提前再次请求。
+		// 上游已明确限制该模型：不能借「全冷却降级」提前再打一次上游，
+		// 只记录解除时刻，供调用方返回 Retry-After。
 		if until := account.ModelCooldowns[opts.Model]; until > now {
 			if modelResetAt == 0 || until < modelResetAt {
 				modelResetAt = until
 			}
 			continue
 		}
-		if blockedUntil := unavailableUntil(account, now, opts.Model); blockedUntil > now {
+		if blockedUntil := unavailableUntilFloor(account, now, opts.Model, floor); blockedUntil > now {
 			if blockedUntil > 0 && (fallbackIdx < 0 || blockedUntil < fallbackUntil) {
 				fallbackIdx = idx
 				fallbackUntil = blockedUntil
@@ -652,6 +718,10 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 		p.mem = store
 		p.markDirtyLocked()
 		return Selection{Source: "pool", Account: store.Accounts[idx], Index: idx, Store: cloneStore(store), Model: opts.Model}, nil
+	}
+	// 全部候选都只是「这个模型」在限流窗口内 ⇒ 不降级、明确报错。
+	if modelResetAt > 0 && fallbackIdx < 0 {
+		return Selection{}, &ModelCooldownError{Model: opts.Model, Until: modelResetAt}
 	}
 	if fallbackIdx >= 0 {
 		store.Accounts[fallbackIdx].LastSelectedAt = now
@@ -666,9 +736,6 @@ func (p *Pool) Select(opts SelectOptions) (Selection, error) {
 			BypassedCooldown: true,
 			Model:            opts.Model,
 		}, nil
-	}
-	if modelResetAt > 0 {
-		return Selection{}, &ModelCooldownError{Model: opts.Model, Until: modelResetAt}
 	}
 	if opts.Site != "" {
 		return Selection{}, fmt.Errorf("%w for site=%s", ErrNoAccounts, config.NormalizeSite(opts.Site))
@@ -687,6 +754,7 @@ func quotaScore(account Account) (float64, bool) {
 }
 
 func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site, model string, exclude map[string]struct{}) (Selection, bool) {
+	floor := p.QuotaFloor()
 	bestIdx := -1
 	var bestRemaining float64
 	hasQuota := false
@@ -700,7 +768,7 @@ func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site, model strin
 		if _, skip := exclude[account.ID]; skip {
 			continue
 		}
-		if unavailableUntil(account, now, model) > now {
+		if unavailableUntilFloor(account, now, model, floor) > now {
 			continue
 		}
 		remaining, ok := quotaScore(account)
@@ -1091,6 +1159,15 @@ type Summary struct {
 	QuotaResetAt        int64    `json:"quotaResetAt,omitempty"`
 	QuotaCheckedAt      int64    `json:"quotaCheckedAt,omitempty"`
 	QuotaExhausted      bool     `json:"quotaExhausted"`
+
+	// 签到状态由调用方（服务端）注入：账号池本身不读签到日志，
+	// 保持 accounts 包与 checkin 包互不依赖。
+	// 取值 none / done / already / failed。
+	CheckinToday    string `json:"checkinToday,omitempty"`
+	CheckinCount48h int    `json:"checkinCount48h"`
+	CheckinLastErr  string `json:"checkinLastError,omitempty"`
+	// CheckinNextAt 是下一次自动签到的时刻（毫秒时间戳）。0 表示未启用规则。
+	CheckinNextAt int64 `json:"checkinNextAt,omitempty"`
 
 	ModelCooldowns map[string]int64 `json:"modelCooldowns,omitempty"`
 }

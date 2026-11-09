@@ -20,6 +20,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/concurrency"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/egress"
+	"github.com/wnddd839/codebuddy-proxy/internal/modelroute"
 	"github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
@@ -31,7 +32,7 @@ import (
 )
 
 const (
-	modelsCacheTTL = 60 * time.Second
+	modelsCacheTTL = 10 * time.Minute
 	probeCacheTTL  = 20 * time.Second
 	probeTimeout   = 4 * time.Second
 	// defaultMaxAccountRetries 单请求最多尝试的账号数（含换号重试），防止无限递归。
@@ -51,13 +52,16 @@ var (
 	// first content" = 已收到 200 头但上游在任何正文/工具增量之前掐断流
 	// （provider.readSSE 标记，思考流不算增量）。两者客户端都尚未收到可消费的
 	// 内容，重放不可见，换号重拨即可自愈。
-	reRetryNextAccount = regexp.MustCompile(`(?i)\b429\b|\b502\b|\b503\b|\b504\b|rate.?limit|too many requests|site mismatch|invalid request|transport error|stream reset before first content|without terminal event before first content|stream stalled before first content`)
+	reRetryNextAccount = regexp.MustCompile(`(?i)\b429\b|\b500\b|\b502\b|\b503\b|\b504\b|rate.?limit|too many requests|site mismatch|invalid request|transport error|stream reset before first content`)
 )
 
 // maxResetReplays 慢掐重放预算：最多 2 次重放（共 3 发）。每次重放都会让思考
 // 阶段从头再来（实测 15-20 分钟墙钟），并对冷缓存重烧全量 prompt（实测一条链
 // 把缓存命中率从 99% 打到 6.5%）。遍历所有账号能把单个请求拼成数小时；超预算
-// 即把最后一次错误交还客户端。
+// re429 匹配配额/限流类状态码与上游错误码，供跨区判定使用。
+// 与 reRetryNextAccount 分开：那个决定「换不换号」，这个决定「换不换区」。
+var re429 = regexp.MustCompile(`(?i)\b429\b|\b6004\b|rate.?limit|too many requests|quota.?exhausted|使用量已超出频率限制`)
+
 const maxResetReplays = 2
 
 type Stats struct {
@@ -103,10 +107,15 @@ type OAuthSession struct {
 }
 
 type Service struct {
-	Pool     *accounts.Pool
-	Provider *provider.Client
-	OAuth    *oauth.Client
-	// oauthGlobal 是国际站 OAuth 专用客户端；nil 表示未配置出口。
+	Pool *accounts.Pool
+	// ModelRoutes 是跨区模型路由表（proxy-model-routes.json）。
+	// 命中时改写请求的模型名与站点；nil 表示未加载（跳过路由）。
+	ModelRoutes *modelroute.File
+	Provider    *provider.Client
+	OAuth       *oauth.Client
+	// oauthGlobal 是国际站专用的 OAuth 客户端（走 OAuthProxy 出口）。
+	// 与 OAuth 分开是因为 oauth.Client 会记住上一次 state 做去重，
+	// 两个站点的 state 空间不能混；nil 表示未配置出口，回退到 OAuth。
 	oauthGlobal *oauth.Client
 	Models      *models.Lister
 	Log         *slog.Logger
@@ -169,6 +178,10 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 	if cfg.Watch.Enabled {
 		svc.Watch = watch.New(cfg.Watch, logger, nil)
 	}
+	// 国际站 OAuth 必须走海外出口：www.codebuddy.ai 从大陆直连会 TLS 握手超时。
+	// p.For 按 proxy URL 缓存 http.Client，重复构造不会新建连接池。
+	// OAuth 走独立出口（可选）。代理串无效时必须退回默认客户端，
+	// 不能造出一个连不上的 fail-closed 客户端 —— 那样整个 OAuth 流程会挂死。
 	if proxy := strings.TrimSpace(cfg.OAuthProxy); proxy != "" {
 		if _, err := egress.Parse(proxy); err != nil {
 			logger.Error("invalid CODEBUDDY_PROXY_OAUTH_PROXY; global OAuth uses the default client", "error", err.Error())
@@ -176,6 +189,7 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 			svc.oauthGlobal = oauth.NewClient(p.For(proxy))
 		}
 	}
+	// 并发观测始终启用：只做计数，成本可忽略。
 	svc.modelsCache = map[string]modelsCacheEntry{}
 	svc.probeCache = map[string]provider.Reachability{}
 	svc.storeConfig(cfg)
@@ -241,6 +255,31 @@ func (s *Service) SetAPIKey(key string) config.Config {
 }
 
 // SetAPIKeys 热更新 CODEBUDDY_PROXY_API_KEYS 绑定表，不改主 Key。
+// BehaviorSwitches 是可在管理台热切换的行为开关。
+// 用结构体而不是 4 个独立 setter：这些开关总是一起读、一起写。
+type BehaviorSwitches struct {
+	CheckinAllowDirectFallback bool
+	QuotaFloorCredits          float64
+	// 签到失败重试：间隔 0 = 不重试。
+	CheckinRetryInterval time.Duration
+	CheckinRetryMax      int
+}
+
+// SetBehaviorSwitches 更新运行中的行为开关（.env 由调用方负责持久化）。
+func (s *Service) SetBehaviorSwitches(next BehaviorSwitches) config.Config {
+	cfg := s.updateConfig(func(c *config.Config) {
+		c.CheckinAllowDirectFallback = next.CheckinAllowDirectFallback
+		c.QuotaFloorCredits = next.QuotaFloorCredits
+		c.CheckinRetryInterval = next.CheckinRetryInterval
+		c.CheckinRetryMax = next.CheckinRetryMax
+	})
+	// 积分阈值直接作用于选号，热更新立即生效。
+	if s.Pool != nil {
+		s.Pool.SetQuotaFloor(next.QuotaFloorCredits)
+	}
+	return cfg
+}
+
 func (s *Service) SetAPIKeys(keys []config.APIKeyBinding) config.Config {
 	copied := append([]config.APIKeyBinding(nil), keys...)
 	return s.updateConfig(func(c *config.Config) {
@@ -281,11 +320,15 @@ func ResolveProviderModel(model string) ProviderModel {
 }
 
 type CompleteOptions struct {
-	AccountID           string
-	FixedAccount        bool // API Key 的硬约束，不允许清钉或换号降级
-	SessionKey          string
-	SessionLabel        string
-	Site                string // 本请求号池区域；空则回落进程默认 SITE
+	AccountID    string
+	FixedAccount bool // API Key 的硬约束，不允许清钉或换号降级
+	SessionKey   string
+	SessionLabel string
+	Site         string // 本请求号池区域；空则回落进程默认 SITE
+	// SiteExplicit 表示站点是客户端显式指定的（cn:/global: 模型前缀，或 X-Site 请求头）。
+	// 显式指定站点时绝不套用路由表：客户端要哪个区就给它哪个区，
+	// 不能被「某区→某区」的规则悄悄改到另一个区去。
+	SiteExplicit        bool
 	Model               string
 	Messages            []map[string]any
 	Stream              bool
@@ -309,6 +352,8 @@ type CompleteOptions struct {
 	// EmptyTurnReplays 空 completed 回合已重放次数（独立于 RetryDepth，
 	// 避免 429/流重置/OAuth 刷新等无关失败提前耗尽）。
 	EmptyTurnReplays int
+	// RoutedFrom 记录路由改写前的原始模型名（未命中路由时为空）。
+	RoutedFrom string
 }
 
 // ImageOptions is one pooled image generation or edit.
@@ -401,6 +446,31 @@ func SessionPinKey(session, site string) string {
 
 func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (CompleteResult, error) {
 	opts.Model = strutil.First(opts.Model, "auto")
+	// 模型路由：用户在管理台配置「源站点 + 源模型名 → 目标站点 + 目标模型名」。
+	//
+	// 只做**固定改写**，不做任何自动回退：命中即改写到规则指定的站点与模型，
+	// 那个站点没有可用号就直接失败，绝不会偷偷换到别的站点去。
+	// 同 match 配了多条时只认第一条（其余忽略）。
+	//
+	// 两条硬规则：
+	//  1. 模型名带 cn:/global: 前缀（客户端硬钉站点）时完全不套用路由；
+	//  2. 规则必须写明源站点，只有请求本来就落在该站点时才改写。
+	if s.ModelRoutes != nil && !opts.FixedAccount && !opts.SiteExplicit {
+		from := config.NormalizeSite(s.requestSite(opts))
+		if chain := s.ModelRoutes.Chain(from, opts.Model); len(chain) > 0 {
+			rule := chain[0]
+			orig := opts.Model
+			if t := strings.TrimSpace(rule.Target); t != "" {
+				opts.Model = t
+			}
+			if site := strings.TrimSpace(rule.Site); site != "" {
+				opts.Site = config.NormalizeSite(site)
+			}
+			opts.RoutedFrom = orig
+			s.Log.Info("model route applied",
+				"fromSite", from, "match", orig, "toSite", opts.Site, "target", opts.Model)
+		}
+	}
 	if opts.FixedAccount && opts.AccountID == "" {
 		return CompleteResult{}, errors.New("固定账号请求缺少账号约束")
 	}
@@ -465,9 +535,11 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if pinKey != "" {
 		chatOpts.ConversationID = s.Conversations.ID(pinKey+"\x1e"+chatOpts.Product, account.ID)
 	}
+	// 并发观测：在这里打点，才能把「限流触发瞬间的在途数」和真实请求绑定。
 	endFlight := s.Concurrency.Begin(account.ID, account.Label)
 	result, err := s.Provider.Complete(ctx, chatOpts)
 	if err != nil {
+		// 必须在 endFlight 之前记录：此时本次请求仍在途，才能反映「限流触发瞬间的真实并发」。
 		s.recordRateLimit(account, err)
 	}
 	endFlight(err == nil)
@@ -483,47 +555,52 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			return CompleteResult{Result: result, Account: accounts.SummarizeAccount(account), AccountID: account.ID}, err
 		}
 		selection.ModelRateLimited = billing.IsModelRateLimitError(err)
-		// 传输层失败且该站点没有其它可选账号：换号必然耗尽预算、把唯一账号
-		// 打进冷却。改为同号重连，仍受 maxResetReplays 统一预算约束。
-		if isTransportReplayError(err.Error()) && opts.ResetReplays < maxResetReplays &&
-			!s.hasAlternativeAccount(site, account.ID, opts.Model, opts.ExcludeIDs) {
-			s.Log.Warn("retrying same account after transport error (no alternative candidate)",
-				"accountId", account.ID, "site", site, "attempt", opts.ResetReplays+1, "error", err.Error())
+		// 传输层失败（建连 / 首内容前断流）⇒ 用**同一账号**重连一次。
+		//
+		// 背景：机场出口（尤其日本节点）单次连接会突然 EOF，实测同一节点
+		// 连打 6 次可能挂 1-2 次。重连一次通常就过。
+		// 这里只重连、不换号——站内换号重试已经移除，换号只会烧额度并让
+		// 会话亲和失效。只对「首内容前」的失败生效（Delivered 已提前返回）。
+		if isTransportReplayError(err.Error()) && opts.ResetReplays < maxResetReplays {
 			opts.ResetReplays++
 			opts.RetryDepth++
 			opts.AccountID = account.ID
+			s.Log.Warn("retrying same account after transport error",
+				"accountId", account.ID, "site", site, "attempt", opts.ResetReplays, "error", err.Error())
 			return s.CompleteFromPool(ctx, opts)
 		}
-		if s.shouldRetryNextAccount(err, selection, opts) {
-			if pinKey != "" {
-				s.Pins.Forget(pinKey)
-			}
-			cooldown := s.resolveFailureCooldown(ctx, account, err)
-			_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
-			s.refreshCandidateQuotas(ctx, append(append([]string{}, opts.ExcludeIDs...), account.ID), false, site)
-			s.Log.Warn("retrying codebuddy request with next account", "accountId", account.ID, "error", err.Error())
+		// 额度类失败（429 / 6004 / 额度耗尽）⇒ 换下一个账号再试。
+		//
+		// 只对这一类换号：账号额度用尽是账号状态，换一个还有额度的号是正确做法；
+		// 而且只有试遍所有候选，才能区分「号池空了」与「这个模型在限流窗口内」，
+		// 后者要返回带 Retry-After 的冷却提示而不是继续打上游。
+		// 其他错误（5xx / 111xx / 传输层）一律不换号，直接把错误返回客户端。
+		if !opts.FixedAccount && isQuotaExhausted(err) {
 			next := append(append([]string{}, opts.ExcludeIDs...), account.ID)
-			opts.ExcludeIDs = next
-			opts.AccountID = ""
-			opts.RetryDepth++
-			// 传输层失败（建连/响应头前断开）与慢掐共用重放预算：
-			// 否则四个账号全部 connection refused 会实际发出四次请求（而非最多三次）。
-			if isTransportReplayError(err.Error()) {
-				opts.ResetReplays++
-			}
-			// 空 completed 回合用独立预算，避免 429 等无关失败提前耗尽。
-			if strings.Contains(strings.ToLower(err.Error()), "empty completed turn") {
-				opts.EmptyTurnReplays++
-			}
-			retried, retryErr := s.CompleteFromPool(ctx, opts)
-			if retryErr != nil {
-				// 不要用「无可用账号 / 重试深度超限」掩盖真实上游错误（429/503 等）。
-				if isRetryExhausted(retryErr) {
-					return CompleteResult{}, err
+			if id, ok := s.nextSelectableAccount(site, opts.Model, next); ok {
+				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+				if pinKey != "" {
+					s.Pins.Forget(pinKey)
 				}
-				return CompleteResult{}, retryErr
+				s.Log.Warn("retrying with next account after quota failure",
+					"from", account.ID, "to", id, "site", site, "model", opts.Model, "error", err.Error())
+				opts.ExcludeIDs = next
+				opts.AccountID = id
+				opts.RetryDepth++
+				return s.CompleteFromPool(ctx, opts)
 			}
-			return retried, nil
+		}
+		// 空 completed 回合（上游发了收尾帧但没有任何内容）：同一账号重放一次。
+		// 这是上游的收尾帧不可信，不是账号问题，所以不罚号。
+		// 独立预算（EmptyTurnReplays），避免 429/流重置等无关失败提前把它耗尽。
+		if strings.Contains(strings.ToLower(err.Error()), "empty completed turn") &&
+			opts.EmptyTurnReplays == 0 {
+			opts.EmptyTurnReplays++
+			opts.RetryDepth++
+			opts.AccountID = account.ID
+			s.Log.Warn("retrying same account after empty completed turn",
+				"accountId", account.ID, "site", site, "error", err.Error())
+			return s.CompleteFromPool(ctx, opts)
 		}
 		if !opts.RefreshRetry && s.shouldRefreshAfterFailure(err, selection) {
 			if refreshed, refreshErr := s.refreshSelected(ctx, selection, true); refreshErr == nil && refreshed.Account.BearerToken != account.BearerToken {
@@ -607,17 +684,13 @@ func (s *Service) refreshSelected(ctx context.Context, selection accounts.Select
 	if !oauth.ShouldRefresh(account, force, s.Config().RefreshWindow, time.Now()) {
 		return selection, nil
 	}
-	// 未配置 global 专用出口时保持账号级出口；配置了则以专用出口为准。
-	httpClient := s.Provider.For(account.Proxy)
-	if config.NormalizeSite(strutil.First(account.Site, s.Config().Site)) == "global" && s.oauthGlobal != nil {
-		httpClient = s.oauthGlobal.HTTP
-	}
 	token, err := s.OAuth.Refresh(ctx, oauth.RefreshOptions{
 		Site:         strutil.First(account.Site, s.Config().Site),
 		BaseURL:      strutil.First(account.BaseURL, s.Config().BaseURL),
 		AccessToken:  account.BearerToken,
 		RefreshToken: account.RefreshToken,
-		HTTPClient:   httpClient,
+		// 刷新令牌也走账号自己的出口：同一账号不该在两个 IP 之间跳。
+		HTTPClient: s.Provider.For(account.Proxy),
 	})
 	if err != nil {
 		if force || (account.TokenExpiresAt > 0 && account.TokenExpiresAt <= time.Now().UnixMilli()) {
@@ -659,67 +732,16 @@ func (s *Service) shouldRefreshAfterFailure(err error, selection accounts.Select
 	return reAuthFailure.MatchString(msg)
 }
 
-func (s *Service) shouldRetryNextAccount(err error, selection accounts.Selection, opts CompleteOptions) bool {
-	if opts.FixedAccount {
-		return false
-	}
-	if selection.Account.ID == "" {
-		return false
-	}
-	if slices.Contains(opts.ExcludeIDs, selection.Account.ID) {
-		return false
-	}
-	if s.shouldRefreshAfterFailure(err, selection) {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	// 11128 为渠道/策略限制，换号重试通常无效（客户端指纹相同）。
-	if strings.Contains(msg, "11128") || strings.Contains(msg, "unapproved channel") {
-		return false
-	}
-	// 11101/11102 为请求形态或模型不可用，换号无意义。
-	if strings.Contains(msg, "11101") || strings.Contains(msg, "11102") {
-		return false
-	}
-	// 11140 为区域/策略非法请求，换号通常无效。
-	if strings.Contains(msg, "11140") || strings.Contains(msg, "request illegal") {
-		return false
-	}
-	// 空 completed 回合（软截断）：只允许一次换号重放。推理退化型空回合会复发
-	// （公开实测 ~29%），连环换号只是烧客户端耐心；第二次仍空即 loud fail。
-	// 不罚号——说谎的是上游的收尾帧，不是账号。
-	if strings.Contains(msg, "empty completed turn") {
-		return opts.EmptyTurnReplays == 0
-	}
-	if billing.IsQuotaExhaustedError(err) {
-		return true
-	}
-	// 限制慢掐重放链：每次重放可烧 15-20 分钟墙钟（思考从头再来），超预算即
-	// 停止换号、把最后一次错误交给客户端。
-	// 传输层失败（transport error）与慢掐同属"传输层重放"，共用同一预算：
-	// 否则四个账号全部 connection refused 会实际发出四次请求（而非最多三次）。
-	if isTransportReplayError(msg) {
-		if opts.ResetReplays >= maxResetReplays {
-			return false
-		}
-	}
-	return reRetryNextAccount.MatchString(err.Error()) || isRetryable500(msg)
-}
-
-// isRetryable500 只把已知的瞬时 500（invoke model error）纳入换号重试，
-// 其余 500 视为持续性错误直接返回，避免无差别换号放大请求。
-func isRetryable500(msg string) bool {
-	return strings.Contains(msg, "invoke model error")
-}
-
-// isTransportReplayError 判断是否属于"传输层可重放"失败：建连失败、
-// 首内容前被重置、无终止帧的 FIN、上游停滞。四类共用 maxResetReplays 预算，
-// 否则多账号场景会按账号数放大请求数。
+// isTransportReplayError 判断是否属于"传输层可重放"失败：建连失败
+// （transport error）与流在首内容前被重置（stream reset before first content）。
+// 两类共同消耗 maxResetReplays 预算——否则多账号场景会按账号数放大请求数。
 func isTransportReplayError(msg string) bool {
 	lower := strings.ToLower(msg)
 	return strings.Contains(lower, "transport error") ||
 		strings.Contains(lower, "stream reset before first content") ||
+		// 无终止帧就结流（上游 FIN 半截）：首内容前等同建连失败，可安全换号重放。
 		strings.Contains(lower, "without terminal event before first content") ||
+		// 上游停滞（看门狗掐断）：首内容前同样可安全换号。
 		strings.Contains(lower, "stream stalled before first content")
 }
 
@@ -773,10 +795,49 @@ func isRetryExhausted(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, accounts.ErrNoAccounts) || errors.Is(err, accounts.ErrAccountCoolingDown) || errors.Is(err, errRetryDepthExceeded) {
+	if errors.Is(err, accounts.ErrNoAccounts) || errors.Is(err, errRetryDepthExceeded) {
 		return true
 	}
 	return strings.Contains(err.Error(), "no enabled CodeBuddy accounts")
+}
+
+// hasAlternativeAccount 判断该站点除当前账号外还有没有能用的候选。
+//
+// 只读实现（不走 Pool.Select）：Select 会写 LastSelectedAt，拿它做探测会污染
+// 选号统计。冷却中的账号不算候选 —— 换过去也会被 Select 拒掉，等于没有。
+func (s *Service) hasAlternativeAccount(site, currentID string, exclude []string) bool {
+	if s == nil || s.Pool == nil {
+		return false
+	}
+	store, err := s.Pool.Read()
+	if err != nil {
+		return false
+	}
+	skip := make(map[string]struct{}, len(exclude)+1)
+	skip[currentID] = struct{}{}
+	for _, id := range exclude {
+		skip[id] = struct{}{}
+	}
+	now := time.Now().UnixMilli()
+	want := config.NormalizeSite(site)
+	for _, item := range store.Accounts {
+		if _, ok := skip[item.ID]; ok {
+			continue
+		}
+		if !item.Enabled || !accounts.HasCredentials(item) {
+			continue
+		}
+		if config.NormalizeSite(item.Site) != want {
+			continue
+		}
+		// 与 listSelectableAccounts 同口径：冷却中或额度耗尽的号即使存在，
+		// Select 也选不到（只剩全冷却兜底），对本次重试等于没有候选。
+		if accounts.InCooldown(item, now) || accounts.QuotaBlocked(item, now) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.Account, err error) time.Duration {
@@ -877,18 +938,6 @@ func (s *Service) listSelectableAccounts(exclude []string, site string) []accoun
 		out = append(out, account)
 	}
 	return out
-}
-
-// hasAlternativeAccount 判断除当前账号外是否还有可换的候选。
-// 只读 Pool.Read，不用 Select，避免探测污染 LastSelectedAt。
-func (s *Service) hasAlternativeAccount(site, currentID, model string, exclude []string) bool {
-	now := time.Now().UnixMilli()
-	for _, account := range s.listSelectableAccounts(append(append([]string{}, exclude...), currentID), site) {
-		if account.ModelCooldowns[model] <= now {
-			return true
-		}
-	}
-	return false
 }
 
 // needsQuotaRefresh 任一可选账号缺快照或超过 TTL，新会话就要补探，避免只查过部分号时 PreferQuota 看不见更厚的号。
@@ -1144,7 +1193,6 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 			EnterpriseID:        account.EnterpriseID,
 			TenantID:            account.TenantID,
 			DepartmentFullName:  account.DepartmentFullName,
-			Fresh:               fresh,
 			APIEndpoint:         provider.AlignAPIEndpoint(product, account.APIEndpoint),
 			ChatCompletionsPath: strutil.First(account.ChatCompletionsPath, s.Config().ChatCompletionsPath),
 		})
@@ -1486,17 +1534,13 @@ func (s *Service) resetOAuthSessionLocked(site, label, publicOrigin string) {
 	s.oauth.CallbackURL = fmt.Sprintf("%s/direct-admin/codebuddy/oauth/callback?id=%s&token=%s", strings.TrimRight(publicOrigin, "/"), url.QueryEscape(s.oauth.ID), url.QueryEscape(s.oauth.Token))
 }
 
-// OAuthHTTPFor 返回该站点 OAuth 使用的 HTTP 客户端；未配置专用出口时返回 nil。
-func (s *Service) OAuthHTTPFor(site string) *http.Client {
-	if s != nil && config.NormalizeSite(site) == "global" && s.oauthGlobal != nil {
-		return s.oauthGlobal.HTTP
-	}
-	return nil
-}
-
-// oauthFor 为国际站 OAuth 选择专用出口客户端，其余沿用默认客户端。
+// oauthFor 按站点选 OAuth 客户端：国际站走专用海外出口，其余沿用默认客户端。
+// 没有配置出口时一律回退默认，保证国内站行为与之前完全一致。
 func (s *Service) oauthFor(site string) *oauth.Client {
-	if s != nil && config.NormalizeSite(site) == "global" && s.oauthGlobal != nil {
+	if s == nil {
+		return nil
+	}
+	if config.NormalizeSite(site) == "global" && s.oauthGlobal != nil {
 		return s.oauthGlobal
 	}
 	return s.OAuth
@@ -1518,7 +1562,11 @@ func (s *Service) StartOAuth(ctx context.Context, site, label, publicOrigin stri
 	sessionSite := s.oauth.Site
 	s.mu.Unlock()
 
-	started, err := s.oauthFor(sessionSite).Start(ctx, sessionSite)
+	client := s.oauthFor(sessionSite)
+	if client == nil {
+		client = s.OAuth
+	}
+	started, err := client.Start(ctx, sessionSite)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.oauth == nil || s.oauth.ID != sessionID {
@@ -1550,7 +1598,11 @@ func (s *Service) PollOAuth(ctx context.Context, publicOrigin string) (map[strin
 		defer s.mu.Unlock()
 		return s.oauthPayloadLocked(publicOrigin), nil
 	}
-	polled, err := s.oauthFor(session.Site).Poll(ctx, session.Site, session.AuthState)
+	client := s.oauthFor(session.Site)
+	if client == nil {
+		client = s.OAuth
+	}
+	polled, err := client.Poll(ctx, session.Site, session.AuthState)
 	if err != nil {
 		s.mu.Lock()
 		s.oauth.Status = "failed"
@@ -1652,4 +1704,113 @@ func oauthMessage(session OAuthSession) string {
 	default:
 		return "尚未开始 CodeBuddy OAuth 登录。"
 	}
+}
+
+// otherSite 返回与 site 相对的另一个站点。只有 domestic / global 两站。
+func otherSite(site string) string {
+	if config.NormalizeSite(site) == "domestic" {
+		return "global"
+	}
+	return "domestic"
+}
+
+// siteHasUsableAccount 报告目标站点是否存在「启用 + 有凭据 + 未冷却 + 未超额」的号。
+// 不做实际选号，只用来避免无意义的跨区（否则会把错误信息换成更有误导性的
+// no accounts for site=xxx）。
+func (s *Service) siteHasUsableAccount(site, model string) bool {
+	if s == nil || s.Pool == nil {
+		return false
+	}
+	store, err := s.Pool.Read()
+	if err != nil {
+		return false
+	}
+	now := time.Now().UnixMilli()
+	floor := s.Pool.QuotaFloor()
+	want := config.NormalizeSite(site)
+	for _, item := range store.Accounts {
+		if !item.Enabled || !accounts.HasCredentials(item) {
+			continue
+		}
+		if config.NormalizeSite(item.Site) != want {
+			continue
+		}
+		if accounts.InCooldown(item, now) || accounts.QuotaBlocked(item, now) || accounts.QuotaBelowFloor(item, now, floor) {
+			continue
+		}
+		if until := item.ModelCooldowns[model]; until > now {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// isRetryable500 只把已知的瞬时 500（invoke model error）纳入换号重试，
+// 其余 500 视为持续性错误直接返回，避免无差别换号放大请求。
+func isRetryable500(msg string) bool {
+	return strings.Contains(msg, "invoke model error")
+}
+
+// OAuthHTTPFor 返回该站点 OAuth 使用的 HTTP 客户端；未配置专用出口时返回 nil。
+func (s *Service) OAuthHTTPFor(site string) *http.Client {
+	if s != nil && config.NormalizeSite(site) == "global" && s.oauthGlobal != nil {
+		return s.oauthGlobal.HTTP
+	}
+	return nil
+}
+
+// isQuotaExhausted 判断失败是否属于「这个账号额度用尽」类。
+// 只认额度/限流：换号确实有用；其余错误换号只是烧配额。
+func isQuotaExhausted(err error) bool {
+	if err == nil {
+		return false
+	}
+	if billing.IsQuotaExhaustedError(err) || billing.IsModelRateLimitError(err) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "6004") ||
+		strings.Contains(msg, "quota")
+}
+
+// nextSelectableAccount 在指定站点/模型上找一个「未排除且没在冷却」的账号。
+// 找不到就返回 false —— 调用方据此返回冷却提示而不是继续打上游。
+func (s *Service) nextSelectableAccount(site, model string, excludeIDs []string) (string, bool) {
+	if s == nil || s.Pool == nil {
+		return "", false
+	}
+	store, err := s.Pool.Read()
+	if err != nil {
+		return "", false
+	}
+	now := time.Now().UnixMilli()
+	exclude := make(map[string]struct{}, len(excludeIDs))
+	for _, id := range excludeIDs {
+		exclude[id] = struct{}{}
+	}
+	for _, account := range store.Accounts {
+		if !account.Enabled || !accounts.HasCredentials(account) {
+			continue
+		}
+		if config.NormalizeSite(account.Site) != config.NormalizeSite(site) {
+			continue
+		}
+		if _, skip := exclude[account.ID]; skip {
+			continue
+		}
+		// 跳过仍在冷却的（含模型级冷却）
+		blocked := account.CooldownUntil
+		if until := account.ModelCooldowns[model]; until > blocked {
+			blocked = until
+		}
+		if blocked > now {
+			continue
+		}
+		return account.ID, true
+	}
+	return "", false
 }

@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.02-watch-import-egress-concurrency-shutdown-oauth-models"
+const UIRevision = "2026.11.08-account-panel-fix"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -144,6 +144,22 @@ h1{
 .checkin-rule{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--fg-10)}
 .checkin-rule label{display:flex;align-items:center;gap:6px;font-size:12px}
 .checkin-rule input[type=text]{width:88px;padding:5px 8px;border:1px solid var(--fg-20);background:transparent;color:var(--fg);font:inherit}
+/* 模型路由：一行 = 源区+源模型 → 目标区+目标模型，下面跟一句人话摘要 */
+.route-rule{display:block;padding:12px 0;border-bottom:1px solid var(--fg-10)}
+.route-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.route-line label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-60)}
+.route-line select,.route-line input[type=text]{padding:5px 8px;border:1px solid var(--fg-20);background:transparent;color:var(--fg);font:inherit;font-size:12px}
+.route-line input[type=text]{width:200px}
+.route-line .arrow{color:var(--fg-40);font-size:13px;padding:0 2px}
+.route-line .spacer{flex:1 1 auto}
+.route-explain{margin:6px 0 0;font-size:11.5px;color:var(--fg-60);line-height:1.55}
+.route-explain code{font-family:var(--mono);background:var(--fg-10);padding:1px 5px;border:1px solid var(--fg-10)}
+.route-priority{margin:12px 0 4px;padding:11px 14px;border:1px solid var(--fg-10);font-size:11.5px;line-height:1.65;color:var(--fg-60)}
+.route-priority strong{display:block;color:var(--fg);font-weight:600;margin-bottom:5px;font-size:12px}
+.route-priority ol{margin:0;padding-left:18px}
+.route-priority li{margin:2px 0}
+.route-priority .em{color:var(--fg)}
+.route-hop{display:inline-block;margin-left:6px;padding:0 6px;border:1px solid var(--fg-40);font-size:10.5px;letter-spacing:.02em}
 .checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
 /* 账号导入与出口设置弹窗 */
 .modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.6)}
@@ -520,10 +536,11 @@ pre{
         <div class="watchbar" id="watchBar" hidden>
           <span class="state" id="watchState">波动监测</span>
           <span class="num">错误率<b id="watchErr">—</b></span>
-          <span class="num">推理缺失<b id="watchMiss">—</b></span>
+          <span class="num">推理占比<b id="watchMiss">—</b></span>
           <span class="num">耗时 P50<b id="watchP50">—</b></span>
           <span class="num">样本<b id="watchSamples">—</b></span>
           <span class="num">在途<b id="ccInFlight">—</b></span>
+          <span class="num">1m 峰值<b id="ccPeak">—</b></span>
           <span class="num">限流<b id="ccLimited">—</b></span>
         </div>
         <div class="actions" style="margin-top:24px">
@@ -646,6 +663,25 @@ pre{
         </details>
       </div>
     </section>
+
+    <section class="panel" id="quota-floor">
+      <div class="panel-inner">
+        <div class="section-head">
+          <div>
+            <h2>选号门槛</h2>
+            <p>账号积分低于这个值时，不再参与选号（防止把号扣穿、或触发上游风控）。按缓存余额判定，余额探测后自动更新。</p>
+          </div>
+        </div>
+        <div class="ops-row">
+          <label class="test-model-label" for="quotaFloor">积分下限
+            <input type="number" id="quotaFloor" min="0" step="1" style="width:110px" placeholder="0"/>
+          </label>
+          <button class="teal" id="btnQuotaFloorSave" type="button">保存</button>
+          <span class="seg-hint" id="quotaFloorHint">填 0 = 不启用（所有号都参与，余额不足由上游自己拦）。修改后必须点「保存」。</span>
+        </div>
+        <p class="checkin-hint" id="quotaFloorState">当前：未启用</p>
+      </div>
+    </section>
   </div>
 
   <!-- ========================================================
@@ -729,6 +765,18 @@ pre{
           </div>
           <div class="actions"><button class="teal" id="btnCheckinSave" type="button">保存</button></div>
         </div>
+        <div class="seg" id="checkinSiteSeg" role="group" aria-label="签到统计范围" style="margin-bottom:12px">
+          <button type="button" data-cksite="" class="active">全部</button>
+          <button type="button" data-cksite="domestic">国内</button>
+          <button type="button" data-cksite="global">国际</button>
+        </div>
+        <div class="metrics" id="checkinMetrics" style="margin-bottom:16px">
+          <div class="metric"><div class="k">已签到</div><div class="v" id="ckDone">—</div></div>
+          <div class="metric"><div class="k">未签到</div><div class="v" id="ckNone">—</div></div>
+          <div class="metric"><div class="k">签到失败</div><div class="v" id="ckFailed">—</div></div>
+          <div class="metric"><div class="k">已启用规则</div><div class="v" id="ckRules">—</div></div>
+        </div>
+        <p class="checkin-hint" style="margin:-8px 0 12px">统计范围只影响上面的数字与勾选；规则列表始终显示全部账号，避免保存时丢掉另一站的规则。</p>
         <div class="ops-row">
           <label class="test-model-label" for="checkinAuto">总开关
             <select id="checkinAuto" aria-label="自动签到总开关">
@@ -738,8 +786,72 @@ pre{
           </label>
           <span class="seg-hint">规则文件与总开关保存后立即生效，无需重启。</span>
         </div>
+        <div class="ops-row" style="margin-top:12px">
+          <span class="seg-hint" style="margin-right:8px">批量设置：</span>
+          <button class="ghost" id="btnCheckinAll" type="button">全选</button>
+          <button class="ghost" id="btnCheckinNone" type="button">全不选</button>
+          <select id="checkinPreset" aria-label="批量设置签到时间" title="把当前范围内的账号统一设成某种签到节奏">
+            <option value="">选一个节奏…</option>
+            <option value="human">仿人随机（推荐）</option>
+            <option value="allday">全天随机</option>
+            <option value="0900">每天 09:00</option>
+            <option value="1200">每天 12:00</option>
+            <option value="2000">每天 20:00</option>
+            <option value="0900-1100">09:00–11:00 随机</option>
+            <option value="2000-2300">20:00–23:00 随机</option>
+            <option value="spread">整批错开（均匀铺开）</option>
+          </select>
+          <span class="seg-hint" id="checkinPresetHint">选完立刻套用到当前范围，仍要点「保存」才生效。</span>
+        </div>
+        <div class="ops-row" style="margin-top:8px">
+          <span class="seg-hint" style="margin-right:8px">签到失败后：</span>
+          <select id="checkinRetryMin" aria-label="签到失败后多久重试">
+            <option value="0">不重试</option>
+            <option value="5">5 分钟后</option>
+            <option value="10">10 分钟后</option>
+            <option value="30">30 分钟后</option>
+            <option value="60">60 分钟后</option>
+          </select>
+          <span class="seg-hint">最多重试</span>
+          <select id="checkinRetryMax" aria-label="签到失败最多重试几次">
+            <option value="1">1 次</option>
+            <option value="2">2 次</option>
+          </select>
+          <span class="seg-hint">只重试「可能有救」的失败（出口抖动、上游 5xx）；429 / 额度限制不重试，23:30 后不再重试。</span>
+        </div>
         <div class="bound-keys" id="checkinRules"></div>
-        <p class="checkin-hint">开始填 <code>HH:MM</code>；结束留空或相同 = 固定时刻，填更晚时间 = 该时段内每天随机一个分钟。不支持跨零点窗口。仅对已启用且有凭据的账号生效。</p>
+        <p class="checkin-hint" id="checkinRuleHint" hidden></p>
+        <p class="checkin-hint">开始时间留空 = 当天全天随机一个分钟点；填 <code>09:00</code> 且结束留空 = 固定时刻；填 <code>09:00</code>–<code>11:00</code> = 该时段内每天随机一个分钟。不支持跨零点窗口。仅对已启用且有凭据的账号生效。</p>
+        <div class="ops-row" style="margin-top:14px;border-top:1px solid var(--fg-10);padding-top:14px">
+          <label class="test-model-label" for="checkinFallback">出口失败时回落直连
+            <select id="checkinFallback" aria-label="签到出口失败时是否回落直连">
+              <option value="off">关闭</option>
+              <option value="on">开启</option>
+            </select>
+          </label>
+          <span class="seg-hint">账号绑定的出口连不上时，直连重试一次。仅对「连不上」类错误生效；429 / 额度 / 上游 5xx 不会降级。</span>
+        </div>
+        <div class="ops-row" style="margin-top:14px;border-top:1px solid var(--fg-10);padding-top:14px">
+          <button class="ghost" id="btnCheckinLog" type="button">查看签到明细（48h）</button>
+          <span class="seg-hint">最近 48 小时的每一次签到尝试，含失败原因与实际出口。</span>
+        </div>
+        <div class="log-table-wrap" id="checkinLogWrap" hidden>
+          <div class="log-table-window">
+            <table class="log-table" aria-label="签到明细">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>账号</th>
+                  <th>结果</th>
+                  <th>积分</th>
+                  <th>出口</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody id="checkinLogRows"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
   </div>
@@ -756,14 +868,50 @@ pre{
             <p>展示上游模型名（不含 codebuddy/ 前缀）；点击模型芯片可复制。</p>
           </div>
           <div class="actions">
-            <button class="ghost" id="btnModels" type="button">重新拉取</button>
+            <button class="ghost" id="btnModelsDomestic" type="button">重新拉取 · 国内</button>
+            <button class="ghost" id="btnModelsGlobal" type="button">重新拉取 · 国际</button>
+            <button class="ghost" id="btnModelsBoth" type="button">两个都拉</button>
           </div>
+        </div>
+        <div class="ops-row" style="margin-bottom:10px">
+          <span class="seg" id="modelsScopeSeg" role="group" aria-label="模型编目范围">
+            <button type="button" data-msite="domestic">国内</button>
+            <button type="button" data-msite="global">国际</button>
+            <button type="button" data-msite="both">两站合并</button>
+          </span>
+          <span class="seg-hint" id="modelsScopeHint">当前显示：国内站模型</span>
         </div>
         <div class="chips" id="modelChips"><div class="empty">加载中…</div></div>
         <details class="raw">
           <summary>原始模型响应</summary>
           <pre id="modelsRaw">[]</pre>
         </details>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-inner">
+        <div class="section-head">
+          <div>
+            <h2>模型路由（有方向）</h2>
+            <p>一条规则 = <strong>某个区收到某个模型名</strong>时，改用<strong>另一个区（或同区）的某个模型</strong>执行。两个方向各配各的，互不影响。没配置的模型一字节不改。</p>
+          </div>
+          <div class="actions">
+            <button class="teal" id="btnRouteAdd" type="button">+ 新增路由</button>
+            <button class="ghost" id="btnRouteSave" type="button">保存</button>
+          </div>
+        </div>
+        <div class="route-priority" id="routePriority">
+          <strong>区域怎么定的（从上到下，上面赢）</strong>
+          <ol>
+            <li><b>客户端硬钉</b>：模型名带 <code>cn:</code> / <code>global:</code> 前缀 —— <span class="em">此时下面所有规则都不生效</span>，要哪个区就是哪个区。</li>
+            <li><b>本条路由</b>：规则按「源区域」匹配。<code>X-Site</code> 头只决定请求从哪个区进来，进来之后照样按规则改写。</li>
+            <li><b>绑定 Key</b>：在「OpenAI 兼容接入」里新建的绑定 Key 自带区域，作用同 X-Site。</li>
+            <li><b>号池默认区</b>：在「账号池集群」里选的国内/国际，只在前三层都没说的时候兜底。</li>
+          </ol>
+        </div>
+        <div class="bound-keys" id="routeRules"></div>
+        <p class="checkin-hint" id="routeHint" style="margin-top:10px">左侧选哪个区，右侧模型下拉就只列那个区真实存在的模型（来自上方模型编目）；也可以手输编目里没有的名字。同一「源区 + 源模型」再加一条 = 备用链，本站没号时按顺序串下去。</p>
       </div>
     </section>
 
@@ -1106,6 +1254,12 @@ function renderAccounts(summary, activeSite) {
   const box = $('accounts');
   const all = (summary && summary.accounts) || [];
   lastAccounts = all;
+  // 账号列表与签到规则是并发加载的，谁先完成不确定。
+  // 规则先到、账号后到时，签到面板会拿空数组渲染成「没有账号」，
+  // 所以这里补一次重绘（只在签到面板已初始化后执行）。
+  if (typeof checkinRules !== 'undefined' && $('checkinRules')) {
+    paintCheckinConfig({auto: checkinAutoEnabled, rules: checkinRules});
+  }
   const expanded = new Set(Array.from(box.querySelectorAll('.package-expiry[open]')).map(function(d){ return d.closest('.account').getAttribute('data-account-id'); }));
   // 15 秒轮询会重绘卡片；记住已展开的「更多」菜单，避免操作到一半被收起。
   const menuOpen = new Set(Array.from(box.querySelectorAll('.more[open]')).map(function(d){ return d.closest('.account').getAttribute('data-account-id'); }));
@@ -1160,6 +1314,7 @@ function renderAccounts(summary, activeSite) {
           '<strong>' + label + '</strong>' +
           '<span class="badge site">' + escapeHtml(siteLabel(site)) + '</span>' +
           '<span class="badge ' + (logged?'on':'off') + '">' + (logged?'已登录':'未登录') + '</span>' +
+          checkinBadge(a) +
           (a.proxy ? '<span class="badge" title="' + escapeHtml(a.proxy) + '">出口 ' + escapeHtml(proxyHost(a.proxy)) + '</span>' : '') +
           (a.enabled ? '' : '<span class="badge off">已禁用</span>') +
           (a.tokenExpired ? '<span class="badge bad">Token 过期</span>' : '') +
@@ -1187,6 +1342,49 @@ function renderAccounts(summary, activeSite) {
   box.querySelectorAll('.package-expiry').forEach(function(d){ d.open = expanded.has(d.closest('.account').getAttribute('data-account-id')); });
   box.querySelectorAll('button[data-act]').forEach(function(btn){ btn.addEventListener('click', onAccountAction); });
   renderAttention(summary, activeSite);
+}
+
+// formatNextCheckin 把「下次签到时刻」格式化成 HH:MM（今天）或「明天 HH:MM」。
+// 空值或非法值返回空串，调用方据此不显示。
+function formatNextCheckin(ms){
+  const n = Number(ms || 0);
+  if (!n) return '';
+  const at = new Date(n);
+  if (isNaN(at.getTime())) return '';
+  const hh = String(at.getHours()).padStart(2, '0');
+  const mm = String(at.getMinutes()).padStart(2, '0');
+  const now = new Date();
+  const sameDay = at.getFullYear() === now.getFullYear() &&
+    at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+  return sameDay ? (hh + ':' + mm) : ('明天 ' + hh + ':' + mm);
+}
+
+// checkinBadge 渲染签到徽章：已签到 / 未签到 / 签到失败 + 「48 小时 N/2」。
+// 禁用账号整体灰显（加 off 类），但状态文本仍如实显示，便于排查。
+// 分母硬编码 2（48 小时 = 两天），与服务端 checkin.Retention 对应。
+function checkinBadge(a){
+  const state = a.checkinToday || 'none';
+  const count = Number(a.checkinCount48h || 0);
+  const ratio = count + '/2';
+  let cls = 'off', text = '未签到';
+  if (state === 'done') { cls = 'on'; text = '已签到'; }
+  else if (state === 'already') { cls = 'on'; text = '已签到'; }
+  else if (state === 'failed') { cls = 'bad'; text = '签到失败'; }
+  if (!a.enabled) { cls += ' muted'; }
+  let title = '最近 48 小时成功签到 ' + count + ' 次（目标 2 次）';
+  if (state === 'failed' && a.checkinLastError) { title += '；失败原因：' + a.checkinLastError; }
+  if (state === 'already') { title += '；上游回报今天已签到'; }
+  // 未签到且已配规则时把「下次几点」直接显示出来，
+  // 否则用户不知道到底会不会跑、什么时候跑。
+  let body = text + ' · ' + ratio;
+  const nextLabel = formatNextCheckin(a.checkinNextAt);
+  if (nextLabel && state !== 'done' && state !== 'already') {
+    body += ' · 下次 ' + nextLabel;
+  }
+  if (nextLabel) { title += '；下次自动签到：' + nextLabel; }
+  else if (state === 'none') { title += '；未配置自动签到规则'; }
+  return '<span class="badge ' + cls + '" title="' + escapeHtml(title) + '">' +
+    escapeHtml(body) + '</span>';
 }
 
 // 账号的调度阻塞状态；账号卡片和概览「需要关注」共用同一份判断。
@@ -1281,13 +1479,22 @@ function renderModels(data){
   chips.innerHTML = list.map(function(m){
     const raw = typeof m === 'string' ? m : (m.modelId || m.upstreamId || m.id || m.name || m.model || 'model');
     const id = bareModelId(raw);
+    // 合并视图里带 sites 数组：两站都有则不标，只在一站时标注，便于发现差异。
+    let siteTag = '';
+    if (m && Array.isArray(m.sites)) {
+      if (m.sites.length === 1) {
+        siteTag = ' <span class="badge site">仅' + (m.sites[0] === 'domestic' ? '国内' : '国际') + '</span>';
+      } else if (m.sites.length === 2) {
+        siteTag = ' <span class="badge">两站</span>';
+      }
+    }
     const baseLabel = typeof m === 'string' ? id : bareModelId(m.displayName || m.name || id);
     const credits = (typeof m === 'object' && m && m.credits) ? String(m.credits) : '';
     const free = typeof m === 'object' && m && (m.free === true || /x0(\.0+)?\s*credits/i.test(credits));
     const mult = (typeof m === 'object' && m && m.creditMultiplier != null) ? m.creditMultiplier : null;
     const badge = credits ? (' · ' + (free ? '免费' : credits.replace(/\s*credits$/i,''))) : '';
     const tip = [id, credits ? ('倍率 ' + credits) : '', (m && m.description) ? m.description : ''].filter(Boolean).join(' | ');
-    return '<button type="button" class="chip btnish" data-copy="' + escapeHtml(id) + '" title="' + escapeHtml(tip || '点击复制') + '">' + escapeHtml(baseLabel + badge) + (free ? ' <span class="badge on">免费</span>' : (mult!=null && credits ? ' <span class="badge site">' + escapeHtml(String(mult)+'x') + '</span>' : '')) + '</button>';
+    return '<button type="button" class="chip btnish" data-copy="' + escapeHtml(id) + '" title="' + escapeHtml(tip || '点击复制') + '">' + escapeHtml(baseLabel + badge) + (free ? ' <span class="badge on">免费</span>' : (mult!=null && credits ? ' <span class="badge site">' + escapeHtml(String(mult)+'x') + '</span>' : '')) + siteTag + '</button>';
   }).join('');
   chips.querySelectorAll('[data-copy]').forEach(function(btn){
     btn.addEventListener('click', function(){ copyText(btn.getAttribute('data-copy'), '模型', btn); });
@@ -1629,11 +1836,38 @@ function paintWatch(w){
   state.textContent = w.ok ? '波动监测 · 正常' : ('波动监测 · ' + (w.reason || '异常'));
   state.classList.toggle('bad', !w.ok);
   $('watchErr').textContent = watchPercent(m.errorRate);
+  // 这里只展示「推理占比」这一个中性事实：有推理 token 的请求占「要求了推理」的比例。
+  // 不写「缺失」——上游按模型/负载降档时本来就会时有时无，说是缺失容易误导。
   $('watchMiss').textContent = (m.reasoningAsked > 0)
-    ? (watchPercent(m.reasoningMissRate) + ' · ' + (m.reasoningMissed||0) + '/' + m.reasoningAsked)
+    ? (watchPercent(1 - (m.reasoningMissRate || 0)) + ' · ' + ((m.reasoningAsked||0) - (m.reasoningMissed||0)) + '/' + m.reasoningAsked)
     : '无样本';
   $('watchP50').textContent = (m.latencyP50 || 0) + 'ms';
   $('watchSamples').textContent = String(m.samples || 0);
+}
+
+// paintConcurrency 兼容两种响应：/api/status 里的数字汇总（accounts/rateLimits
+// 为数字），以及 /api/concurrency 里的按账号快照（accounts 为数组）。
+// status 每 15 秒轮询一次，不能因字段类型不同就抛错中断 paintStatus，
+// 否则整个账号池面板会停在空态。
+function paintConcurrency(c){
+  if (!c) return;
+  const views = Array.isArray(c.accounts) ? c.accounts : [];
+  const inFlight = c.globalInFlight || 0;
+  // 峰值取所有账号里最大的 1 分钟峰值（后端按账号给 peakInFlight）
+  let peak = 0, limited = 0;
+  views.forEach(function(a){
+    if ((a.peakInFlight||0) > peak) peak = a.peakInFlight;
+    limited += (a.rateLimits60||0);
+  });
+  // 数字汇总没有逐账号限流明细，直接用汇总里的事件数，别显示成 0。
+  if (!Array.isArray(c.accounts)) limited = c.rateLimits || 0;
+  if ($('ccInFlight')) $('ccInFlight').textContent = String(inFlight);
+  if ($('ccPeak')) $('ccPeak').textContent = String(peak || 0);
+  if ($('ccLimited')) {
+    const el = $('ccLimited');
+    el.textContent = String(limited);
+    el.style.fontWeight = limited > 0 ? '700' : '';
+  }
 }
 
 function paintStatus(data){
@@ -1649,9 +1883,7 @@ function paintStatus(data){
     ? (totalTokens + ' · cache ' + cachedTokens)
     : String(totalTokens);
   paintWatch(data.watch);
-  const cc = data.concurrency || {};
-  if ($('ccInFlight')) $('ccInFlight').textContent = String(cc.globalInFlight || 0);
-  if ($('ccLimited')) $('ccLimited').textContent = String(cc.rateLimits || 0);
+  paintConcurrency(data.concurrency);
   const loggedIn = !!accounts.loggedIn;
   const primary = accounts.primary || ((accounts.accounts||[])[0] || null);
   $('mLogin').textContent = loggedIn
@@ -1827,20 +2059,104 @@ function paintCheckinConfig(data){
   checkinRules = (data && data.rules) || [];
   checkinAutoEnabled = !!(data && data.auto);
   if ($('checkinAuto')) $('checkinAuto').value = (data && data.auto) ? 'on' : 'off';
+  if ($('checkinFallback')) $('checkinFallback').value = (data && data.allowDirectFallback) ? 'on' : 'off';
+  if ($('checkinRetryMin')) $('checkinRetryMin').value = String((data && data.checkinRetryMin != null) ? data.checkinRetryMin : 10);
+  if ($('checkinRetryMax')) $('checkinRetryMax').value = String((data && data.checkinRetryMax != null) ? data.checkinRetryMax : 1);
   const box = $('checkinRules');
   if (!box) return;
   const byId = {};
   checkinRules.forEach(function(r){ byId[r.accountId] = r; });
   const rows = (lastAccounts || []).map(function(a){
-    const r = byId[a.id] || {enabled:false, start:'', end:''};
+    const r = byId[a.id] || {enabled:false, start:'', end:'', mode:'', offset:0};
+    // 从旧字段推导模式，保证老规则回显正确
+    let mode = r.mode;
+    if (!mode) {
+      if (!r.start && !r.end) mode = 'allDay';
+      else if (!r.end || r.end === r.start) mode = 'fixed';
+      else mode = 'window';
+    }
     const name = escapeHtml((a.label || a.id) + ' · ' + siteLabel(a.site));
+    const showWindow = (mode === 'window');
+    const off = Number(r.offset || 0);
     return '<div class="checkin-rule" data-id="' + escapeHtml(a.id) + '">' +
       '<label><input type="checkbox" data-f="enabled"' + (r.enabled ? ' checked' : '') + '/> ' + name + '</label>' +
-      '<label>开始 <input type="text" data-f="start" placeholder="09:00" value="' + escapeHtml(r.start || '') + '"/></label>' +
-      '<label>结束 <input type="text" data-f="end" placeholder="留空=固定" value="' + escapeHtml(r.end || '') + '"/></label>' +
+      '<label>模式 <select data-f="mode">' +
+        '<option value="human"' + (mode==='human'?' selected':'') + '>仿人随机</option>' +
+        '<option value="allDay"' + (mode==='allDay'?' selected':'') + '>全天随机</option>' +
+        '<option value="window"' + (mode==='window'?' selected':'') + '>时段窗口</option>' +
+        '<option value="fixed"' + (mode==='fixed'?' selected':'') + '>固定时刻</option>' +
+      '</select></label>' +
+      '<label data-w="start" style="display:' + (showWindow ? '' : 'none') + '">开始 <input type="text" data-f="start" placeholder="09:00" value="' + escapeHtml(r.start || '') + '"/></label>' +
+      '<label data-w="end" style="display:' + (showWindow ? '' : 'none') + '">结束 <input type="text" data-f="end" placeholder="11:00" value="' + escapeHtml(r.end || '') + '"/></label>' +
+      '<label title="在最终时刻上 ± 分钟（0–120），错开同一批账号">微调 <input type="number" data-f="offset" min="-120" max="120" step="5" value="' + off + '" style="width:64px"/></label>' +
       '</div>';
   });
   box.innerHTML = rows.length ? rows.join('') : '<div class="empty">账号池还没有账号，先去「账号池」添加。</div>';
+  paintCheckinRuleHint();
+  paintCheckinSummary();
+}
+
+// paintCheckinSummary 渲染顶部总览：今日签到状态分布 + 已启用规则数。
+// 数据来源是账号摘要里的 checkinToday（服务端注入），不是规则文件——
+// 规则只说明「要不要签」，摘要才反映「到底签成没签成」。
+// 签到统计的站点过滤（空 = 全部）。与号池切换器解耦：切这里不影响号池。
+let checkinSiteFilter = '';
+
+function paintCheckinSummary(){
+  const list = lastAccounts || [];
+  let done = 0, none = 0, failed = 0;
+  list.forEach(function(a){
+    if (!a.enabled) return;
+    if (checkinSiteFilter && (a.site || '') !== checkinSiteFilter) return;
+    const st = a.checkinToday || 'none';
+    if (st === 'done' || st === 'already') done++;
+    else if (st === 'failed') failed++;
+    else none++;
+  });
+  const set = function(id, v){ const el = $(id); if (el) el.textContent = String(v); };
+  set('ckDone', done);
+  set('ckNone', none);
+  set('ckFailed', failed);
+  // 规则数同样按当前站点过滤：需要知道账号的 site，用 lastAccounts 查。
+  const siteById = {};
+  list.forEach(function(a){ siteById[a.id] = a.site || ''; });
+  set('ckRules', checkinRules.filter(function(r){
+    if (!r || !r.enabled) return false;
+    if (!checkinSiteFilter) return true;
+    return siteById[r.accountId] === checkinSiteFilter;
+  }).length);
+  // 失败数字用醒目色
+  const failedEl = $('ckFailed');
+  if (failedEl) failedEl.style.color = failed > 0 ? 'var(--danger, #e5484d)' : '';
+}
+
+// paintCheckinRuleHint 提示「总开关开了但没勾账号」这类静默失效状态，
+// 并在有勾选时显示每个账号今天几点会跑。
+// 没有这个提示时，用户会以为自动签到在工作，实际一个号都不会被签。
+function paintCheckinRuleHint(){
+  const hint = $('checkinRuleHint');
+  if (!hint) return;
+  const enabled = checkinRules.filter(function(r){ return r && r.enabled; });
+  const auto = $('checkinAuto') && $('checkinAuto').value === 'on';
+  let text = '', bad = false;
+  if (!auto) {
+    text = '总开关关闭中，不会自动签到。';
+  } else if (enabled.length === 0) {
+    text = '⚠ 总开关已开启，但没有任何账号被勾选，当前不会自动签到。请勾选下方账号。';
+    bad = true;
+  } else {
+    const today = new Date().toISOString().slice(0,10);
+    const parts = enabled.map(function(r){
+      if (r._nextAt) return r._nextAt;
+      return '待算';
+    });
+    const unique = Array.from(new Set(parts));
+    text = '已启用 ' + enabled.length + ' 个账号的自动签到（' + (unique.length === 1 ? unique[0] : '各自随机时刻') + '）。';
+  }
+  hint.textContent = text;
+  hint.hidden = false;
+  hint.style.color = bad ? 'var(--fg)' : '';
+  paintCheckinSummary();
 }
 async function refreshCheckinConfig(){
   const data = await api('/direct-admin/api/checkin-config');
@@ -1848,17 +2164,13 @@ async function refreshCheckinConfig(){
   return data;
 }
 async function saveCheckinConfig(){
-  const rules = Array.from(document.querySelectorAll('#checkinRules .checkin-rule')).map(function(row){
-    function val(f){ const el = row.querySelector('[data-f="'+f+'"]'); return el ? el.value.trim() : ''; }
-    return {
-      accountId: row.getAttribute('data-id'),
-      enabled: !!row.querySelector('[data-f="enabled"]').checked,
-      start: val('start'),
-      end: val('end')
-    };
-  }).filter(function(r){ return r.enabled || r.start || r.end; });
+  syncCheckinRulesFromDom();
+  const rules = checkinRules.filter(function(r){ return r.enabled || r.start || r.end || r.mode === 'human'; });
   await api('/direct-admin/api/checkin-config', {method:'POST', body: JSON.stringify({
-    auto: $('checkinAuto') && $('checkinAuto').value === 'on', rules: rules
+    auto: $('checkinAuto') && $('checkinAuto').value === 'on', rules: rules,
+    allowDirectFallback: $('checkinFallback') && $('checkinFallback').value === 'on',
+    checkinRetryMin: Number(($('checkinRetryMin') || {}).value || 0),
+    checkinRetryMax: Number(($('checkinRetryMax') || {}).value || 1)
   })});
   showToast('自动签到配置已保存');
   return refreshCheckinConfig();
@@ -1876,10 +2188,19 @@ async function generateApiKey(){
   if (data.note) showToast(data.note);
 }
 
+// /api/status 的 concurrency 是数字汇总，没有逐账号 peakInFlight / rateLimits60。
+// 「1m 峰值」「限流」要显示真实值，得再取一次完整快照。取失败不影响主状态页。
+async function refreshConcurrency(){
+  const data = await api('/direct-admin/api/concurrency');
+  paintConcurrency(data.concurrency || data);
+  return data;
+}
+
 async function refreshStatus(fresh){
   const data = await api('/direct-admin/api/status' + (fresh ? '?fresh=1' : ''));
   paintStatus(data);
   if (fresh && data.creditsRefreshed) showToast('额度已从上游刷新');
+  refreshConcurrency().catch(function(){});
 }
 
 function formatCheckinSummary(data){
@@ -1991,12 +2312,84 @@ async function testAccountChat(accountId){
   return data;
 }
 
-async function refreshModels(){
-  const data = await api('/direct-admin/api/codebuddy/models?fresh=1');
+// 当前模型编目显示的是哪一站（domestic / global）。
+let modelsSite = 'domestic';
+
+// refreshModels 按站点拉取模型编目。
+// 两站的模型集可能不同（国内站与国际站各自接入的模型不一致），
+// 所以拆成两个按钮，避免"拉了一次却不知道是哪站的"。
+// setModelsScope 切换显示范围并立刻拉取。both = 两站合并。
+function setModelsScope(site){
+  modelsSite = site;
+  paintModelsScope();
+  if (site === 'both') refreshModelsBoth().catch(modelsError);
+  else refreshModels(site).catch(modelsError);
+}
+
+function paintModelsScope(){
+  document.querySelectorAll('#modelsScopeSeg button').forEach(function(b){
+    const v = b.getAttribute('data-msite');
+    b.classList.toggle('active', v === modelsSite || (v === 'both' && modelsSite === 'both'));
+  });
+  const hint = $('modelsScopeHint');
+  if (hint) {
+    hint.textContent = '当前显示：' + (modelsSite === 'both' ? '两站合并' : siteLabel(modelsSite) + '站') + '模型';
+  }
+}
+
+async function refreshModels(site){
+  // 不传 site 时跟随当前号池站点（号池切换后会自动刷新对应站的编目）；
+  // 传了则用传的，供「重新拉取 · 国内/国际」按钮显式指定。
+  if (site) {
+    modelsSite = normalizeSite(site);
+  } else if (typeof activeCheckinSite !== 'undefined' && activeCheckinSite) {
+    modelsSite = normalizeSite(activeCheckinSite);
+  }
+  paintModelsScope();
+  const hint = $('modelsScopeHint');
+  if (hint) hint.textContent = '当前显示：' + (modelsSite === 'both' ? '两站合并' : siteLabel(modelsSite) + '站') + '模型';
+  const data = await api('/direct-admin/api/codebuddy/models?fresh=1&site=' + encodeURIComponent(modelsSite));
   const raw = JSON.stringify(data, null, 2);
-  $('modelsBox').textContent = raw;
-  $('modelsRaw').textContent = raw;
+  if ($('modelsBox')) $('modelsBox').textContent = raw;
+  if ($('modelsRaw')) $('modelsRaw').textContent = raw;
   renderModels(data);
+}
+
+// refreshModelsBoth 并发拉两站，用一份合并清单展示（同名模型合并）。
+async function refreshModelsBoth(){
+  const hint = $('modelsScopeHint');
+  if (hint) hint.textContent = '当前显示：国内 + 国际合并';
+  const [domestic, global] = await Promise.all([
+    api('/direct-admin/api/codebuddy/models?fresh=1&site=domestic').catch(function(e){ return {error:e.message}; }),
+    api('/direct-admin/api/codebuddy/models?fresh=1&site=global').catch(function(e){ return {error:e.message}; })
+  ]);
+  const merged = mergeModelLists(domestic, global);
+  if ($('modelsRaw')) $('modelsRaw').textContent = JSON.stringify({domestic: domestic, global: global}, null, 2);
+  if ($('modelsBox')) $('modelsBox').textContent = JSON.stringify(merged, null, 2);
+  renderModels(merged);
+}
+
+// mergeModelLists 把两站模型清单合并成 [{modelId, sites:[...]}]。
+// 同 ID 的模型合并成一条并标注它来自哪些站，这样「两站都有」和「只在一边」
+// 一眼能分辨——这正是拆两个按钮之后最想知道的事。
+function mergeModelLists(a, b){
+  const map = new Map();
+  const push = function(data, site){
+    const list = Array.isArray(data) ? data
+      : (Array.isArray(data && data.models) ? data.models
+      : (Array.isArray(data && data.data) ? data.data : []));
+    list.forEach(function(m){
+      const raw = typeof m === 'string' ? m : (m.modelId || m.upstreamId || m.id || m.name || m.model || '');
+      if (!raw) return;
+      const key = bareModelId(raw);
+      if (!map.has(key)) map.set(key, {modelId: key, sites: []});
+      const item = map.get(key);
+      if (item.sites.indexOf(site) < 0) item.sites.push(site);
+    });
+  };
+  push(a, 'domestic');
+  push(b, 'global');
+  return Array.from(map.values()).sort(function(x, y){ return x.modelId.localeCompare(y.modelId); });
 }
 
 async function startOAuth(){
@@ -2344,7 +2737,204 @@ if ($('usageAccountFilter')) $('usageAccountFilter').onchange = onUsageFilterCha
 if ($('usageModelFilter')) $('usageModelFilter').onchange = onUsageFilterChange;
 if ($('btnCheckin')) $('btnCheckin').onclick = function(){ runPoolCheckin().catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('btnPoolTest')) $('btnPoolTest').onclick = function(){ runPoolChatTest().catch(function(e){ showToast(e.message, 'error'); }); };
-if ($('btnModels')) $('btnModels').onclick = function(){ refreshModels().catch(function(e){ $('modelsRaw').textContent = e.message; $('modelChips').innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>'; }); };
+// ===================== 模型路由（有方向） =====================
+let routeRules = [];
+let routeCatalog = {domestic: [], global: []};
+
+async function refreshModelRoutes(){
+  const data = await api('/direct-admin/api/model-routes');
+  routeRules = (data && data.rules) || [];
+  routeCatalog = (data && data.catalog) || {domestic: [], global: []};
+  paintRouteRules();
+}
+
+// routeSiteOptions 生成「国内 / 国际」两个选项。
+function routeSiteOptions(selected){
+  const want = normalizeSite(selected);
+  return '<option value="domestic"' + (want==='domestic'?' selected':'') + '>国内站</option>' +
+         '<option value="global"' + (want==='global'?' selected':'') + '>国际站</option>';
+}
+
+// routeOptionsForSite 只列该站点编目里的模型（去重）。手输不受限。
+function routeOptionsForSite(site){
+  const seen = new Set();
+  let out = '';
+  (routeCatalog[normalizeSite(site)] || []).forEach(function(name){
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    out += '<option value="' + escapeHtml(name) + '"></option>';
+  });
+  return out;
+}
+
+// routeRuleKey 用于判断「同一条链」：源站点 + 源模型名。
+function routeRuleKey(rule){
+  return normalizeSite(rule.fromSite) + '|' + String(rule.match||'').toLowerCase().trim();
+}
+
+function paintRouteRules(){
+  const box = $('routeRules');
+  if (!box) return;
+  if (!routeRules.length) {
+    box.innerHTML = '<div class="empty">还没有路由。点「+ 新增路由」创建第一条：<b>国内站收到 gpt-5.6</b> → <b>改用国际站的 gpt-5.6</b>。两个方向要各配一条。</div>';
+    return;
+  }
+  // 按「源站点 + 源模型」分组计数，第 2 条起标「备用 N」。
+  const seen = {};
+  const rows = routeRules.map(function(r, i){
+    const key = routeRuleKey(r);
+    seen[key] = (seen[key] || 0) + 1;
+    return {r: r, i: i, seq: seen[key]};
+  });
+  box.innerHTML = rows.map(function(o){
+    const r = o.r, i = o.i;
+    const fromSite = normalizeSite(r.fromSite);
+    const toSite = normalizeSite(r.site);
+    const match = r.match || '';
+    const target = r.target || '';
+    const hopTag = o.seq > 1 ? '<span class="route-hop">备用 ' + o.seq + '</span>' : '';
+    // 人话摘要：把这条规则到底做了什么讲清楚
+    let explain;
+    if (!match) {
+      explain = '还没填源模型。左边选「哪个区收到的请求」，右边填该区真实有的模型名。';
+    } else if (!target) {
+      explain = siteLabel(fromSite) + '站收到 <code>' + escapeHtml(match) + '</code> 的请求 → 还没选要改成哪个模型。';
+    } else if (fromSite === toSite && match === target) {
+      explain = '源和目标完全一样，这条规则不会有任何效果。';
+    } else if (fromSite === toSite) {
+      explain = siteLabel(fromSite) + '站收到 <code>' + escapeHtml(match) + '</code> 的请求 → 改用同站的 <code>' + escapeHtml(target) + '</code> 执行（模型替身，不跨区）。';
+    } else {
+      explain = siteLabel(fromSite) + '站收到 <code>' + escapeHtml(match) + '</code> 的请求 → 改用<b>' + siteLabel(toSite) + '站</b>的 <code>' + escapeHtml(target) + '</code> 执行。';
+    }
+    return '<div class="route-rule" data-idx="' + i + '">' +
+      '<div class="route-line">' +
+        '<label>源区域 <select data-rf="fromSite">' + routeSiteOptions(fromSite) + '</select></label>' +
+        '<label>源模型 <input type="text" data-rf="match" placeholder="gpt-5.6" value="' + escapeHtml(match) + '" list="routeFromList' + i + '"/>' +
+          '<datalist id="routeFromList' + i + '">' + routeOptionsForSite(fromSite) + '</datalist>' + hopTag + '</label>' +
+        '<span class="arrow">→</span>' +
+        '<label>目标区域 <select data-rf="site">' + routeSiteOptions(toSite) + '</select></label>' +
+        '<label>目标模型 <input type="text" data-rf="target" placeholder="gpt-5.6" value="' + escapeHtml(target) + '" list="routeToList' + i + '"/>' +
+          '<datalist id="routeToList' + i + '">' + routeOptionsForSite(toSite) + '</datalist></label>' +
+        '<label>备注 <input type="text" data-rf="note" placeholder="选填" value="' + escapeHtml(r.note || '') + '"/></label>' +
+        '<span class="spacer"></span>' +
+        '<button class="ghost" data-route-up="' + i + '" type="button" title="上移（同链时优先级更高）">↑</button>' +
+        '<button class="ghost" data-route-down="' + i + '" type="button" title="下移（同链时优先级更低）">↓</button>' +
+        '<button class="danger" data-route-del="' + i + '" type="button">删除</button>' +
+      '</div>' +
+      '<p class="route-explain">' + explain + '</p>' +
+      '</div>';
+  }).join('');
+
+  bindRouteRowEvents(box);
+}
+
+// syncRouteRulesFromDom 把界面上的当前值写回 routeRules（改动未保存也不丢）。
+function syncRouteRulesFromDom(){
+  const rows = document.querySelectorAll('#routeRules .route-rule');
+  if (!rows.length) { routeRules = []; return; }
+  const next = [];
+  rows.forEach(function(row){
+    function val(f){ const el = row.querySelector('[data-rf="'+f+'"]'); return el ? el.value.trim() : ''; }
+    next.push({fromSite: val('fromSite') || 'domestic', match: val('match'), site: val('site') || 'global', target: val('target'), note: val('note')});
+  });
+  routeRules = next;
+}
+
+function bindRouteRowEvents(box){
+  box.querySelectorAll('[data-route-del]').forEach(function(btn){
+    btn.onclick = function(){
+      syncRouteRulesFromDom();
+      routeRules.splice(Number(btn.getAttribute('data-route-del')), 1);
+      paintRouteRules();
+    };
+  });
+  box.querySelectorAll('[data-route-up]').forEach(function(btn){
+    btn.onclick = function(){
+      const i = Number(btn.getAttribute('data-route-up'));
+      syncRouteRulesFromDom();
+      if (i <= 0) return;
+      const tmp = routeRules[i-1]; routeRules[i-1] = routeRules[i]; routeRules[i] = tmp;
+      paintRouteRules();
+    };
+  });
+  box.querySelectorAll('[data-route-down]').forEach(function(btn){
+    btn.onclick = function(){
+      const i = Number(btn.getAttribute('data-route-down'));
+      syncRouteRulesFromDom();
+      if (i >= routeRules.length - 1) return;
+      const tmp = routeRules[i+1]; routeRules[i+1] = routeRules[i]; routeRules[i] = tmp;
+      paintRouteRules();
+    };
+  });
+  // 换区域时重画：模型下拉要跟着换成该区真实有的模型，摘要也要更新。
+  box.querySelectorAll('[data-rf="fromSite"],[data-rf="site"]').forEach(function(sel){
+    sel.onchange = function(){
+      syncRouteRulesFromDom();
+      paintRouteRules();
+    };
+  });
+  // 改模型名时只更新摘要，不重画（否则输入框会失焦）。
+  box.querySelectorAll('[data-rf="match"],[data-rf="target"]').forEach(function(inp){
+    inp.oninput = function(){
+      const row = inp.closest('.route-rule');
+      if (!row) return;
+      syncRouteRulesFromDom();
+      const i = Number(row.getAttribute('data-idx'));
+      const r = routeRules[i];
+      if (!r) return;
+      const p = row.querySelector('.route-explain');
+      if (!p) return;
+      const fs = normalizeSite(r.fromSite), ts = normalizeSite(r.site);
+      if (!r.match) {
+        p.innerHTML = '还没填源模型。左边选「哪个区收到的请求」，右边填该区真实有的模型名。';
+      } else if (!r.target) {
+        p.innerHTML = siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 还没选要改成哪个模型。';
+      } else if (fs === ts && r.match === r.target) {
+        p.innerHTML = '源和目标完全一样，这条规则不会有任何效果。';
+      } else if (fs === ts) {
+        p.innerHTML = siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 改用同站的 <code>' + escapeHtml(r.target) + '</code> 执行（模型替身，不跨区）。';
+      } else {
+        p.innerHTML = siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 改用<b>' + siteLabel(ts) + '站</b>的 <code>' + escapeHtml(r.target) + '</code> 执行。';
+      }
+    };
+  });
+}
+
+if ($('btnRouteAdd')) $('btnRouteAdd').onclick = function(){
+  syncRouteRulesFromDom();
+  // 默认给一个「国内 → 国际」的常见形态，用户改两个下拉即可。
+  routeRules.push({fromSite:'domestic', match:'', site:'global', target:'', note:''});
+  paintRouteRules();
+};
+
+if ($('btnRouteSave')) $('btnRouteSave').onclick = function(){
+  syncRouteRulesFromDom();
+  // 保存前先在本地挡掉明显的配错，省得把坏规则写进线上表。
+  for (let i = 0; i < routeRules.length; i++) {
+    const r = routeRules[i];
+    const where = '第 ' + (i+1) + ' 条：';
+    if (!r.match) { showToast(where + '源模型不能为空', 'error'); return; }
+    if (!r.target) { showToast(where + '目标模型不能为空', 'error'); return; }
+    if (normalizeSite(r.fromSite) === normalizeSite(r.site) && r.match === r.target) {
+      showToast(where + '源和目标完全一样，这条规则没有意义', 'error'); return;
+    }
+  }
+  api('/direct-admin/api/model-routes', {method:'POST', body: JSON.stringify({rules: routeRules})})
+    .then(function(){ showToast('模型路由已保存并生效'); return refreshModelRoutes(); })
+    .catch(function(e){ showToast(e.message, 'error'); });
+};
+
+// 模型编目：国内 / 国际 / 两站合并，三个按钮各自独立。
+function modelsError(e){
+  if ($('modelsRaw')) $('modelsRaw').textContent = e.message;
+  if ($('modelChips')) $('modelChips').innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>';
+}
+if ($('btnModelsDomestic')) $('btnModelsDomestic').onclick = function(){ refreshModels('domestic').catch(modelsError); };
+if ($('btnModelsGlobal')) $('btnModelsGlobal').onclick = function(){ refreshModels('global').catch(modelsError); };
+if ($('btnModelsBoth')) $('btnModelsBoth').onclick = function(){ refreshModelsBoth().catch(modelsError); };
+document.querySelectorAll('#modelsScopeSeg button').forEach(function(btn){
+  btn.onclick = function(){ setModelsScope(btn.getAttribute('data-msite') || 'domestic'); };
+});
 if ($('btnGoAccounts')) $('btnGoAccounts').onclick = function(){ switchTab('tab-pool'); };
 $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 if ($('btnImportOpen')) $('btnImportOpen').onclick = openImportModal;
@@ -2358,6 +2948,203 @@ $('btnImport').onclick = function(){ runImport().catch(function(e){ showToast(St
 $('btnPoll').onclick = function(){ pollOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 $('btnRefreshClient').onclick = function(){ refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('btnCheckinSave')) $('btnCheckinSave').onclick = function(){ saveCheckinConfig().catch(function(e){ showToast(e.message, 'error'); }); };
+
+// 批量勾选：全选 / 全不选。
+function setAllCheckinEnabled(on){
+  // 有站点过滤时只影响该站点的行，避免「全选」把另一站的号也勾上。
+  const siteById = {};
+  (lastAccounts || []).forEach(function(a){ siteById[a.id] = a.site || ''; });
+  document.querySelectorAll('#checkinRules .checkin-rule').forEach(function(row){
+    const id = row.getAttribute('data-id');
+    if (checkinSiteFilter && siteById[id] !== checkinSiteFilter) return;
+    const cb = row.querySelector('[data-f="enabled"]');
+    if (cb) cb.checked = on;
+  });
+  syncCheckinRulesFromDom();
+  paintCheckinRuleHint();
+}
+// 签到统计范围切换（只影响指标与批量勾选，不影响规则列表内容）。
+document.querySelectorAll('#checkinSiteSeg button').forEach(function(btn){
+  btn.onclick = function(){
+    document.querySelectorAll('#checkinSiteSeg button').forEach(function(b){ b.classList.remove('active'); });
+    btn.classList.add('active');
+    checkinSiteFilter = btn.getAttribute('data-cksite') || '';
+    paintCheckinSummary();
+    paintCheckinRuleHint();
+  };
+});
+
+if ($('btnCheckinAll')) $('btnCheckinAll').onclick = function(){ setAllCheckinEnabled(true); };
+
+// 签到明细：默认隐藏，点按钮才拉取（避免每次刷页面都读文件）。
+if ($('btnCheckinLog')) $('btnCheckinLog').onclick = function(){
+  const wrap = $('checkinLogWrap');
+  if (wrap && !wrap.hidden) { wrap.hidden = true; this.textContent = '查看签到明细（48h）'; return; }
+  loadCheckinLog().catch(function(e){ showToast(e.message, 'error'); });
+};
+
+async function loadCheckinLog(){
+  const data = await api('/direct-admin/api/checkin-log');
+  const rows = (data && data.entries) || [];
+  const tbody = $('checkinLogRows');
+  const wrap = $('checkinLogWrap');
+  if (!tbody || !wrap) return;
+  const nameById = {};
+  (lastAccounts || []).forEach(function(a){ nameById[a.id] = a.label || a.id; });
+  // 按时间倒序：最新的在最上面
+  const sorted = rows.slice().sort(function(x, y){ return (y.at || 0) - (x.at || 0); });
+  if (!sorted.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty" style="border:none">最近 48 小时还没有签到记录。</td></tr>';
+  } else {
+    tbody.innerHTML = sorted.map(function(e){
+      const at = new Date(Number(e.at || 0));
+      const time = isNaN(at.getTime()) ? '—' :
+        (at.getMonth() + 1) + '/' + at.getDate() + ' ' +
+        String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0');
+      let result = '<span class="pill bad">失败</span>';
+      if (e.ok) {
+        result = e.already ? '<span class="pill">今日已签</span>' : '<span class="pill">已签到</span>';
+      }
+      if (e.degraded) result += ' <span class="pill warn" title="绑定出口失败后回落直连">降级</span>';
+      const credits = e.credits ? String(e.credits) : '—';
+      const egress = e.egress ? proxyHost(e.egress) : '直连';
+      return '<tr>' +
+        '<td class="mono">' + escapeHtml(time) + '</td>' +
+        '<td>' + escapeHtml(nameById[e.accountId] || e.accountId || '—') + '</td>' +
+        '<td>' + result + '</td>' +
+        '<td class="mono">' + escapeHtml(credits) + '</td>' +
+        '<td class="mono">' + escapeHtml(egress) + '</td>' +
+        '<td>' + escapeHtml(e.message || '') + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+  wrap.hidden = false;
+  const btn = $('btnCheckinLog');
+  if (btn) btn.textContent = '收起签到明细';
+}
+if ($('btnCheckinNone')) $('btnCheckinNone').onclick = function(){ setAllCheckinEnabled(false); };
+
+// 批量预设：一键把整行改成对应模式，不需要先勾选再套用两步。
+// 范围跟随当前站点过滤（「全部」= 所有行），避免改到看不见的那一站。
+if ($('checkinPreset')) $('checkinPreset').onchange = function(){
+  const v = this.value;
+  this.value = '';
+  if (!v) return;
+  const map = {
+    human:      {mode:'human',  start:'',      end:''},
+    allday:     {mode:'allDay', start:'',      end:''},
+    '0900':     {mode:'fixed',  start:'09:00', end:''},
+    '1200':     {mode:'fixed',  start:'12:00', end:''},
+    '2000':     {mode:'fixed',  start:'20:00', end:''},
+    '0900-1100':{mode:'window', start:'09:00', end:'11:00'},
+    '2000-2300':{mode:'window', start:'20:00', end:'23:00'}
+  };
+  const siteById = {};
+  (lastAccounts || []).forEach(function(a){ siteById[a.id] = a.site || ''; });
+
+  // 「整批错开」不是套同一个模式，而是给范围内每个账号分一个互不重叠的时刻：
+  // 若 N 个号都设成「每天 09:00」，上游看到的是同一秒 N 次并发签到——非常像机器。
+  // 这里按 N 等分一个合理的活跃窗口（08:00–23:00），每个号占一格，再在格内抖动，
+  // 既保证分散、又不会溢出窗口。
+  if (v === 'spread') {
+    const ids = [];
+    document.querySelectorAll('#checkinRules .checkin-rule').forEach(function(row){
+      const id = row.getAttribute('data-id');
+      if (checkinSiteFilter && siteById[id] !== checkinSiteFilter) return;
+      ids.push(row);
+    });
+    if (!ids.length) { showToast('当前范围没有账号', 'error'); return; }
+    const winStart = 8 * 60, winEnd = 23 * 60;          // 08:00–23:00
+    const span = winEnd - winStart;
+    const slot = Math.max(1, Math.floor(span / ids.length));
+    ids.forEach(function(row, idx){
+      const base = winStart + Math.floor(idx * span / ids.length);
+      // 格内抖动：只取格宽的三分之一，避免相邻两格撞在一起。
+      const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(slot / 3)));
+      const minute = Math.min(winEnd - 1, base + jitter);
+      const hh = String(Math.floor(minute / 60)).padStart(2, '0');
+      const mm = String(minute % 60).padStart(2, '0');
+      const modeSel = row.querySelector('[data-f="mode"]');
+      if (!modeSel) return;
+      modeSel.value = 'fixed';
+      row.querySelector('[data-f="start"]').value = hh + ':' + mm;
+      row.querySelector('[data-f="end"]').value = '';
+      updateRuleRowVisibility(row);
+    });
+    syncCheckinRulesFromDom();
+    paintCheckinRuleHint();
+    const scope = checkinSiteFilter ? siteLabel(checkinSiteFilter) : '全部';
+    showToast('已把 ' + scope + ' ' + ids.length + ' 个账号错开到 08:00–23:00（每号一个独立时刻）');
+    return;
+  }
+
+  const spec = map[v];
+  if (!spec) return;
+  let n = 0;
+  document.querySelectorAll('#checkinRules .checkin-rule').forEach(function(row){
+    const id = row.getAttribute('data-id');
+    if (checkinSiteFilter && siteById[id] !== checkinSiteFilter) return;
+    const modeSel = row.querySelector('[data-f="mode"]');
+    if (!modeSel) return;
+    modeSel.value = spec.mode;
+    row.querySelector('[data-f="start"]').value = spec.start;
+    row.querySelector('[data-f="end"]').value = spec.end;
+    updateRuleRowVisibility(row);
+    n++;
+  });
+  syncCheckinRulesFromDom();
+  paintCheckinRuleHint();
+  const scope = checkinSiteFilter ? siteLabel(checkinSiteFilter) : '全部';
+  showToast('已把 ' + scope + ' ' + n + ' 个账号设为「' + presetLabel(v) + '」（记得点保存）');
+};
+function presetLabel(v){
+  return {human:'仿人随机', allday:'全天随机', '0900':'每天 09:00', '1200':'每天 12:00',
+          '2000':'每天 20:00', '0900-1100':'09:00–11:00', '2000-2300':'20:00–23:00',
+          spread:'整批错开'}[v] || v;
+}
+
+// 模式切换时显隐窗口输入框（fixed/allDay/human 不需要开始结束）。
+function updateRuleRowVisibility(row){
+  const mode = row.querySelector('[data-f="mode"]');
+  if (!mode) return;
+  const show = mode.value === 'window';
+  const s = row.querySelector('[data-w="start"]'), e = row.querySelector('[data-w="end"]');
+  if (s) s.style.display = show ? '' : 'none';
+  if (e) e.style.display = show ? '' : 'none';
+}
+
+// 勾选/模式/微调变化时同步。
+document.addEventListener('change', function(ev){
+  const t = ev.target;
+  if (!t) return;
+  const row = t.closest && t.closest('.checkin-rule');
+  if (row) {
+    if (t.getAttribute('data-f') === 'mode') updateRuleRowVisibility(row);
+    syncCheckinRulesFromDom();
+    if (t.getAttribute('data-f') === 'enabled') paintCheckinRuleHint();
+  }
+  if (t.id === 'checkinAuto') paintCheckinRuleHint();
+});
+
+// syncCheckinRulesFromDom 把界面上的行回读进 checkinRules，
+// 让「总览/提示」不用等保存就能反映最新勾选。
+function syncCheckinRulesFromDom(){
+  checkinRules = Array.from(document.querySelectorAll('#checkinRules .checkin-rule')).map(function(row){
+    function val(f){ const el = row.querySelector('[data-f="'+f+'"]'); return el ? el.value.trim() : ''; }
+    const cb = row.querySelector('[data-f="enabled"]');
+    const offEl = row.querySelector('[data-f="offset"]');
+    const off = offEl ? (parseInt(offEl.value, 10) || 0) : 0;
+    return {
+      accountId: row.getAttribute('data-id'),
+      enabled: !!(cb && cb.checked),
+      start: val('start'),
+      end: val('end'),
+      mode: val('mode'),
+      offset: off
+    };
+  });
+}
+// 勾选框/总开关一变就刷新提示，让「没勾账号」立刻可见。
 $('btnGenerateKey').onclick = function(){ generateApiKey().catch(function(e){ showToast(e.message, 'error'); }); };
 if ($('btnNewBoundKey')) $('btnNewBoundKey').onclick = function(){ generateBoundKey().catch(function(e){ showToast(e.message, 'error'); }); };
 $('copyBaseUrl').onclick = function(){ copyText($('openAiBaseUrl').value, 'Base URL', $('copyBaseUrl')); };
@@ -2374,7 +3161,48 @@ $('copyApiKey').onclick = function(){
 refreshStatus().catch(function(e){ $('statusRaw').textContent = e.message; setHealth(false, '无法连接'); });
 refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); });
 refreshCheckinConfig().catch(function(){});
+refreshModelRoutes().catch(function(){});
 refreshModels().catch(function(){});
+
+// ===================== 选号门槛（积分下限）=====================
+// 独立端点 + 独立保存按钮：这是选号门槛，改错会让整池号瞬间不可用，
+// 不该跟「保存签到」混在一个表单里（改了不知道要不要点保存、点错还会连带改签到）。
+async function refreshQuotaFloor(){
+  const data = await api('/direct-admin/api/quota-floor');
+  const v = (data && data.quotaFloor != null) ? Number(data.quotaFloor) : 0;
+  if ($('quotaFloor')) $('quotaFloor').value = String(v);
+  paintQuotaFloorState(v);
+  return v;
+}
+function paintQuotaFloorState(v){
+  const el = $('quotaFloorState');
+  if (!el) return;
+  if (!v || v <= 0) {
+    el.textContent = '当前：未启用（填 0 = 所有账号都参与选号）';
+    el.style.color = '';
+  } else {
+    el.textContent = '当前：已启用 —— 缓存余额低于 ' + v + ' 的账号会被跳过，不参与选号';
+    el.style.color = 'var(--fg)';
+  }
+}
+if ($('btnQuotaFloorSave')) $('btnQuotaFloorSave').onclick = function(){
+  const raw = $('quotaFloor') ? $('quotaFloor').value : '0';
+  const v = Number(raw);
+  if (!isFinite(v) || v < 0) {
+    showToast('请填 0 或正数（0 = 不启用）', 'error');
+    return;
+  }
+  api('/direct-admin/api/quota-floor', {method:'POST', body: JSON.stringify({quotaFloor: v})})
+    .then(function(data){
+      const saved = (data && data.quotaFloor != null) ? Number(data.quotaFloor) : v;
+      if ($('quotaFloor')) $('quotaFloor').value = String(saved);
+      paintQuotaFloorState(saved);
+      showToast(saved > 0 ? ('已保存：积分下限 ' + saved) : '已保存：积分下限已关闭');
+    })
+    .catch(function(e){ showToast(e.message, 'error'); });
+};
+
+refreshQuotaFloor().catch(function(){});
 setInterval(function(){ refreshStatus().catch(function(){}); }, 15000);
 </script>
 </body>

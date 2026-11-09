@@ -1,0 +1,65 @@
+name: pr-linux-amd64
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['pr/**', 'fix/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false   # zero external dependencies, no go.sum
+
+      - name: Check formatting, vet and tests
+        run: |
+          test -z "$(gofmt -l cmd internal)"
+          go vet ./...
+          go test -race ./...
+
+      - name: Build linux/amd64 binary
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="v0.0.0.${GITHUB_RUN_NUMBER}"
+          COMMIT="${GITHUB_SHA}"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -trimpath \
+            -ldflags="-s -w \
+              -X github.com/wnddd839/codebuddy-proxy/internal/version.Version=${VERSION} \
+              -X github.com/wnddd839/codebuddy-proxy/internal/version.Commit=${COMMIT} \
+              -X github.com/wnddd839/codebuddy-proxy/internal/version.BuiltAt=${BUILT_AT}" \
+            -o dist/codebuddy-proxy-linux-amd64 ./cmd/codebuddy-proxy
+          file dist/codebuddy-proxy-linux-amd64
+          (cd dist && sha256sum codebuddy-proxy-linux-amd64 > SHA256SUMS.txt)
+          chmod 0755 dist/codebuddy-proxy-linux-amd64
+          # upload-artifact@v4 strips the executable bit; the tarball keeps 0755.
+          tar -czf dist/codebuddy-proxy-linux-amd64.tar.gz \
+            -C dist codebuddy-proxy-linux-amd64 SHA256SUMS.txt
+
+      - name: Upload linux/amd64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codebuddy-proxy-linux-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            dist/codebuddy-proxy-linux-amd64
+            dist/SHA256SUMS.txt
+            dist/codebuddy-proxy-linux-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 14

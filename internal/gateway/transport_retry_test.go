@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,163 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 )
 
+func newAltPool(t *testing.T) *accounts.Pool {
+	t.Helper()
+	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
+	t.Cleanup(func() { _ = pool.Close() })
+	return pool
+}
+
+func addAltAccount(t *testing.T, pool *accounts.Pool, label, site, token string) accounts.Account {
+	t.Helper()
+	account, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label:       label,
+		Site:        site,
+		BearerToken: token,
+		Enabled:     true,
+	}))
+	if err != nil {
+		t.Fatalf("upsert %s: %v", label, err)
+	}
+	return account
+}
+
+func editAltAccount(t *testing.T, pool *accounts.Pool, id string, mutate func(*accounts.Account)) {
+	t.Helper()
+	if _, _, err := pool.UpdateAccount(id, func(account accounts.Account) accounts.Account {
+		mutate(&account)
+		return account
+	}); err != nil {
+		t.Fatalf("update %s: %v", id, err)
+	}
+}
+
+func TestHasAlternativeAccount(t *testing.T) {
+	tests := []struct {
+		name string
+		site string
+		// setup 在当前账号之外追加候选；返回值作为 exclude 透传。
+		setup func(t *testing.T, pool *accounts.Pool) []string
+		want  bool
+	}{
+		{
+			name:  "仅当前账号",
+			site:  "global",
+			setup: func(*testing.T, *accounts.Pool) []string { return nil },
+			want:  false,
+		},
+		{
+			name: "第二个同站点账号可用",
+			site: "global",
+			setup: func(t *testing.T, pool *accounts.Pool) []string {
+				addAltAccount(t, pool, "second", "global", "token-second")
+				return nil
+			},
+			want: true,
+		},
+		{
+			name: "第二个账号被禁用",
+			site: "global",
+			setup: func(t *testing.T, pool *accounts.Pool) []string {
+				second := addAltAccount(t, pool, "second", "global", "token-second")
+				editAltAccount(t, pool, second.ID, func(a *accounts.Account) { a.Enabled = false })
+				return nil
+			},
+			want: false,
+		},
+		{
+			name: "第二个账号冷却中",
+			site: "global",
+			setup: func(t *testing.T, pool *accounts.Pool) []string {
+				second := addAltAccount(t, pool, "second", "global", "token-second")
+				editAltAccount(t, pool, second.ID, func(a *accounts.Account) {
+					a.CooldownUntil = time.Now().Add(time.Hour).UnixMilli()
+				})
+				return nil
+			},
+			want: false,
+		},
+		{
+			name: "第二个账号冷却已过期",
+			site: "global",
+			setup: func(t *testing.T, pool *accounts.Pool) []string {
+				second := addAltAccount(t, pool, "second", "global", "token-second")
+				editAltAccount(t, pool, second.ID, func(a *accounts.Account) {
+					a.CooldownUntil = time.Now().Add(-time.Minute).UnixMilli()
+				})
+				return nil
+			},
+			want: true,
+		},
+		{
+			name: "第二个账号额度耗尽未到重置时间",
+			site: "global",
+			setup: func(t *testing.T, pool *accounts.Pool) []string {
+				second := addAltAccount(t, pool, "second", "global", "token-second")
+				editAltAccount(t, pool, second.ID, func(a *accounts.Account) {
+					zero := 0.0
+					a.QuotaRemaining = &zero
+					a.QuotaResetAt = time.Now().Add(time.Hour).UnixMilli()
+					a.QuotaCheckedAt = time.Now().UnixMilli()
+				})
+				return nil
+			},
+			want: false,
+		},
+		{
+			name: "第二个账号在另一站点",
+			site: "global",
+			setup: func(t *testing.T, pool *accounts.Pool) []string {
+				addAltAccount(t, pool, "domestic", "domestic", "token-domestic")
+				return nil
+			},
+			want: false,
+		},
+		{
+			name: "候选已列在 exclude 里",
+			site: "global",
+			setup: func(t *testing.T, pool *accounts.Pool) []string {
+				second := addAltAccount(t, pool, "second", "global", "token-second")
+				return []string{second.ID}
+			},
+			want: false,
+		},
+		{
+			name: "站点别名归一化后再比较",
+			site: "intl",
+			setup: func(t *testing.T, pool *accounts.Pool) []string {
+				addAltAccount(t, pool, "second", "international", "token-second")
+				return nil
+			},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := newAltPool(t)
+			current := addAltAccount(t, pool, "current", tc.site, "token-current")
+			exclude := tc.setup(t, pool)
+			svc := &Service{Pool: pool}
+			if got := svc.hasAlternativeAccount(tc.site, current.ID, exclude); got != tc.want {
+				t.Fatalf("hasAlternativeAccount(site=%s, current=%s, exclude=%v)=%v want %v",
+					tc.site, current.ID, exclude, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHasAlternativeAccountWithoutPool(t *testing.T) {
+	var nilSvc *Service
+	if nilSvc.hasAlternativeAccount("global", "id", nil) {
+		t.Fatal("nil service must not report an alternative account")
+	}
+	if (&Service{}).hasAlternativeAccount("global", "id", nil) {
+		t.Fatal("service without pool must not report an alternative account")
+	}
+}
+
+// eofOnceTransport 让第一次 chat 请求在响应头之前断开（复现机场出口的
+// "Post ...: unexpected EOF"），之后交给 inner 正常应答；其它路径直接透传。
 type eofOnceTransport struct {
 	inner http.RoundTripper
 
@@ -59,102 +217,64 @@ func TestCompleteFromPoolRetriesSameAccountAfterTransportEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	scripted := &scriptedChatTransport{}
 	transport := &eofOnceTransport{inner: scripted}
 	svc.Provider.HTTP = &http.Client{Transport: transport}
 
-	result, err := svc.CompleteFromPool(t.Context(), CompleteOptions{
-		Model: "auto", Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model:    "auto",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
 	})
 	if err != nil {
-		t.Fatalf("单账号重连应吃掉一次 transport EOF: %v", err)
+		t.Fatalf("同一账号重连应当吃掉一次 transport EOF，实际返回 %v", err)
 	}
 	if got := transport.chatAttempts(); got != 2 {
-		t.Fatalf("chat attempts=%d want 2", got)
+		t.Fatalf("chat attempts=%d want 2（首连 EOF + 同号重连）", got)
 	}
 	if result.AccountID != only.ID {
-		t.Fatalf("AccountID=%s want %s", result.AccountID, only.ID)
+		t.Fatalf("AccountID=%s want %s（必须还是同一个账号）", result.AccountID, only.ID)
 	}
 	if result.Turn.Text != "ok" {
 		t.Fatalf("text=%q want ok", result.Turn.Text)
 	}
+	chat, _ := scripted.snapshot()
+	if len(chat) != 1 || chat[0] != "token-global" {
+		t.Fatalf("inner chat calls=%v want [token-global]", chat)
+	}
 }
 
-func TestCompleteFromPoolSwitchesAccountWhenAlternativeExists(t *testing.T) {
+func TestCompleteFromPoolRetriesSameAccountOnTransportEOF(t *testing.T) {
 	svc := newTransportRetryService(t)
-	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+	first, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
 		Label: "first", Site: "global", BearerToken: "token-first", Enabled: true,
-	})); err != nil {
+	}))
+	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
 		Label: "second", Site: "global", BearerToken: "token-second", Enabled: true,
-	}))
-	if err != nil {
+	})); err != nil {
 		t.Fatal(err)
 	}
+
 	scripted := &scriptedChatTransport{}
-	svc.Provider.HTTP = &http.Client{Transport: &eofOnceTransport{inner: scripted}}
-
-	result, err := svc.CompleteFromPool(t.Context(), CompleteOptions{
-		Model: "auto", Messages: []map[string]any{{"role": "user", "content": "hi"}},
-	})
-	if err != nil {
-		t.Fatalf("有备用账号时应换号重试: %v", err)
-	}
-	if result.AccountID != second.ID {
-		t.Fatalf("AccountID=%s want %s", result.AccountID, second.ID)
-	}
-}
-
-func TestCompleteFromPoolRetriesWhenAlternativeModelIsCooling(t *testing.T) {
-	svc := newTransportRetryService(t)
-	only, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
-		Label: "available", Site: "global", BearerToken: "token-first", Enabled: true,
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
-		Label: "cooling", Site: "global", BearerToken: "token-second", Enabled: true,
-		ModelCooldowns: map[string]int64{"auto": time.Now().Add(time.Hour).UnixMilli()},
-	})); err != nil {
-		t.Fatal(err)
-	}
-	transport := &eofOnceTransport{inner: &scriptedChatTransport{}}
+	transport := &eofOnceTransport{inner: scripted}
 	svc.Provider.HTTP = &http.Client{Transport: transport}
-	result, err := svc.CompleteFromPool(t.Context(), CompleteOptions{
-		Model: "auto", Messages: []map[string]any{{"role": "user", "content": "hi"}},
+
+	// 站内换号已删除：传输层 EOF 应**用同一个号重连**，不换到别的号。
+	result, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model:    "auto",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
 	})
 	if err != nil {
-		t.Fatalf("model-cooled alternative must not prevent same-account retry: %v", err)
+		t.Fatalf("transport EOF 应用同账号重连后成功，实际返回 %v", err)
 	}
-	if result.AccountID != only.ID || result.Turn.Text != "ok" || transport.chatAttempts() != 2 {
-		t.Fatalf("account=%s text=%q attempts=%d", result.AccountID, result.Turn.Text, transport.chatAttempts())
+	if result.AccountID != first.ID {
+		t.Fatalf("应仍使用第一个号 %s，实际 %s", first.ID, result.AccountID)
 	}
-}
-
-func TestCompleteFromPoolStopsSameAccountRetryAfterBudget(t *testing.T) {
-	svc := newTransportRetryService(t)
-	if _, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
-		Label: "only", Site: "global", BearerToken: "token-global", Enabled: true,
-	})); err != nil {
-		t.Fatal(err)
+	chat, _ := scripted.snapshot()
+	if len(chat) != 1 || chat[0] != "token-first" {
+		t.Fatalf("inner chat calls=%v want [token-first]（同账号重连，不该换号）", chat)
 	}
-	svc.Provider.HTTP = &http.Client{Transport: roundTripAlwaysEOF{}}
-	_, err := svc.CompleteFromPool(t.Context(), CompleteOptions{
-		Model: "auto", Messages: []map[string]any{{"role": "user", "content": "hi"}},
-	})
-	if err == nil {
-		t.Fatal("持续 EOF 必须最终失败")
-	}
-	if !strings.Contains(err.Error(), "EOF") {
-		t.Fatalf("应保留原始传输错误，实际=%v", err)
-	}
-}
-
-type roundTripAlwaysEOF struct{}
-
-func (roundTripAlwaysEOF) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, io.ErrUnexpectedEOF
 }
