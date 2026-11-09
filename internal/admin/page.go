@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.09-editorial-v2"
+const UIRevision = "2026.11.09-editorial-v2-aligned"
 
 func PageHTML() string {
 	return `<!doctype html>
