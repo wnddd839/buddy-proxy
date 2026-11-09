@@ -202,8 +202,9 @@ h1{
 .egress-id strong{display:block;font-size:var(--fs-sm);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .egress-id span{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-xs);color:var(--fg-40);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .egress-count{font-size:var(--fs-xs);color:var(--fg-60);white-space:nowrap}
-.egress-add{display:grid;grid-template-columns:minmax(0,1fr) 140px auto auto;gap:10px;margin-top:10px;align-items:center}
+.egress-add{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;margin-top:10px;align-items:center}
 .egress-add input{min-width:0}
+#egressNewUrl{grid-column:1/-1}
 .test-model-label{display:inline-flex;align-items:center;gap:8px;font-size:var(--fs-sm);color:var(--fg-60);white-space:nowrap}
 .test-model-label select{min-width:160px;font-size:var(--fs-sm)}
 .metrics{
@@ -496,6 +497,8 @@ pre{
 .pair-sep{font-size:var(--fs-sm);color:var(--fg-40);white-space:nowrap}
 .setting-control--wide select{width:180px}
 .setting-note{margin:0;font-size:var(--fs-sm);line-height:1.6;color:var(--fg-60)}
+.pool-bottom-grid .setting-row{grid-template-columns:96px minmax(0,1fr)}
+.pool-bottom-grid .setting-note{grid-column:2;margin-top:6px}
 @media(max-width:980px){.setting-row{grid-template-columns:110px minmax(0,1fr)}.setting-note{grid-column:2;margin-top:6px}}
 @media(max-width:640px){.setting-row{grid-template-columns:1fr;gap:8px}.setting-note{grid-column:1;margin-top:0}}
 #checkinRules input[type=checkbox]{width:auto;accent-color:var(--fg)}
@@ -760,7 +763,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
               <input type="number" id="quotaFloor" min="0" step="1" style="width:110px" placeholder="0"/>
               <button class="teal" id="btnQuotaFloorSave" type="button">保存</button>
             </span>
-            <p class="setting-note" id="quotaFloorHint">填 0 = 不启用（所有号都参与，余额不足由上游自己拦）。修改后必须点「保存」。</p>
+            <p class="setting-note" id="quotaFloorHint">填 0 = 不启用；修改后必须点「保存」才生效。</p>
           </div>
         </div>
         <p class="checkin-hint config-state" role="status" aria-live="polite" id="quotaFloorState">当前：未启用</p>
@@ -774,7 +777,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="egress-list" id="egressList"></div>
           <div class="egress-add">
             <input id="egressNewUrl" placeholder="socks5h://user:pass@host:port" autocomplete="off" spellcheck="false"/>
-            <input id="egressNewLabel" placeholder="备注（可选）" autocomplete="off" style="flex:0 0 140px"/>
+            <input id="egressNewLabel" placeholder="备注（可选）" autocomplete="off"/>
             <button class="ghost" id="btnEgressAdd" type="button">加入候选</button>
             <button class="ghost" id="btnEgressBalance" type="button">均衡分配</button>
           </div>
@@ -3409,7 +3412,7 @@ function paintQuotaFloorState(v){
   const el = $('quotaFloorState');
   if (!el) return;
   if (!v || v <= 0) {
-    el.textContent = '当前：未启用（填 0 = 所有账号都参与选号）';
+    el.textContent = '当前：未启用 · 所有账号都参与选号';
     el.style.color = '';
   } else {
     el.textContent = '当前：已启用 —— 缓存余额低于 ' + v + ' 的账号会被跳过，不参与选号';
