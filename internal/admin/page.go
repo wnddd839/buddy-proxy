@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.08-account-panel-fix"
+const UIRevision = "2026.11.09-editorial-v2"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -27,17 +27,25 @@ func PageHTML() string {
   --fg-40:rgba(28,28,28,.40);
   --fg-20:rgba(28,28,28,.20);
   --fg-10:rgba(28,28,28,.10);
+  --fg-04:rgba(28,28,28,.04);
+  --fs-xs:11px;
+  --fs-sm:12px;
+  --fs-base:14px;
+  --fs-md:16px;
+  --fs-lg:20px;
+  --fs-xl:28px;
   --invert-bg:#1C1C1C;
   --invert-fg:#F9F8F6;
   --display:Georgia,"Iowan Old Style","Palatino Linotype",Palatino,"Songti SC","Noto Serif SC",serif;
   --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
   --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
 }
-*{box-sizing:border-box}
+*{box-sizing:border-box;border-radius:0}
+[hidden]{display:none !important}
 html,body{margin:0;min-height:100%}
 body{
   font-family:var(--sans);
-  font-size:14px;line-height:1.625;
+  font-size:var(--fs-base);line-height:1.625;
   color:var(--fg);
   background:var(--bg);
   letter-spacing:-.01em;
@@ -55,17 +63,17 @@ a{color:inherit;text-decoration:none}
 }
 .brand{display:flex;align-items:baseline;gap:12px}
 .brand strong{
-  font-family:var(--display);font-size:18px;font-weight:400;
+  font-family:var(--display);font-size:var(--fs-md);font-weight:400;
   letter-spacing:.2em;text-transform:uppercase;color:var(--fg);
 }
 .brand span{
-  font-family:var(--sans);font-size:11px;
+  font-family:var(--sans);font-size:var(--fs-xs);
   letter-spacing:.15em;text-transform:uppercase;color:var(--fg-40);
 }
 .mark{display:none}
 .pillrow{
   display:flex;align-items:center;gap:0;flex-wrap:nowrap;flex-shrink:0;
-  font-family:var(--sans);font-size:11px;letter-spacing:.15em;text-transform:uppercase;
+  font-family:var(--sans);font-size:var(--fs-xs);letter-spacing:.15em;text-transform:uppercase;
   color:var(--fg-60);
 }
 .pill{display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap}
@@ -73,10 +81,10 @@ a{color:inherit;text-decoration:none}
 /* 更新控件单独一行，避免顶栏 pillrow 溢出 */
 .updatebar{
   display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-  margin:0 0 16px;font-family:var(--sans);font-size:11px;letter-spacing:.15em;
+  margin:0 0 16px;font-family:var(--sans);font-size:var(--fs-xs);letter-spacing:.15em;
   text-transform:uppercase;color:var(--fg-60);
 }
-.updatebar button{padding:6px 12px;font-size:11px}
+.updatebar button{padding:6px 12px;font-size:var(--fs-xs)}
 /* 状态文案保持原文大小写并允许换行 */
 #updateMessage{text-transform:none;letter-spacing:0;white-space:normal;overflow-wrap:anywhere}
 .pill .dot{
@@ -96,7 +104,7 @@ a{color:inherit;text-decoration:none}
   flex:1;min-width:140px;
   padding:14px 18px;background:transparent;border:none;
   border-right:1px solid var(--fg-10);
-  font-family:var(--sans);font-size:13px;letter-spacing:.05em;
+  font-family:var(--sans);font-size:var(--fs-sm);letter-spacing:.05em;
   color:var(--fg-60);cursor:pointer;text-align:left;
   transition:color 200ms ease,background-color 200ms ease;
   display:flex;align-items:baseline;gap:8px;
@@ -109,7 +117,7 @@ a{color:inherit;text-decoration:none}
   background:rgba(28,28,28,.03);
 }
 .tab-idx{
-  font-family:var(--display);font-style:italic;font-size:15px;color:var(--fg-40);
+  font-family:var(--display);font-style:italic;font-size:var(--fs-base);color:var(--fg-40);
 }
 .tab-link.active .tab-idx{color:var(--fg)}
 
@@ -117,7 +125,7 @@ a{color:inherit;text-decoration:none}
 .tab-panel{display:none}
 .tab-panel.active{
   display:block;
-  animation:panelFade 250ms ease-out;
+  animation:panelFade 220ms ease-out;
 }
 @keyframes panelFade{
   from{opacity:0;transform:translateY(4px)}
@@ -126,95 +134,95 @@ a{color:inherit;text-decoration:none}
 
 /* 卡片与面板 */
 .panel{
-  border:1px solid var(--fg-10);background:transparent;
-  padding:24px;margin-bottom:24px;transition:border-color 200ms ease;
+  border:0;border-top:1px solid var(--fg-10);background:transparent;
+  padding:28px 0;margin-bottom:16px;
 }
-.panel:hover{border-color:var(--fg-40)}
+
 .panel-inner{height:100%}
 .eyebrow{
-  font-size:11px;font-family:var(--sans);letter-spacing:.2em;text-transform:uppercase;
+  font-size:var(--fs-xs);font-family:var(--sans);letter-spacing:.2em;text-transform:uppercase;
   color:var(--fg-40);margin-bottom:8px;
 }
 h1{
   margin:0 0 8px;font-family:var(--display);font-weight:400;letter-spacing:-.02em;
-  font-size:clamp(24px,3vw,32px);color:var(--fg);
+  font-size:var(--fs-xl);color:var(--fg);
 }
-.lede{margin:0;color:var(--fg-60);font-size:13.5px;line-height:1.6;max-width:52ch}
-.checkin-hint{margin:12px 0 0;font-size:11.5px;line-height:1.5;color:var(--fg-40);max-width:58ch}
+.lede{margin:0;color:var(--fg-60);font-size:var(--fs-base);line-height:1.6;max-width:52ch}
+.checkin-hint{margin:12px 0 0;font-size:var(--fs-xs);line-height:1.5;color:var(--fg-40);max-width:58ch}
 .checkin-rule{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--fg-10)}
-.checkin-rule label{display:flex;align-items:center;gap:6px;font-size:12px}
+.checkin-rule label{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm)}
 .checkin-rule input[type=text]{width:88px;padding:5px 8px;border:1px solid var(--fg-20);background:transparent;color:var(--fg);font:inherit}
 /* 模型路由：一行 = 源区+源模型 → 目标区+目标模型，下面跟一句人话摘要 */
 .route-rule{display:block;padding:12px 0;border-bottom:1px solid var(--fg-10)}
 .route-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.route-line label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-60)}
-.route-line select,.route-line input[type=text]{padding:5px 8px;border:1px solid var(--fg-20);background:transparent;color:var(--fg);font:inherit;font-size:12px}
+.route-line label{display:flex;align-items:center;gap:6px;font-size:var(--fs-sm);color:var(--fg-60)}
+.route-line select,.route-line input[type=text]{padding:5px 8px;border:1px solid var(--fg-20);background:transparent;color:var(--fg);font:inherit;font-size:var(--fs-sm)}
 .route-line input[type=text]{width:200px}
-.route-line .arrow{color:var(--fg-40);font-size:13px;padding:0 2px}
+.route-line .arrow{color:var(--fg-40);font-size:var(--fs-sm);padding:0 2px}
 .route-line .spacer{flex:1 1 auto}
-.route-explain{margin:6px 0 0;font-size:11.5px;color:var(--fg-60);line-height:1.55}
+.route-explain{margin:6px 0 0;font-size:var(--fs-xs);color:var(--fg-60);line-height:1.55}
 .route-explain code{font-family:var(--mono);background:var(--fg-10);padding:1px 5px;border:1px solid var(--fg-10)}
-.route-priority{margin:12px 0 4px;padding:11px 14px;border:1px solid var(--fg-10);font-size:11.5px;line-height:1.65;color:var(--fg-60)}
-.route-priority strong{display:block;color:var(--fg);font-weight:600;margin-bottom:5px;font-size:12px}
+.route-priority{margin:12px 0 4px;padding:11px 14px;border:1px solid var(--fg-10);font-size:var(--fs-xs);line-height:1.65;color:var(--fg-60)}
+.route-priority strong{display:block;color:var(--fg);font-weight:500;margin-bottom:5px;font-size:var(--fs-sm)}
 .route-priority ol{margin:0;padding-left:18px}
 .route-priority li{margin:2px 0}
 .route-priority .em{color:var(--fg)}
-.route-hop{display:inline-block;margin-left:6px;padding:0 6px;border:1px solid var(--fg-40);font-size:10.5px;letter-spacing:.02em}
-.checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
+.route-hop{display:inline-block;margin-left:6px;padding:0 6px;border:1px solid var(--fg-40);font-size:var(--fs-xs);letter-spacing:.02em}
+.checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:var(--fs-xs);line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
 /* 账号导入与出口设置弹窗 */
-.modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(0,0,0,.6)}
+.modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(28,28,28,.45)}
 .modal[hidden]{display:none}
 .modal-card{
   width:min(680px,100%);max-height:86vh;overflow:auto;padding:22px 24px 18px;
-  border:1px solid var(--fg-20);background:var(--bg);box-shadow:0 24px 60px rgba(0,0,0,.45);
+  border:1px solid var(--fg);background:var(--bg);
 }
 .modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-.modal-head h3{margin:0;font-size:15px;font-weight:600;letter-spacing:.02em}
-.modal-x{border:none;background:transparent;color:var(--fg-40);font-size:22px;line-height:1;cursor:pointer;padding:0 2px}
+.modal-head h3{margin:0;font-size:var(--fs-base);font-weight:500;letter-spacing:.02em}
+.modal-x{border:none;background:transparent;color:var(--fg-40);font-size:var(--fs-lg);line-height:1;cursor:pointer;padding:0 2px}
 .modal-x:hover{color:var(--fg)}
 #importText{
   width:100%;margin:10px 0 12px;padding:10px 12px;border:1px solid var(--fg-20);
-  background:transparent;color:var(--fg);font-family:var(--mono);font-size:11.5px;
+  background:transparent;color:var(--fg);font-family:var(--mono);font-size:var(--fs-xs);
   line-height:1.6;resize:vertical;min-height:150px;outline:none;
 }
 #importText:focus{border-color:var(--fg-40)}
 .modal-row{display:flex;align-items:center;gap:10px}
-.modal-row label{margin:0;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg-40)}
-.modal-row select{width:auto;min-width:170px;font-size:13px;padding:6px 0}
+.modal-row label{margin:0;font-size:var(--fs-xs);letter-spacing:.16em;text-transform:uppercase;color:var(--fg-40)}
+.modal-row select{width:auto;min-width:170px;font-size:var(--fs-sm);padding:6px 0}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
 /* 账号出口面板 */
-.egress-panel{margin:16px 0 8px;padding:12px 14px;border:1px solid var(--fg-10);border-radius:10px;background:rgba(28,28,28,.015)}
+.egress-panel{margin:0;padding:24px 0;border-top:1px solid var(--fg-10);background:transparent}
 .egress-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.egress-head strong{font-size:13px;font-weight:600}
-.egress-hint{font-size:11px;color:var(--fg-40)}
+.egress-head strong{font-size:var(--fs-sm);font-weight:500}
+.egress-hint{font-size:var(--fs-xs);color:var(--fg-40)}
 .egress-list{margin-top:8px}
 .egress-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid var(--fg-10)}
 .egress-row:first-child{border-top:none}
 .egress-id{flex:1;min-width:0}
-.egress-id strong{display:block;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.egress-id span{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--fg-40);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.egress-count{font-size:11px;color:var(--fg-60);white-space:nowrap}
+.egress-id strong{display:block;font-size:var(--fs-sm);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.egress-id span{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-xs);color:var(--fg-40);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.egress-count{font-size:var(--fs-xs);color:var(--fg-60);white-space:nowrap}
 .egress-add{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 .egress-add input{flex:1;min-width:180px}
-.test-model-label{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-60);white-space:nowrap}
-.test-model-label select{min-width:160px;font-size:13px}
+.test-model-label{display:inline-flex;align-items:center;gap:8px;font-size:var(--fs-sm);color:var(--fg-60);white-space:nowrap}
+.test-model-label select{min-width:160px;font-size:var(--fs-sm)}
 .metrics{
-  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:24px;
+  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;margin:24px 0;border-top:1px solid var(--fg-10);border-left:1px solid var(--fg-10);
 }
 @media (max-width:980px){.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:720px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.metric{padding:16px;border:1px solid var(--fg-10);background:transparent}
-.metric .k{font-size:11px;font-family:var(--sans);letter-spacing:.15em;text-transform:uppercase;color:var(--fg-40)}
+.metric{min-width:0;padding:18px 16px;border-right:1px solid var(--fg-10);border-bottom:1px solid var(--fg-10);background:transparent}
+.metric .k{font-size:var(--fs-xs);font-family:var(--sans);letter-spacing:.15em;text-transform:uppercase;color:var(--fg-40)}
 .metric .v{
-  margin-top:8px;font-family:var(--mono);font-size:24px;font-weight:400;
+  margin-top:8px;font-family:var(--mono);font-size:var(--fs-lg);font-weight:400;
   letter-spacing:-.02em;color:var(--fg);text-align:right;
 }
-.metric .v.sm{font-size:13.5px;line-height:1.4}
+.metric .v.sm{font-size:var(--fs-base);line-height:1.4}
 /* 概览：波动监测条（默认隐藏，未启用时不出现） */
 .watchbar{
   display:flex;align-items:center;gap:18px;flex-wrap:wrap;
   margin-top:16px;padding:12px 16px;border:1px solid var(--fg-10);
-  font-family:var(--sans);font-size:11px;letter-spacing:.13em;text-transform:uppercase;
+  font-family:var(--sans);font-size:var(--fs-xs);letter-spacing:.13em;text-transform:uppercase;
   color:var(--fg-40);
 }
 .watchbar[hidden]{display:none}
@@ -222,7 +230,7 @@ h1{
 .watchbar .state.bad{color:var(--fg);text-decoration:underline;text-underline-offset:3px}
 .watchbar .num{color:var(--fg-40)}
 .watchbar .num b{
-  font-family:var(--mono);font-size:12px;font-weight:400;letter-spacing:0;
+  font-family:var(--mono);font-size:var(--fs-sm);font-weight:400;letter-spacing:0;
   color:var(--fg);margin-left:6px;
 }
 .section-head{
@@ -230,16 +238,16 @@ h1{
   margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid var(--fg-10);
 }
 .section-head h2{
-  margin:0;font-family:var(--display);font-size:18px;font-weight:400;
+  margin:0;font-family:var(--display);font-size:var(--fs-md);font-weight:400;
   letter-spacing:-.01em;color:var(--fg);
 }
-.section-head p{margin:4px 0 0;color:var(--fg-60);font-size:12px}
+.section-head p{margin:4px 0 0;color:var(--fg-60);font-size:var(--fs-sm)}
 .actions{display:flex;gap:10px;flex-wrap:wrap}
 button,.btn,.linkbtn{
   appearance:none;border:1px solid var(--fg-20);background:transparent;
   color:var(--fg-80);cursor:pointer;
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
-  padding:8px 16px;font-family:var(--sans);font-size:12px;
+  padding:8px 16px;font-family:var(--sans);font-size:var(--fs-sm);
   letter-spacing:.06em;text-transform:uppercase;
   transition:color 200ms ease,border-color 200ms ease,background-color 200ms ease;
 }
@@ -262,12 +270,12 @@ button.danger:hover{background:var(--invert-bg);color:var(--invert-fg);border-co
 .field-grid{display:grid;grid-template-columns:1fr 1.4fr;gap:16px;margin:8px 0 16px}
 @media (max-width:640px){.field-grid{grid-template-columns:1fr}}
 label{
-  display:block;font-size:11px;font-family:var(--sans);letter-spacing:.18em;
+  display:block;font-size:var(--fs-xs);font-family:var(--sans);letter-spacing:.18em;
   text-transform:uppercase;color:var(--fg-40);margin-bottom:6px;
 }
 select,input{
   width:100%;padding:8px 0;border:none;border-bottom:1px solid var(--fg-20);
-  background:transparent;color:var(--fg);font-family:var(--sans);font-size:14px;
+  background:transparent;color:var(--fg);font-family:var(--sans);font-size:var(--fs-base);
   outline:none;transition:border-color 200ms ease;
 }
 select:focus,input:focus{border-bottom-color:var(--fg)}
@@ -275,67 +283,67 @@ select:focus,input:focus{border-bottom-color:var(--fg)}
   margin-top:16px;padding:12px 14px;border:1px solid var(--fg-10);background:transparent;
 }
 .oauth-status .title{
-  font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--fg-40);margin-bottom:6px;
+  font-size:var(--fs-xs);letter-spacing:.18em;text-transform:uppercase;color:var(--fg-40);margin-bottom:6px;
 }
-.oauth-status .msg{font-size:13px;line-height:1.5;color:var(--fg-80)}
+.oauth-status .msg{font-size:var(--fs-sm);line-height:1.5;color:var(--fg-80)}
 
 .account{
-  display:grid;gap:10px;padding:18px;border:1px solid var(--fg-10);
-  background:transparent;transition:border-color 200ms ease;margin-bottom:12px;
+  display:grid;gap:10px;padding:22px 0;border:0;border-bottom:1px solid var(--fg-10);
+  background:transparent;transition:border-color 200ms ease;margin-bottom:0;
 }
 .account:hover{border-color:var(--fg-40)}
 .account-top{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center}
 .account-title{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .account-title strong{
-  font-family:var(--display);font-size:16px;font-weight:400;color:var(--fg);letter-spacing:-.01em;
+  font-family:var(--display);font-size:var(--fs-md);font-weight:400;color:var(--fg);letter-spacing:-.01em;
 }
 .badge{
   display:inline-flex;align-items:center;padding:2px 7px;border:1px solid var(--fg-20);
-  font-size:10.5px;font-family:var(--sans);letter-spacing:.1em;text-transform:uppercase;
+  font-size:var(--fs-xs);font-family:var(--sans);letter-spacing:.1em;text-transform:uppercase;
   color:var(--fg-60);background:transparent;
 }
 .badge.site{border-color:var(--fg-40);color:var(--fg)}
 .badge.muted{border-color:var(--fg-10);color:var(--fg-40)}
 .badge.on{border-color:var(--fg);color:var(--fg);font-weight:500}
-.badge.off{border-color:var(--fg-20);color:var(--fg-40)}
+.badge.off{border-style:dashed;border-color:var(--fg-20);color:var(--fg-40)}
 .seg{display:inline-flex;gap:0;border:1px solid var(--fg-20)}
 .seg button{
   border:none;border-right:1px solid var(--fg-20);background:transparent;color:var(--fg-60);
-  padding:6px 14px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;
+  padding:6px 14px;font-size:var(--fs-sm);letter-spacing:.08em;text-transform:uppercase;cursor:pointer;
 }
 .seg button:last-child{border-right:none}
 .seg button.active{background:var(--invert-bg);color:var(--invert-fg);font-weight:500}
-.seg-hint{margin:10px 0 16px;color:var(--fg-40);font-size:12px}
+.seg-hint{margin:10px 0 16px;color:var(--fg-40);font-size:var(--fs-sm)}
 /* 从 OAuth 回调带 #codebuddy 进来时，滚动目标不要被吸顶栏盖住 */
 #codebuddy{scroll-margin-top:88px}
-.meta{color:var(--fg-60);font-size:12.5px;line-height:1.5}
-.meta code,.mono{font-family:var(--mono);font-size:12px}
-.err{margin-top:4px;color:var(--fg);font-family:var(--mono);font-size:12px;border-left:2px solid var(--fg);padding-left:8px}
+.meta{color:var(--fg-60);font-size:var(--fs-sm);line-height:1.5}
+.meta code,.mono{font-family:var(--mono);font-size:var(--fs-sm)}
+.err{margin-top:4px;color:var(--fg);font-family:var(--mono);font-size:var(--fs-sm);border-left:2px solid var(--fg);padding-left:8px}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
 .chip{
-  padding:6px 12px;border:1px solid var(--fg-10);font-size:12px;font-family:var(--mono);
+  padding:6px 12px;border:1px solid var(--fg-10);font-size:var(--fs-sm);font-family:var(--mono);
   color:var(--fg);background:transparent;transition:border-color 200ms ease,font-style 500ms ease;
 }
 .chip.btnish{cursor:pointer}
 .chip.btnish:hover{border-color:var(--fg-40);font-style:italic}
 .empty{
   padding:32px 16px;border:1px dashed var(--fg-20);text-align:center;color:var(--fg-40);
-  font-family:var(--sans);font-size:13px;
+  font-family:var(--sans);font-size:var(--fs-sm);
 }
 details.raw{margin-top:12px;border:1px solid var(--fg-10);background:transparent}
 details.raw summary{
-  cursor:pointer;list-style:none;padding:10px 14px;font-size:11px;letter-spacing:.18em;
+  cursor:pointer;list-style:none;padding:10px 14px;font-size:var(--fs-xs);letter-spacing:.18em;
   text-transform:uppercase;color:var(--fg-40);font-family:var(--sans);transition:color 200ms ease;
 }
 details.raw summary:hover{color:var(--fg)}
 details.raw summary::-webkit-details-marker{display:none}
 pre{
   margin:0;padding:0 14px 14px;white-space:pre-wrap;word-break:break-word;
-  font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--fg-80);
+  font-family:var(--mono);font-size:var(--fs-xs);line-height:1.6;color:var(--fg-80);
   max-height:280px;overflow:auto;
 }
 .copyline{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
-.copyline input{font-family:var(--mono);font-size:12.5px}
+.copyline input{font-family:var(--mono);font-size:var(--fs-sm)}
 .bound-keys{margin-top:18px;display:flex;flex-direction:column;gap:0}
 .bound-key{
   display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
@@ -344,35 +352,35 @@ pre{
 .bound-key .meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .bound-keys-new{margin-top:16px}
 .bound-keys-new label{
-  display:block;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40);margin-bottom:8px;
+  display:block;font-size:var(--fs-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40);margin-bottom:8px;
 }
 .bound-keys-new select{
   width:100%;padding:8px 10px;border:1px solid var(--fg-20);background:transparent;font:inherit;
 }
-.secret-hint{margin-top:12px;font-size:12px;color:var(--fg-40);line-height:1.5}
+.secret-hint{margin-top:12px;font-size:var(--fs-sm);color:var(--fg-40);line-height:1.5}
 .toast{
   position:fixed;right:24px;bottom:24px;z-index:100;min-width:180px;max-width:min(420px,92vw);
-  padding:12px 20px;background:var(--invert-bg);color:var(--invert-fg);font-size:12px;
+  padding:12px 20px;background:var(--invert-bg);color:var(--invert-fg);font-size:var(--fs-sm);
   letter-spacing:.08em;text-transform:uppercase;font-family:var(--sans);font-weight:500;
   border:1px solid var(--invert-bg);opacity:0;pointer-events:none;transition:opacity 300ms ease;
 }
 .toast.show{opacity:1}
-.toast.err{background:var(--invert-bg);color:var(--invert-fg);border-color:var(--invert-bg)}
-.usage-line{margin-top:4px;font-size:12px}
-.usage-line .pill{display:inline-flex;padding:2px 8px;font-family:var(--mono);font-size:11px;border:1px solid var(--fg-20);color:var(--fg)}
+.toast.err{background:var(--bg);color:var(--fg);border:2px solid var(--fg)}
+.usage-line{margin-top:4px;font-size:var(--fs-sm)}
+.usage-line .pill{display:inline-flex;padding:2px 8px;font-family:var(--mono);font-size:var(--fs-xs);border:1px solid var(--fg-20);color:var(--fg)}
 .usage-line .pill.good{border-color:var(--fg);color:var(--fg);font-weight:500}
 .usage-line .pill.warn{border-color:var(--fg-40);color:var(--fg-80)}
-.usage-line .pill.bad{border-color:var(--fg-20);color:var(--fg-40)}
-.account .actions button{padding:4px 10px;font-size:11px;color:var(--fg-60);border-color:var(--fg-10)}
+.usage-line .pill.bad{background:var(--fg);border-color:var(--fg);color:var(--bg)}
+.account .actions button{padding:4px 10px;font-size:var(--fs-xs);color:var(--fg-60);border-color:var(--fg-10)}
 .account .actions button:hover{color:var(--fg);border-color:var(--fg-40)}
 .usage-filters{display:flex;flex-wrap:wrap;gap:16px 24px;margin:16px 0 0;align-items:end}
-.usage-filters label{display:flex;flex-direction:column;gap:6px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40)}
-.usage-filters select{min-width:180px;font-size:13px;text-transform:none;letter-spacing:0}
+.usage-filters label{display:flex;flex-direction:column;gap:6px;font-size:var(--fs-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40)}
+.usage-filters select{min-width:180px;font-size:var(--fs-sm);text-transform:none;letter-spacing:0}
 .usage-models{margin-top:16px;overflow:auto;border:1px solid var(--fg-10)}
-.usage-models table{width:100%;border-collapse:collapse;font-size:12px}
+.usage-models table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
 .usage-models th,.usage-models td{padding:8px 12px;border-bottom:1px solid var(--fg-10);text-align:left}
-.usage-models th{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40);font-weight:500}
-.usage-models td.mono{font-family:var(--mono);font-size:11px}
+.usage-models th{font-size:var(--fs-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40);font-weight:500}
+.usage-models td.mono{font-family:var(--mono);font-size:var(--fs-xs)}
 .usage-models .low{color:var(--fg-40)}
 
 /* 概览下方双栏注释卡片 */
@@ -384,29 +392,29 @@ pre{
   border-top:1px solid var(--fg-10);padding-top:14px;
 }
 .note-item h3{
-  font-family:var(--display);font-size:16px;font-weight:400;margin-bottom:6px;
+  font-family:var(--display);font-size:var(--fs-md);font-weight:400;margin-bottom:6px;
 }
 .note-item p{
-  font-size:12.5px;color:var(--fg-60);line-height:1.6;margin:0;
+  font-size:var(--fs-sm);color:var(--fg-60);line-height:1.6;margin:0;
 }
 
 .log-table-wrap{margin-top:16px;border:1px solid var(--fg-10)}
 .log-table-window{max-height:min(340px,42vh);overflow:auto}
-.log-table{width:100%;border-collapse:collapse;font-size:12px;min-width:880px}
+.log-table{width:100%;border-collapse:collapse;font-size:var(--fs-sm);min-width:880px}
 .log-pager{
   display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
-  padding:10px 12px;border-top:1px solid var(--fg-10);font-size:12px;color:var(--fg-60);
+  padding:10px 12px;border-top:1px solid var(--fg-10);font-size:var(--fs-sm);color:var(--fg-60);
 }
-.log-pager .actions button{padding:6px 12px;font-size:11px}
+.log-pager .actions button{padding:6px 12px;font-size:var(--fs-xs)}
 .log-table th,.log-table td{padding:10px 12px;border-bottom:1px solid var(--fg-10);text-align:left;vertical-align:top}
 .log-table th{
-  font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--fg-40);font-weight:500;
+  font-size:var(--fs-xs);letter-spacing:.15em;text-transform:uppercase;color:var(--fg-40);font-weight:500;
   position:sticky;top:0;background:var(--bg);
 }
-.log-table td.mono{font-family:var(--mono);font-size:11px}
+.log-table td.mono{font-family:var(--mono);font-size:var(--fs-xs)}
 .log-table tr:hover td{background:rgba(28,28,28,.02)}
 .log-table .idbtn{
-  border:none;background:transparent;padding:0;font-family:var(--mono);font-size:11px;
+  border:none;background:transparent;padding:0;font-family:var(--mono);font-size:var(--fs-xs);
   color:var(--fg);cursor:pointer;text-decoration:underline;text-underline-offset:3px;
 }
 .log-table .idbtn:hover{font-style:italic}
@@ -419,20 +427,20 @@ pre{
   margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--fg-10);
 }
 .usage-chart-head h3{
-  margin:0;font-family:var(--display);font-size:16px;font-weight:400;color:var(--fg);
+  margin:0;font-family:var(--display);font-size:var(--fs-md);font-weight:400;color:var(--fg);
 }
 .usage-chart-legend{
-  display:flex;gap:16px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-60);
+  display:flex;gap:16px;font-size:var(--fs-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-60);
 }
 .usage-chart-legend span{display:inline-flex;align-items:center;gap:6px}
 .usage-chart-legend .swatch{width:18px;height:0;border-top:2px solid var(--fg)}
 .usage-chart-legend .swatch.dash{border-top-style:dashed}
-.chart-empty{padding:32px 12px;text-align:center;color:var(--fg-40);font-size:13px}
+.chart-empty{padding:32px 12px;text-align:center;color:var(--fg-40);font-size:var(--fs-sm)}
 .usage-chart svg{display:block;width:100%;height:auto;max-height:200px}
 .usage-chart .axis{stroke:var(--fg-10);stroke-width:1}
 .usage-chart .line-tokens{fill:none;stroke:var(--fg);stroke-width:1.5}
 .usage-chart .line-rate{fill:none;stroke:var(--fg-60);stroke-width:1.5;stroke-dasharray:5 4}
-.usage-chart .lbl{fill:var(--fg-40);font-family:var(--sans);font-size:10px}
+.usage-chart .lbl{fill:var(--fg-40);font-family:var(--sans);font-size:var(--fs-xs)}
 
 /* 号池批量操作行 */
 .ops-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 4px}
@@ -442,8 +450,8 @@ pre{
   display:flex;align-items:center;justify-content:space-between;gap:8px 16px;flex-wrap:wrap;
   padding:12px 0;border-bottom:1px solid var(--fg-10);
 }
-.attention-row .who{font-size:13px;color:var(--fg);min-width:0;overflow-wrap:anywhere}
-.attention-row .who .meta{color:var(--fg-60);font-size:12.5px}
+.attention-row .who{font-size:var(--fs-sm);color:var(--fg);min-width:0;overflow-wrap:anywhere}
+.attention-row .who .meta{color:var(--fg-60);font-size:var(--fs-sm)}
 .reasons{display:flex;gap:6px;flex-wrap:wrap}
 .badge.warn{border-color:var(--fg-40);color:var(--fg)}
 .badge.bad{background:var(--invert-bg);border-color:var(--invert-bg);color:var(--invert-fg)}
@@ -451,7 +459,7 @@ pre{
 .more{position:relative;display:inline-flex}
 .more summary{
   list-style:none;cursor:pointer;border:1px solid var(--fg-10);padding:4px 10px;
-  font-size:11px;color:var(--fg-60);letter-spacing:.08em;text-transform:uppercase;
+  font-size:var(--fs-xs);color:var(--fg-60);letter-spacing:.08em;text-transform:uppercase;
 }
 .more summary::-webkit-details-marker{display:none}
 .more summary:hover,.more[open] summary{color:var(--fg);border-color:var(--fg-40)}
@@ -459,13 +467,66 @@ pre{
   position:absolute;right:0;top:calc(100% + 4px);z-index:20;min-width:148px;
   background:var(--bg);border:1px solid var(--fg-20);display:flex;flex-direction:column;
 }
-.more-menu button{border:none;padding:8px 12px;justify-content:flex-start;font-size:11px;color:var(--fg-60)}
+.more-menu button{border:none;padding:8px 12px;justify-content:flex-start;font-size:var(--fs-xs);color:var(--fg-60)}
 /* 账号卡片的 .actions button 优先级更高，这里显式覆盖，避免菜单项带上按钮边框和内边距 */
 .account .actions .more-menu button{border:none;padding:8px 12px;color:var(--fg-60)}
 .account .actions .more-menu button:hover{border:none;background:rgba(28,28,28,.03);color:var(--fg)}
 .more-menu button + button{border-top:1px solid var(--fg-10)}
 .more-menu button:hover{background:rgba(28,28,28,.03);color:var(--fg);border-color:transparent}
 .more-menu button.danger:hover{background:var(--invert-bg);color:var(--invert-fg)}
+
+
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin:8px 0 28px}
+.page-head .lede{max-width:65ch}
+.block{padding:24px 0;border-top:1px solid var(--fg-10)}
+.pool-bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 40px;margin-top:32px}
+.pool-bottom-grid>section{grid-column:1;grid-row:1 / span 2}
+.pool-bottom-grid>aside{min-width:0}
+#checkinMetrics{grid-template-columns:repeat(4,minmax(0,1fr))}
+#checkinPreset{width:auto;max-width:100%}
+#checkinRetryMin,#checkinRetryMax{width:auto;min-width:100px}
+#checkinRules input[type=checkbox]{width:auto;accent-color:var(--fg)}
+.checkin-rule>label:first-child{flex:1 1 220px;color:var(--fg);letter-spacing:0}
+.checkin-rule select{width:auto;font-size:var(--fs-sm)}
+.checkin-rule label{letter-spacing:0;margin:0;text-transform:none}
+.checkin-hint{max-width:80ch;color:var(--fg-60)}
+.config-state{font-family:var(--mono);font-size:var(--fs-sm);color:var(--fg-60)}
+.config-state[data-state=dirty]{color:var(--fg);text-decoration:underline;text-underline-offset:4px}
+.config-state[data-state=error]{color:var(--fg);border-left:2px solid var(--fg);padding-left:8px}
+.key-form{display:grid;grid-template-columns:1fr 1.4fr auto;gap:12px;align-items:center}
+.package-expiry{margin-top:8px;border-top:1px solid var(--fg-10);padding-top:12px}
+.package-expiry summary{cursor:pointer;font-size:var(--fs-sm);color:var(--fg-60)}
+.package-expiry table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
+.package-expiry th,.package-expiry td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--fg-10);font-weight:400}
+.pill.bad{background:var(--fg);color:var(--bg);padding:2px 6px}
+.badge.warn,.pill.warn{background:var(--fg-04);border-color:var(--fg)}
+button:disabled{opacity:.4;cursor:not-allowed}
+#ckFailed.has-failures{text-decoration:underline;text-underline-offset:6px}
+.topbar{padding-top:16px}
+.pillrow{flex-wrap:wrap;gap:6px 0;max-width:100%;letter-spacing:.04em}
+.tab-link{min-width:155px;white-space:nowrap}
+.tab-panel{scroll-margin-top:100px}
+@media(max-width:760px){
+  .shell{padding:0 16px 40px}
+  .topbar{position:static;gap:12px;padding:16px 0}
+  .brand{flex-wrap:wrap}
+  .pillrow{flex-shrink:1;font-size:var(--fs-xs)}
+  .pill + .pill::before{margin:0 6px}
+  .page-head{align-items:flex-start;flex-direction:column;gap:16px}
+  .pool-bottom-grid{grid-template-columns:1fr;gap:0}
+  .pool-bottom-grid>section{grid-row:auto}
+  .key-form{grid-template-columns:1fr}
+  #checkinMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .metric{padding:14px 12px}
+  .egress-row{flex-wrap:wrap}
+  .egress-add input{min-width:0;flex-basis:100%}
+  .route-line label{width:100%;min-width:0}
+  .route-line label input,.route-line label select{flex:1;min-width:0;width:auto}
+  .checkin-rule>label:first-child{flex-basis:100%}
+  .test-model-label{flex-wrap:wrap;white-space:normal}
+  .log-table-wrap,.usage-models{max-width:100%;overflow-x:auto}
+  .modal{padding:12px}.modal-card{padding:20px 16px}
+}
 
 #statusBox,#oauthBox,#modelsBox{display:none}
 @media (prefers-reduced-motion: reduce){
@@ -506,14 +567,17 @@ pre{
     <button type="button" class="tab-link" data-tab="tab-pool">
       <span class="tab-idx">02 /</span> 账号池与授权
     </button>
+    <button type="button" class="tab-link" data-tab="tab-checkin">
+      <span class="tab-idx">03 /</span> 自动签到
+    </button>
     <button type="button" class="tab-link" data-tab="tab-client">
-      <span class="tab-idx">03 /</span> 客户端接入
+      <span class="tab-idx">04 /</span> 客户端接入
     </button>
     <button type="button" class="tab-link" data-tab="tab-models">
-      <span class="tab-idx">04 /</span> 模型与快照
+      <span class="tab-idx">05 /</span> 模型与路由
     </button>
     <button type="button" class="tab-link" data-tab="tab-usage">
-      <span class="tab-idx">05 /</span> 用量与明细
+      <span class="tab-idx">06 /</span> 用量与明细
     </button>
   </nav>
 
@@ -523,9 +587,11 @@ pre{
   <div class="tab-panel active" id="tab-overview">
     <section class="panel">
       <div class="panel-inner">
-        <div class="eyebrow">Gateway Console · Overview</div>
-        <h1>账号、模型与网关状态</h1>
-        <p class="lede">监控 OAuth 登录、账号池状态与请求健康度。</p>
+        <div class="page-head"><div>
+          <div class="eyebrow">Gateway Console · Overview</div>
+          <h1>账号、模型与网关状态</h1>
+          <p class="lede">监控 OAuth 登录、账号池状态与请求健康度。</p>
+        </div><button class="primary" id="btnRefresh" type="button">刷新状态</button></div>
         <div class="metrics">
           <div class="metric"><div class="k">登录态</div><div class="v sm" id="mLogin">未登录</div></div>
           <div class="metric"><div class="k">Credits 余额</div><div class="v sm" id="mCredits">—</div></div>
@@ -533,19 +599,20 @@ pre{
           <div class="metric"><div class="k">成功 / 失败</div><div class="v sm" id="mSF">0 / 0</div></div>
           <div class="metric"><div class="k">总 Tokens</div><div class="v sm" id="mTokens">0</div></div>
         </div>
+        <div class="watchbar" id="concurrencyBar">
+          <span class="state">实时并发</span>
+          <span class="num">全局在途<b id="ccInFlight">—</b></span>
+          <span class="num">1m 峰值<b id="ccPeak">—</b></span>
+          <span class="num">1h 限流<b id="ccLimited">—</b></span>
+        </div>
         <div class="watchbar" id="watchBar" hidden>
           <span class="state" id="watchState">波动监测</span>
           <span class="num">错误率<b id="watchErr">—</b></span>
           <span class="num">推理占比<b id="watchMiss">—</b></span>
           <span class="num">耗时 P50<b id="watchP50">—</b></span>
           <span class="num">样本<b id="watchSamples">—</b></span>
-          <span class="num">在途<b id="ccInFlight">—</b></span>
-          <span class="num">1m 峰值<b id="ccPeak">—</b></span>
-          <span class="num">限流<b id="ccLimited">—</b></span>
         </div>
-        <div class="actions" style="margin-top:24px">
-          <button class="primary" id="btnRefresh" type="button">刷新状态</button>
-        </div>
+
 
         <div class="section-head" style="margin-top:28px">
           <div>
@@ -578,9 +645,9 @@ pre{
   <div class="tab-panel" id="tab-pool">
     <section class="panel">
       <div class="panel-inner">
-        <div class="section-head">
+        <div class="page-head">
           <div>
-            <h2>账号池集群</h2>
+            <div class="eyebrow">Accounts · Authorization</div><h1>账号池与授权</h1>
             <p>一键切换国内 / 国际号池，以及 CodeBuddy / WorkBuddy 上游；token 共用，请求跟随当前选择。</p>
           </div>
           <div class="actions">
@@ -595,7 +662,8 @@ pre{
           </div>
         </div>
         <p class="seg-hint" id="poolSiteHint">当前号池：—</p>
-        <div class="ops-row">
+        <div class="ops-row toolbar">
+          <button class="ghost" id="btnGoCheckin" type="button">自动签到排程 →</button>
           <button class="ghost" id="btnImportOpen" type="button">一键导入</button>
           <button class="ghost" id="btnCheckin" type="button" disabled aria-describedby="checkinHint">每日签到</button>
           <button class="ghost" id="btnPoolTest" type="button" disabled aria-describedby="poolTestHint">批量测试</button>
@@ -609,24 +677,13 @@ pre{
         <p class="checkin-hint" id="poolTestHint">对当前号池已启用账号发最小 chat，验证可用性与延迟；默认选最低倍率模型。</p>
         <pre class="checkin-detail" id="checkinRaw" hidden></pre>
         <pre class="checkin-detail" id="poolTestRaw" hidden></pre>
-        <div class="egress-panel" id="egressPanel">
-          <div class="egress-head">
-            <strong>账号出口</strong>
-            <span class="egress-hint" id="egressHint">未绑定出口的账号走本机直连</span>
-          </div>
-          <div class="egress-list" id="egressList"></div>
-          <div class="egress-add">
-            <input id="egressNewUrl" placeholder="socks5h://user:pass@host:port" autocomplete="off" spellcheck="false"/>
-            <input id="egressNewLabel" placeholder="备注（可选）" autocomplete="off" style="flex:0 0 140px"/>
-            <button class="ghost" id="btnEgressAdd" type="button">加入候选</button>
-            <button class="ghost" id="btnEgressBalance" type="button">均衡分配</button>
-          </div>
-        </div>
 
-        <div id="accounts"></div>
+
+        <div id="accounts"><div class="empty">正在加载账号池…</div></div>
       </div>
     </section>
 
+    <div class="pool-bottom-grid">
     <section class="panel" id="codebuddy">
       <div class="panel-inner">
         <div class="section-head">
@@ -663,8 +720,8 @@ pre{
         </details>
       </div>
     </section>
-
-    <section class="panel" id="quota-floor">
+      <aside>
+<section class="panel" id="quota-floor">
       <div class="panel-inner">
         <div class="section-head">
           <div>
@@ -679,20 +736,136 @@ pre{
           <button class="teal" id="btnQuotaFloorSave" type="button">保存</button>
           <span class="seg-hint" id="quotaFloorHint">填 0 = 不启用（所有号都参与，余额不足由上游自己拦）。修改后必须点「保存」。</span>
         </div>
-        <p class="checkin-hint" id="quotaFloorState">当前：未启用</p>
+        <p class="checkin-hint config-state" role="status" aria-live="polite" id="quotaFloorState">当前：未启用</p>
       </div>
     </section>
+        <div class="egress-panel" id="egressPanel">
+          <div class="egress-head">
+            <strong>账号出口</strong>
+            <span class="egress-hint" id="egressHint">未绑定出口的账号走本机直连</span>
+          </div>
+          <div class="egress-list" id="egressList"></div>
+          <div class="egress-add">
+            <input id="egressNewUrl" placeholder="socks5h://user:pass@host:port" autocomplete="off" spellcheck="false"/>
+            <input id="egressNewLabel" placeholder="备注（可选）" autocomplete="off" style="flex:0 0 140px"/>
+            <button class="ghost" id="btnEgressAdd" type="button">加入候选</button>
+            <button class="ghost" id="btnEgressBalance" type="button">均衡分配</button>
+          </div>
+        </div>
+      </aside>
+    </div>
   </div>
 
   <!-- ========================================================
        TAB 03: 客户端接入配置 (专注 OpenAI 端点与验证)
        ======================================================== -->
+  <div class="tab-panel" id="tab-checkin">
+    <section class="panel">
+      <div class="panel-inner">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">Automation · Daily Check-in</div><h1>自动签到与错峰调度</h1>
+            <p>每个账号可单独设时刻或时段随机，时间统一按北京时间。启动不补签，错过等明天；想补签请到「账号池」手动跑一轮。</p>
+          </div>
+          <div class="actions"><span class="config-state" id="checkinSaveState" role="status" aria-live="polite">配置加载中…</span><button class="primary" id="btnCheckinSave" type="button" disabled>保存签到配置</button></div>
+        </div>
+        <div class="seg" id="checkinSiteSeg" role="group" aria-label="签到统计范围" style="margin-bottom:12px">
+          <button type="button" data-cksite="" class="active">全部</button>
+          <button type="button" data-cksite="domestic">国内</button>
+          <button type="button" data-cksite="global">国际</button>
+        </div>
+        <div class="metrics" id="checkinMetrics" style="margin-bottom:16px">
+          <div class="metric"><div class="k">已签到</div><div class="v" id="ckDone">—</div></div>
+          <div class="metric"><div class="k">未签到</div><div class="v" id="ckNone">—</div></div>
+          <div class="metric"><div class="k">签到失败</div><div class="v" id="ckFailed">—</div></div>
+          <div class="metric"><div class="k">已启用规则 · 本地草稿</div><div class="v" id="ckRules">—</div></div>
+        </div>
+        <p class="checkin-hint" style="margin:-8px 0 12px">前三项来自服务端今日执行结果；规则数反映本地草稿。范围仅影响统计与批量操作，保存始终包含两站全部规则。</p>
+        <div class="ops-row">
+          <label class="test-model-label" for="checkinAuto">总开关
+            <select id="checkinAuto" aria-label="自动签到总开关">
+              <option value="off">关闭</option>
+              <option value="on">开启</option>
+            </select>
+          </label>
+          <span class="seg-hint">规则文件与总开关保存后立即生效，无需重启。</span>
+        </div>
+        <div class="ops-row" style="margin-top:8px">
+          <span class="seg-hint" style="margin-right:8px">签到失败后：</span>
+          <select id="checkinRetryMin" aria-label="签到失败后多久重试">
+            <option value="0">不重试</option>
+            <option value="5">5 分钟后</option>
+            <option value="10">10 分钟后</option>
+            <option value="30">30 分钟后</option>
+            <option value="60">60 分钟后</option>
+          </select>
+          <span class="seg-hint">最多重试</span>
+          <select id="checkinRetryMax" aria-label="签到失败最多重试几次">
+            <option value="1">1 次</option>
+            <option value="2">2 次</option>
+          </select>
+          <span class="seg-hint">只重试「可能有救」的失败（出口抖动、上游 5xx）；429 / 额度限制不重试，23:30 后不再重试。</span>
+        </div>
+        <div class="ops-row" style="margin-top:14px;border-top:1px solid var(--fg-10);padding-top:14px">
+          <label class="test-model-label" for="checkinFallback">出口失败时回落直连
+            <select id="checkinFallback" aria-label="签到出口失败时是否回落直连">
+              <option value="off">关闭</option>
+              <option value="on">开启</option>
+            </select>
+          </label>
+          <span class="seg-hint">账号绑定的出口连不上时，直连重试一次。仅对「连不上」类错误生效；429 / 额度 / 上游 5xx 不会降级。</span>
+        </div>
+        <div class="ops-row" style="margin-top:12px">
+          <span class="seg-hint" style="margin-right:8px">批量设置：</span>
+          <button class="ghost" id="btnCheckinAll" type="button">全选</button>
+          <button class="ghost" id="btnCheckinNone" type="button">全不选</button>
+          <select id="checkinPreset" aria-label="批量设置签到时间" title="把当前范围内的账号统一设成某种签到节奏">
+            <option value="">选一个节奏…</option>
+            <option value="human">仿人随机（推荐）</option>
+            <option value="allday">全天随机</option>
+            <option value="0900">每天 09:00</option>
+            <option value="1200">每天 12:00</option>
+            <option value="2000">每天 20:00</option>
+            <option value="0900-1100">09:00–11:00 随机</option>
+            <option value="2000-2300">20:00–23:00 随机</option>
+            <option value="spread">整批错开（均匀铺开）</option>
+          </select>
+          <span class="seg-hint" id="checkinPresetHint">选完立刻套用到当前范围，仍要点「保存」才生效。</span>
+        </div>
+        <div class="bound-keys" id="checkinRules"><div class="empty">正在加载签到规则…</div></div>
+        <p class="checkin-hint" id="checkinRuleHint" hidden></p>
+        <p class="checkin-hint">开始时间留空 = 当天全天随机一个分钟点；填 <code>09:00</code> 且结束留空 = 固定时刻；填 <code>09:00</code>–<code>11:00</code> = 该时段内每天随机一个分钟。不支持跨零点窗口。仅对已启用且有凭据的账号生效。</p>
+        <div class="ops-row" style="margin-top:14px;border-top:1px solid var(--fg-10);padding-top:14px">
+          <button class="ghost" id="btnCheckinLog" type="button">查看签到明细（48h）</button>
+          <span class="seg-hint">最近 48 小时的每一次签到尝试，含失败原因与实际出口。</span>
+        </div>
+        <div class="log-table-wrap" id="checkinLogWrap" hidden>
+          <div class="log-table-window">
+            <table class="log-table" aria-label="签到明细">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>账号</th>
+                  <th>结果</th>
+                  <th>积分</th>
+                  <th>出口</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody id="checkinLogRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <div class="tab-panel" id="tab-client">
     <section class="panel" id="client-config">
       <div class="panel-inner">
-        <div class="section-head">
+        <div class="page-head">
           <div>
-            <h2>OpenAI 兼容接入</h2>
+            <div class="eyebrow">Client Integration · OpenAI Compatible</div><h1>OpenAI 兼容接入</h1>
             <p>给下游客户端填 Base URL + API Key；不会暴露 CodeBuddy OAuth token。</p>
           </div>
           <div class="actions">
@@ -742,7 +915,7 @@ pre{
         <div class="bound-keys" id="boundApiKeys"></div>
         <div class="bound-keys-new">
           <label for="boundKeySite">新建绑定 Key</label>
-          <div class="copyline">
+          <div class="key-form">
             <select id="boundKeySite" aria-label="绑定区域">
               <option value="domestic">国内 domestic</option>
               <option value="global">国际 global</option>
@@ -756,104 +929,7 @@ pre{
         <div class="secret-hint" id="clientConfigHint">API Key 点击复制时才会读取明文。Key 默认写入 ~/.codebuddy/proxy.env，与账号池同目录，换文件夹启动也会沿用同一把。绑定 Key 换区不改主 Key。</div>
       </div>
     </section>
-    <section class="panel">
-      <div class="panel-inner">
-        <div class="section-head">
-          <div>
-            <h2>自动签到</h2>
-            <p>每个账号可单独设时刻或时段随机，时间统一按北京时间。启动不补签，错过等明天；想补签请到「账号池」手动跑一轮。</p>
-          </div>
-          <div class="actions"><button class="teal" id="btnCheckinSave" type="button">保存</button></div>
-        </div>
-        <div class="seg" id="checkinSiteSeg" role="group" aria-label="签到统计范围" style="margin-bottom:12px">
-          <button type="button" data-cksite="" class="active">全部</button>
-          <button type="button" data-cksite="domestic">国内</button>
-          <button type="button" data-cksite="global">国际</button>
-        </div>
-        <div class="metrics" id="checkinMetrics" style="margin-bottom:16px">
-          <div class="metric"><div class="k">已签到</div><div class="v" id="ckDone">—</div></div>
-          <div class="metric"><div class="k">未签到</div><div class="v" id="ckNone">—</div></div>
-          <div class="metric"><div class="k">签到失败</div><div class="v" id="ckFailed">—</div></div>
-          <div class="metric"><div class="k">已启用规则</div><div class="v" id="ckRules">—</div></div>
-        </div>
-        <p class="checkin-hint" style="margin:-8px 0 12px">统计范围只影响上面的数字与勾选；规则列表始终显示全部账号，避免保存时丢掉另一站的规则。</p>
-        <div class="ops-row">
-          <label class="test-model-label" for="checkinAuto">总开关
-            <select id="checkinAuto" aria-label="自动签到总开关">
-              <option value="off">关闭</option>
-              <option value="on">开启</option>
-            </select>
-          </label>
-          <span class="seg-hint">规则文件与总开关保存后立即生效，无需重启。</span>
-        </div>
-        <div class="ops-row" style="margin-top:12px">
-          <span class="seg-hint" style="margin-right:8px">批量设置：</span>
-          <button class="ghost" id="btnCheckinAll" type="button">全选</button>
-          <button class="ghost" id="btnCheckinNone" type="button">全不选</button>
-          <select id="checkinPreset" aria-label="批量设置签到时间" title="把当前范围内的账号统一设成某种签到节奏">
-            <option value="">选一个节奏…</option>
-            <option value="human">仿人随机（推荐）</option>
-            <option value="allday">全天随机</option>
-            <option value="0900">每天 09:00</option>
-            <option value="1200">每天 12:00</option>
-            <option value="2000">每天 20:00</option>
-            <option value="0900-1100">09:00–11:00 随机</option>
-            <option value="2000-2300">20:00–23:00 随机</option>
-            <option value="spread">整批错开（均匀铺开）</option>
-          </select>
-          <span class="seg-hint" id="checkinPresetHint">选完立刻套用到当前范围，仍要点「保存」才生效。</span>
-        </div>
-        <div class="ops-row" style="margin-top:8px">
-          <span class="seg-hint" style="margin-right:8px">签到失败后：</span>
-          <select id="checkinRetryMin" aria-label="签到失败后多久重试">
-            <option value="0">不重试</option>
-            <option value="5">5 分钟后</option>
-            <option value="10">10 分钟后</option>
-            <option value="30">30 分钟后</option>
-            <option value="60">60 分钟后</option>
-          </select>
-          <span class="seg-hint">最多重试</span>
-          <select id="checkinRetryMax" aria-label="签到失败最多重试几次">
-            <option value="1">1 次</option>
-            <option value="2">2 次</option>
-          </select>
-          <span class="seg-hint">只重试「可能有救」的失败（出口抖动、上游 5xx）；429 / 额度限制不重试，23:30 后不再重试。</span>
-        </div>
-        <div class="bound-keys" id="checkinRules"></div>
-        <p class="checkin-hint" id="checkinRuleHint" hidden></p>
-        <p class="checkin-hint">开始时间留空 = 当天全天随机一个分钟点；填 <code>09:00</code> 且结束留空 = 固定时刻；填 <code>09:00</code>–<code>11:00</code> = 该时段内每天随机一个分钟。不支持跨零点窗口。仅对已启用且有凭据的账号生效。</p>
-        <div class="ops-row" style="margin-top:14px;border-top:1px solid var(--fg-10);padding-top:14px">
-          <label class="test-model-label" for="checkinFallback">出口失败时回落直连
-            <select id="checkinFallback" aria-label="签到出口失败时是否回落直连">
-              <option value="off">关闭</option>
-              <option value="on">开启</option>
-            </select>
-          </label>
-          <span class="seg-hint">账号绑定的出口连不上时，直连重试一次。仅对「连不上」类错误生效；429 / 额度 / 上游 5xx 不会降级。</span>
-        </div>
-        <div class="ops-row" style="margin-top:14px;border-top:1px solid var(--fg-10);padding-top:14px">
-          <button class="ghost" id="btnCheckinLog" type="button">查看签到明细（48h）</button>
-          <span class="seg-hint">最近 48 小时的每一次签到尝试，含失败原因与实际出口。</span>
-        </div>
-        <div class="log-table-wrap" id="checkinLogWrap" hidden>
-          <div class="log-table-window">
-            <table class="log-table" aria-label="签到明细">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>账号</th>
-                  <th>结果</th>
-                  <th>积分</th>
-                  <th>出口</th>
-                  <th>说明</th>
-                </tr>
-              </thead>
-              <tbody id="checkinLogRows"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </section>
+
   </div>
 
   <!-- ========================================================
@@ -862,12 +938,13 @@ pre{
   <div class="tab-panel" id="tab-models">
     <section class="panel">
       <div class="panel-inner">
-        <div class="section-head">
+        <div class="page-head">
           <div>
-            <h2>可用模型编目</h2>
+            <div class="eyebrow">Models · Directional Routing</div><h1>模型编目与路由</h1>
             <p>展示上游模型名（不含 codebuddy/ 前缀）；点击模型芯片可复制。</p>
           </div>
           <div class="actions">
+            <button id="btnModels" type="button" hidden>刷新模型</button>
             <button class="ghost" id="btnModelsDomestic" type="button">重新拉取 · 国内</button>
             <button class="ghost" id="btnModelsGlobal" type="button">重新拉取 · 国际</button>
             <button class="ghost" id="btnModelsBoth" type="button">两个都拉</button>
@@ -897,8 +974,8 @@ pre{
             <p>一条规则 = <strong>某个区收到某个模型名</strong>时，改用<strong>另一个区（或同区）的某个模型</strong>执行。两个方向各配各的，互不影响。没配置的模型一字节不改。</p>
           </div>
           <div class="actions">
-            <button class="teal" id="btnRouteAdd" type="button">+ 新增路由</button>
-            <button class="ghost" id="btnRouteSave" type="button">保存</button>
+            <button class="teal" id="btnRouteAdd" type="button" disabled>+ 新增路由</button>
+            <button class="ghost" id="btnRouteSave" type="button" disabled>保存</button>
           </div>
         </div>
         <div class="route-priority" id="routePriority">
@@ -910,7 +987,7 @@ pre{
             <li><b>号池默认区</b>：在「账号池集群」里选的国内/国际，只在前三层都没说的时候兜底。</li>
           </ol>
         </div>
-        <div class="bound-keys" id="routeRules"></div>
+        <p class="config-state" id="routeSaveState" role="status" aria-live="polite">配置加载中…</p><div class="bound-keys" id="routeRules"></div>
         <p class="checkin-hint" id="routeHint" style="margin-top:10px">左侧选哪个区，右侧模型下拉就只列那个区真实存在的模型（来自上方模型编目）；也可以手输编目里没有的名字。同一「源区 + 源模型」再加一条 = 备用链，本站没号时按顺序串下去。</p>
       </div>
     </section>
@@ -1077,34 +1154,59 @@ pre{
 <script>
 const $ = (id) => document.getElementById(id);
 
-/* 切页逻辑 (Tab Switcher) */
-function switchTab(tabId){
-  document.querySelectorAll('.tab-link').forEach(function(b){ b.classList.remove('active'); });
-  document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
-  var btn = document.querySelector('.tab-link[data-tab="' + tabId + '"]');
-  if (btn) btn.classList.add('active');
-  var p = $(tabId);
-  if (p) p.classList.add('active');
+/* Six chapters, with legacy anchors retained for saved links and OAuth callbacks. */
+const chapterHashes = {'tab-overview':'#overview','tab-pool':'#accounts','tab-checkin':'#checkin','tab-client':'#client-config','tab-models':'#models','tab-usage':'#usage'};
+function switchTab(tabId, updateHash=true){
+  if (!chapterHashes[tabId]) tabId = 'tab-overview';
+  document.querySelectorAll('.tab-link').forEach(function(b){
+    const active = b.getAttribute('data-tab') === tabId;
+    b.classList.toggle('active', active);
+    b.setAttribute('role','tab');
+    b.id = 'nav-' + b.getAttribute('data-tab');
+    b.setAttribute('aria-controls', b.getAttribute('data-tab'));
+    b.setAttribute('aria-selected', String(active));
+    b.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('.tab-panel').forEach(function(p){
+    const active = p.id === tabId;
+    p.classList.toggle('active', active);
+    p.setAttribute('role','tabpanel');
+    p.setAttribute('aria-labelledby','nav-' + p.id);
+  });
+  const selected = document.querySelector('.tab-link.active');
+  const nav = selected.parentElement;
+  if (selected.offsetLeft < nav.scrollLeft || selected.offsetLeft + selected.offsetWidth > nav.scrollLeft + nav.clientWidth) {
+    nav.scrollLeft = selected.offsetLeft - nav.offsetLeft;
+  }
+  if (updateHash && location.hash !== chapterHashes[tabId]) history.pushState(null,'',chapterHashes[tabId]);
+}
+function openChapterHash(){
+  const hash = location.hash;
+  let tab = Object.keys(chapterHashes).find(function(key){ return chapterHashes[key] === hash; });
+  if (hash === '#codebuddy' || hash === '#quota-floor') tab = 'tab-pool';
+  if (hash === '#tab-checkin') tab = 'tab-checkin';
+  switchTab(tab || 'tab-overview', false);
+  if (tab === 'tab-usage') refreshUsage().catch(function(e){ showToast(e.message,'error'); });
+  if (hash === '#codebuddy' || hash === '#quota-floor') requestAnimationFrame(function(){ $(hash.slice(1)).scrollIntoView(); });
 }
 document.querySelectorAll('.tab-link').forEach(function(btn){
   btn.addEventListener('click', function(){
-    const tab = btn.getAttribute('data-tab');
-    switchTab(tab);
-    if (tab === 'tab-usage') refreshUsage().catch(function(e){ showToast(e.message, 'error'); });
+    switchTab(btn.getAttribute('data-tab'));
+    if (btn.getAttribute('data-tab') === 'tab-usage') refreshUsage().catch(function(e){ showToast(e.message,'error'); });
+  });
+  btn.addEventListener('keydown',function(e){
+    const tabs = Array.from(document.querySelectorAll('.tab-link'));
+    let i = tabs.indexOf(btn);
+    if (e.key === 'ArrowRight') i = (i+1) % tabs.length;
+    else if (e.key === 'ArrowLeft') i = (i+tabs.length-1) % tabs.length;
+    else if (e.key === 'Home') i = 0;
+    else if (e.key === 'End') i = tabs.length-1;
+    else return;
+    e.preventDefault(); tabs[i].focus(); tabs[i].click();
   });
 });
-if (window.location.hash === '#codebuddy') {
-  switchTab('tab-pool');
-} else if (window.location.hash === '#client-config') {
-  switchTab('tab-client');
-} else if (window.location.hash === '#usage') {
-  switchTab('tab-usage');
-}
-window.addEventListener('hashchange', function(){
-  if (window.location.hash === '#codebuddy') switchTab('tab-pool');
-  if (window.location.hash === '#client-config') switchTab('tab-client');
-  if (window.location.hash === '#usage') switchTab('tab-usage');
-});
+window.addEventListener('hashchange',openChapterHash);
+window.addEventListener('popstate',openChapterHash);
 
 async function api(path, opts={}) {
   const headers = Object.assign({'content-type':'application/json'}, opts.headers||{});
@@ -1258,7 +1360,7 @@ function renderAccounts(summary, activeSite) {
   // 规则先到、账号后到时，签到面板会拿空数组渲染成「没有账号」，
   // 所以这里补一次重绘（只在签到面板已初始化后执行）。
   if (typeof checkinRules !== 'undefined' && $('checkinRules')) {
-    paintCheckinConfig({auto: checkinAutoEnabled, rules: checkinRules});
+    renderCheckinAccounts();
   }
   const expanded = new Set(Array.from(box.querySelectorAll('.package-expiry[open]')).map(function(d){ return d.closest('.account').getAttribute('data-account-id'); }));
   // 15 秒轮询会重绘卡片；记住已展开的「更多」菜单，避免操作到一半被收起。
@@ -1894,7 +1996,8 @@ function paintStatus(data){
     const ver = data.version || (data.build && data.build.version) || 'dev';
     const ui = document.querySelector('meta[name="cbp-ui-revision"]');
     const uiRev = ui ? (ui.getAttribute('content') || '') : '';
-    $('pillVersion').textContent = uiRev ? (ver + ' · ui ' + uiRev) : ver;
+    $('pillVersion').textContent = ver;
+    $('pillVersion').title = uiRev ? ('UI · ' + uiRev) : ver;
   }
   const poolSite = normalizeSite(data.poolSite || cfg.poolSite || cfg.site || 'global');
   const poolProduct = normalizeProduct(data.poolProduct || data.product || cfg.poolProduct || cfg.product || 'codebuddy');
@@ -1908,14 +2011,15 @@ function paintStatus(data){
   $('mEnabled').textContent = String(activeEnabled);
   const up = data.upstream || {};
   var healthOk = !!data.ok;
-  var healthText = healthOk ? (loggedIn ? ('服务正常 · ' + siteLabel(poolSite) + '号池 · ' + productLabel(poolProduct)) : ('服务正常 · ' + siteLabel(poolSite) + '号池未登录')) : '状态异常';
+  var healthText = healthOk ? (loggedIn ? '服务正常' : '服务正常 · 号池未登录') : '状态异常';
   if (up.probed && up.ok === false) {
     healthOk = false;
-    healthText = '上游不可达' + (up.message ? (' · ' + String(up.message).slice(0, 48)) : '');
+    healthText = '上游不可达';
   } else if (up.probed && up.ok) {
-    healthText = '服务正常 · 上游可达 · ' + siteLabel(poolSite) + '号池 · ' + productLabel(poolProduct);
+    healthText = '服务正常 · 上游可达';
   }
   setHealth(healthOk, healthText);
+  $('healthText').title = up.message || healthText;
   if (Array.isArray(data.accountUsages)) {
     data.accountUsages.forEach(function(item){
       if (!item || !item.accountId) return;
@@ -1939,7 +2043,7 @@ function paintStatus(data){
   $('statusBox').textContent = raw;
   $('statusRaw').textContent = raw;
   renderAccounts(accounts, poolSite);
-  paintCheckinConfig({auto: checkinAutoEnabled, rules: checkinRules});
+  renderCheckinAccounts();
   refreshEgress();
 }
 
@@ -2055,6 +2159,33 @@ async function generateBoundKey(){
 }
 let checkinRules = [];
 let checkinAutoEnabled = false;
+let checkinLoaded = false, checkinSaving = false, checkinSaved = '', checkinLastDraft = '', checkinAccountStamp = '';
+function configState(id, state, text){
+  const el = $(id);
+  if (el) { el.dataset.state = state; el.textContent = text; }
+}
+function checkinDraft(){
+  return {auto:$('checkinAuto').value === 'on', rules:checkinRules,
+    allowDirectFallback:$('checkinFallback').value === 'on',
+    checkinRetryMin:Number($('checkinRetryMin').value), checkinRetryMax:Number($('checkinRetryMax').value)};
+}
+function checkinChanged(){
+  if (!checkinLoaded || checkinSaving) return;
+  const draft = JSON.stringify(checkinDraft());
+  if (draft === checkinLastDraft) return;
+  checkinLastDraft = draft;
+  const dirty = draft !== checkinSaved;
+  configState('checkinSaveState', dirty ? 'dirty' : 'saved', dirty ? '有未保存的签到配置' : '签到配置已保存');
+}
+function renderCheckinAccounts(){
+  if (!checkinLoaded) return;
+  const stamp = JSON.stringify(lastAccounts.map(function(a){ return [a.id,a.label,a.site]; }));
+  if (stamp !== checkinAccountStamp) {
+    if (checkinAccountStamp) syncCheckinRulesFromDom();
+    checkinAccountStamp = stamp;
+    paintCheckinRules();
+  } else paintCheckinSummary();
+}
 function paintCheckinConfig(data){
   checkinRules = (data && data.rules) || [];
   checkinAutoEnabled = !!(data && data.auto);
@@ -2062,6 +2193,16 @@ function paintCheckinConfig(data){
   if ($('checkinFallback')) $('checkinFallback').value = (data && data.allowDirectFallback) ? 'on' : 'off';
   if ($('checkinRetryMin')) $('checkinRetryMin').value = String((data && data.checkinRetryMin != null) ? data.checkinRetryMin : 10);
   if ($('checkinRetryMax')) $('checkinRetryMax').value = String((data && data.checkinRetryMax != null) ? data.checkinRetryMax : 1);
+  checkinLoaded = true;
+  checkinAccountStamp = JSON.stringify(lastAccounts.map(function(a){ return [a.id,a.label,a.site]; }));
+  paintCheckinRules();
+  syncCheckinRulesFromDom();
+  checkinSaved = JSON.stringify(checkinDraft());
+  checkinLastDraft = checkinSaved;
+  $('btnCheckinSave').disabled = false;
+  configState('checkinSaveState','saved','签到配置已保存');
+}
+function paintCheckinRules(){
   const box = $('checkinRules');
   if (!box) return;
   const byId = {};
@@ -2077,6 +2218,7 @@ function paintCheckinConfig(data){
     }
     const name = escapeHtml((a.label || a.id) + ' · ' + siteLabel(a.site));
     const showWindow = (mode === 'window');
+    const showStart = showWindow || mode === 'fixed';
     const off = Number(r.offset || 0);
     return '<div class="checkin-rule" data-id="' + escapeHtml(a.id) + '">' +
       '<label><input type="checkbox" data-f="enabled"' + (r.enabled ? ' checked' : '') + '/> ' + name + '</label>' +
@@ -2086,7 +2228,7 @@ function paintCheckinConfig(data){
         '<option value="window"' + (mode==='window'?' selected':'') + '>时段窗口</option>' +
         '<option value="fixed"' + (mode==='fixed'?' selected':'') + '>固定时刻</option>' +
       '</select></label>' +
-      '<label data-w="start" style="display:' + (showWindow ? '' : 'none') + '">开始 <input type="text" data-f="start" placeholder="09:00" value="' + escapeHtml(r.start || '') + '"/></label>' +
+      '<label data-w="start" style="display:' + (showStart ? '' : 'none') + '">开始 <input type="text" data-f="start" placeholder="09:00" value="' + escapeHtml(r.start || '') + '"/></label>' +
       '<label data-w="end" style="display:' + (showWindow ? '' : 'none') + '">结束 <input type="text" data-f="end" placeholder="11:00" value="' + escapeHtml(r.end || '') + '"/></label>' +
       '<label title="在最终时刻上 ± 分钟（0–120），错开同一批账号">微调 <input type="number" data-f="offset" min="-120" max="120" step="5" value="' + off + '" style="width:64px"/></label>' +
       '</div>';
@@ -2125,9 +2267,8 @@ function paintCheckinSummary(){
     if (!checkinSiteFilter) return true;
     return siteById[r.accountId] === checkinSiteFilter;
   }).length);
-  // 失败数字用醒目色
   const failedEl = $('ckFailed');
-  if (failedEl) failedEl.style.color = failed > 0 ? 'var(--danger, #e5484d)' : '';
+  if (failedEl) failedEl.classList.toggle('has-failures', failed > 0);
 }
 
 // paintCheckinRuleHint 提示「总开关开了但没勾账号」这类静默失效状态，
@@ -2145,18 +2286,13 @@ function paintCheckinRuleHint(){
     text = '⚠ 总开关已开启，但没有任何账号被勾选，当前不会自动签到。请勾选下方账号。';
     bad = true;
   } else {
-    const today = new Date().toISOString().slice(0,10);
-    const parts = enabled.map(function(r){
-      if (r._nextAt) return r._nextAt;
-      return '待算';
-    });
-    const unique = Array.from(new Set(parts));
-    text = '已启用 ' + enabled.length + ' 个账号的自动签到（' + (unique.length === 1 ? unique[0] : '各自随机时刻') + '）。';
+    text = '本地草稿已勾选 ' + enabled.length + ' 个账号；保存后生效。实际下次执行时间见账号池中的签到状态。';
   }
   hint.textContent = text;
   hint.hidden = false;
   hint.style.color = bad ? 'var(--fg)' : '';
   paintCheckinSummary();
+  checkinChanged();
 }
 async function refreshCheckinConfig(){
   const data = await api('/direct-admin/api/checkin-config');
@@ -2164,16 +2300,32 @@ async function refreshCheckinConfig(){
   return data;
 }
 async function saveCheckinConfig(){
+  if (!checkinLoaded || checkinSaving) return;
   syncCheckinRulesFromDom();
-  const rules = checkinRules.filter(function(r){ return r.enabled || r.start || r.end || r.mode === 'human'; });
-  await api('/direct-admin/api/checkin-config', {method:'POST', body: JSON.stringify({
-    auto: $('checkinAuto') && $('checkinAuto').value === 'on', rules: rules,
-    allowDirectFallback: $('checkinFallback') && $('checkinFallback').value === 'on',
-    checkinRetryMin: Number(($('checkinRetryMin') || {}).value || 0),
-    checkinRetryMax: Number(($('checkinRetryMax') || {}).value || 1)
-  })});
-  showToast('自动签到配置已保存');
-  return refreshCheckinConfig();
+  const draft = checkinDraft();
+  for (const r of draft.rules) {
+    const time = /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/;
+    if ((r.mode === 'fixed' || r.mode === 'window') && !time.test(r.start)) throw new Error('请填写有效的开始时间（HH:MM）');
+    if (r.mode === 'window' && (!time.test(r.end) || r.end <= r.start)) throw new Error('结束时间必须晚于开始时间，不支持跨零点');
+    if (r.offset < -120 || r.offset > 120) throw new Error('微调范围为 -120 至 120 分钟');
+  }
+  checkinSaving = true;
+  const controls = Array.from(document.querySelectorAll('#tab-checkin input,#tab-checkin select,#tab-checkin button'));
+  controls.forEach(function(el){ el.disabled = true; });
+  configState('checkinSaveState','saving','正在保存签到配置…');
+  try {
+    await api('/direct-admin/api/checkin-config',{method:'POST',body:JSON.stringify(draft)});
+    checkinSaved = JSON.stringify(draft);
+    checkinAutoEnabled = draft.auto;
+    configState('checkinSaveState','saved','签到配置已保存并生效');
+    showToast('自动签到配置已保存');
+  } catch(e) {
+    configState('checkinSaveState','error','保存失败，草稿已保留：' + e.message);
+    throw e;
+  } finally {
+    checkinSaving = false;
+    controls.forEach(function(el){ el.disabled = false; });
+  }
 }
 async function refreshClientConfig(){
   const data = await api('/direct-admin/api/client-config');
@@ -2740,12 +2892,21 @@ if ($('btnPoolTest')) $('btnPoolTest').onclick = function(){ runPoolChatTest().c
 // ===================== 模型路由（有方向） =====================
 let routeRules = [];
 let routeCatalog = {domestic: [], global: []};
+let routeSaved = '', routeSaving = false;
+function routeChanged(){
+  if (routeSaving) return;
+  const dirty = JSON.stringify(routeRules) !== routeSaved;
+  configState('routeSaveState',dirty ? 'dirty' : 'saved',dirty ? '有未保存的路由规则' : '路由规则已保存');
+}
 
 async function refreshModelRoutes(){
   const data = await api('/direct-admin/api/model-routes');
   routeRules = (data && data.rules) || [];
   routeCatalog = (data && data.catalog) || {domestic: [], global: []};
+  routeSaved = JSON.stringify(routeRules);
+  $('btnRouteAdd').disabled = false; $('btnRouteSave').disabled = false;
   paintRouteRules();
+  routeChanged();
 }
 
 // routeSiteOptions 生成「国内 / 国际」两个选项。
@@ -2773,6 +2934,7 @@ function routeRuleKey(rule){
 }
 
 function paintRouteRules(){
+  routeChanged();
   const box = $('routeRules');
   if (!box) return;
   if (!routeRules.length) {
@@ -2838,6 +3000,7 @@ function syncRouteRulesFromDom(){
     next.push({fromSite: val('fromSite') || 'domestic', match: val('match'), site: val('site') || 'global', target: val('target'), note: val('note')});
   });
   routeRules = next;
+  routeChanged();
 }
 
 function bindRouteRowEvents(box){
@@ -2873,6 +3036,7 @@ function bindRouteRowEvents(box){
       paintRouteRules();
     };
   });
+  box.querySelectorAll('[data-rf="note"]').forEach(function(inp){ inp.oninput = syncRouteRulesFromDom; });
   // 改模型名时只更新摘要，不重画（否则输入框会失焦）。
   box.querySelectorAll('[data-rf="match"],[data-rf="target"]').forEach(function(inp){
     inp.oninput = function(){
@@ -2919,9 +3083,15 @@ if ($('btnRouteSave')) $('btnRouteSave').onclick = function(){
       showToast(where + '源和目标完全一样，这条规则没有意义', 'error'); return;
     }
   }
+  if (routeSaving) return;
+  routeSaving = true;
+  const controls = Array.from(document.querySelectorAll('#routeRules input,#routeRules select,#routeRules button,#btnRouteAdd,#btnRouteSave'));
+  controls.forEach(function(el){ el.disabled = true; });
+  configState('routeSaveState','saving','正在保存路由规则…');
   api('/direct-admin/api/model-routes', {method:'POST', body: JSON.stringify({rules: routeRules})})
-    .then(function(){ showToast('模型路由已保存并生效'); return refreshModelRoutes(); })
-    .catch(function(e){ showToast(e.message, 'error'); });
+    .then(function(){ routeSaved = JSON.stringify(routeRules); configState('routeSaveState','saved','路由规则已保存并生效'); showToast('模型路由已保存并生效'); })
+    .catch(function(e){ configState('routeSaveState','error','保存失败，草稿已保留：' + e.message); showToast(e.message,'error'); })
+    .finally(function(){ routeSaving = false; controls.forEach(function(el){ el.disabled = false; }); });
 };
 
 // 模型编目：国内 / 国际 / 两站合并，三个按钮各自独立。
@@ -2935,6 +3105,8 @@ if ($('btnModelsBoth')) $('btnModelsBoth').onclick = function(){ refreshModelsBo
 document.querySelectorAll('#modelsScopeSeg button').forEach(function(btn){
   btn.onclick = function(){ setModelsScope(btn.getAttribute('data-msite') || 'domestic'); };
 });
+if ($('btnGoCheckin')) $('btnGoCheckin').onclick = function(){ switchTab('tab-checkin'); };
+if ($('btnModels')) $('btnModels').onclick = function(){ refreshModels().catch(modelsError); };
 if ($('btnGoAccounts')) $('btnGoAccounts').onclick = function(){ switchTab('tab-pool'); };
 $('btnStart').onclick = function(){ startOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 if ($('btnImportOpen')) $('btnImportOpen').onclick = openImportModal;
@@ -2947,7 +3119,7 @@ document.addEventListener('keydown', function(e){
 $('btnImport').onclick = function(){ runImport().catch(function(e){ showToast(String(e), 'error'); }); };
 $('btnPoll').onclick = function(){ pollOAuth().catch(function(e){ $('oauthMsg').textContent = e.message; $('oauthRaw').textContent = e.message; }); };
 $('btnRefreshClient').onclick = function(){ refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); }); };
-if ($('btnCheckinSave')) $('btnCheckinSave').onclick = function(){ saveCheckinConfig().catch(function(e){ showToast(e.message, 'error'); }); };
+if ($('btnCheckinSave')) $('btnCheckinSave').onclick = function(){ saveCheckinConfig().catch(function(e){ configState('checkinSaveState','error','保存失败，草稿已保留：' + e.message); showToast(e.message, 'error'); }); };
 
 // 批量勾选：全选 / 全不选。
 function setAllCheckinEnabled(on){
@@ -3108,8 +3280,9 @@ function updateRuleRowVisibility(row){
   const mode = row.querySelector('[data-f="mode"]');
   if (!mode) return;
   const show = mode.value === 'window';
+  const showStart = show || mode.value === 'fixed';
   const s = row.querySelector('[data-w="start"]'), e = row.querySelector('[data-w="end"]');
-  if (s) s.style.display = show ? '' : 'none';
+  if (s) s.style.display = showStart ? '' : 'none';
   if (e) e.style.display = show ? '' : 'none';
 }
 
@@ -3123,12 +3296,18 @@ document.addEventListener('change', function(ev){
     syncCheckinRulesFromDom();
     if (t.getAttribute('data-f') === 'enabled') paintCheckinRuleHint();
   }
-  if (t.id === 'checkinAuto') paintCheckinRuleHint();
+  if (t.closest('#tab-checkin')) { checkinChanged(); paintCheckinRuleHint(); }
+});
+
+document.querySelector('#tab-checkin').addEventListener('input',function(e){
+  if (e.target.closest('.checkin-rule')) syncCheckinRulesFromDom();
+  checkinChanged();
 });
 
 // syncCheckinRulesFromDom 把界面上的行回读进 checkinRules，
 // 让「总览/提示」不用等保存就能反映最新勾选。
 function syncCheckinRulesFromDom(){
+  const previous = checkinRules;
   checkinRules = Array.from(document.querySelectorAll('#checkinRules .checkin-rule')).map(function(row){
     function val(f){ const el = row.querySelector('[data-f="'+f+'"]'); return el ? el.value.trim() : ''; }
     const cb = row.querySelector('[data-f="enabled"]');
@@ -3143,6 +3322,9 @@ function syncCheckinRulesFromDom(){
       offset: off
     };
   });
+  const visible = new Set(checkinRules.map(function(r){ return r.accountId; }));
+  checkinRules = checkinRules.concat(previous.filter(function(r){ return !visible.has(r.accountId); }));
+  checkinChanged();
 }
 // 勾选框/总开关一变就刷新提示，让「没勾账号」立刻可见。
 $('btnGenerateKey').onclick = function(){ generateApiKey().catch(function(e){ showToast(e.message, 'error'); }); };
@@ -3160,17 +3342,20 @@ $('copyApiKey').onclick = function(){
 };
 refreshStatus().catch(function(e){ $('statusRaw').textContent = e.message; setHealth(false, '无法连接'); });
 refreshClientConfig().catch(function(e){ showToast(e.message, 'error'); });
-refreshCheckinConfig().catch(function(){});
-refreshModelRoutes().catch(function(){});
+refreshCheckinConfig().catch(function(e){ configState('checkinSaveState','error','读取失败，请刷新重试：' + e.message); });
+refreshModelRoutes().catch(function(e){ configState('routeSaveState','error','读取失败，请刷新重试：' + e.message); $('btnRouteSave').disabled = true; });
 refreshModels().catch(function(){});
 
 // ===================== 选号门槛（积分下限）=====================
 // 独立端点 + 独立保存按钮：这是选号门槛，改错会让整池号瞬间不可用，
 // 不该跟「保存签到」混在一个表单里（改了不知道要不要点保存、点错还会连带改签到）。
+let quotaFloorSaved = null;
 async function refreshQuotaFloor(){
   const data = await api('/direct-admin/api/quota-floor');
   const v = (data && data.quotaFloor != null) ? Number(data.quotaFloor) : 0;
   if ($('quotaFloor')) $('quotaFloor').value = String(v);
+  quotaFloorSaved = v;
+  $('btnQuotaFloorSave').disabled = false;
   paintQuotaFloorState(v);
   return v;
 }
@@ -3186,23 +3371,36 @@ function paintQuotaFloorState(v){
   }
 }
 if ($('btnQuotaFloorSave')) $('btnQuotaFloorSave').onclick = function(){
+  if (quotaFloorSaved === null) return;
   const raw = $('quotaFloor') ? $('quotaFloor').value : '0';
   const v = Number(raw);
   if (!isFinite(v) || v < 0) {
     showToast('请填 0 或正数（0 = 不启用）', 'error');
     return;
   }
+  $('btnQuotaFloorSave').disabled = true; $('quotaFloor').disabled = true;
+  configState('quotaFloorState','saving','正在保存积分下限…');
   api('/direct-admin/api/quota-floor', {method:'POST', body: JSON.stringify({quotaFloor: v})})
     .then(function(data){
       const saved = (data && data.quotaFloor != null) ? Number(data.quotaFloor) : v;
       if ($('quotaFloor')) $('quotaFloor').value = String(saved);
+      quotaFloorSaved = saved;
+      $('quotaFloorState').dataset.state = 'saved';
       paintQuotaFloorState(saved);
       showToast(saved > 0 ? ('已保存：积分下限 ' + saved) : '已保存：积分下限已关闭');
     })
-    .catch(function(e){ showToast(e.message, 'error'); });
+    .catch(function(e){ configState('quotaFloorState','error','保存失败，输入已保留：' + e.message); showToast(e.message,'error'); })
+    .finally(function(){ $('btnQuotaFloorSave').disabled = false; $('quotaFloor').disabled = false; });
 };
 
-refreshQuotaFloor().catch(function(){});
+$('btnQuotaFloorSave').disabled = true;
+$('quotaFloor').addEventListener('input',function(){
+  const dirty = Number(this.value) !== quotaFloorSaved;
+  if (dirty) configState('quotaFloorState','dirty','积分下限尚未保存；当前生效值：' + quotaFloorSaved);
+  else { $('quotaFloorState').dataset.state = 'saved'; paintQuotaFloorState(quotaFloorSaved); }
+});
+refreshQuotaFloor().catch(function(e){ configState('quotaFloorState','error','读取失败，请刷新重试：' + e.message); });
+openChapterHash();
 setInterval(function(){ refreshStatus().catch(function(){}); }, 15000);
 </script>
 </body>
@@ -3226,13 +3424,14 @@ func LaunchPage(message string, success bool) string {
   --fg:#1C1C1C;
   --fg-60:rgba(28,28,28,0.60);
   --fg-20:rgba(28,28,28,0.20);
+  --fs-xs:11px;--fs-sm:12px;--fs-base:14px;--fs-md:16px;--fs-lg:20px;--fs-xl:28px;
   --display:Georgia,"Iowan Old Style","Palatino Linotype",Palatino,"Songti SC","Noto Serif SC",serif;
   --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
 }
 *{box-sizing:border-box}
 body{
   margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px;
-  font-family:var(--sans);font-size:14px;line-height:1.625;color:var(--fg);
+  font-family:var(--sans);font-size:var(--fs-base);line-height:1.625;color:var(--fg);
   background:var(--bg);
 }
 .card{
@@ -3240,21 +3439,21 @@ body{
   background:transparent;border:1px solid var(--fg-20);
 }
 .meta{
-  font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--fg-60);margin-bottom:12px;
+  font-size:var(--fs-xs);letter-spacing:.2em;text-transform:uppercase;color:var(--fg-60);margin-bottom:12px;
 }
 h1{
-  margin:0 0 12px;font-family:var(--display);font-size:26px;letter-spacing:-.02em;font-weight:400;color:var(--fg);
+  margin:0 0 12px;font-family:var(--display);font-size:var(--fs-xl);letter-spacing:-.02em;font-weight:400;color:var(--fg);
 }
 p{
-  margin:0 0 24px;color:var(--fg-60);font-size:14px;line-height:1.6;
+  margin:0 0 24px;color:var(--fg-60);font-size:var(--fs-base);line-height:1.6;
 }
 a{
   display:inline-flex;align-items:center;justify-content:center;
-  padding:10px 20px;text-decoration:none;font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+  padding:10px 20px;text-decoration:none;font-size:var(--fs-sm);letter-spacing:.08em;text-transform:uppercase;
   color:var(--bg);background:var(--fg);border:1px solid var(--fg);
   transition:background .2s, color .2s;
 }
-a:hover{background:#333;color:var(--bg)}
+a:hover{opacity:.85;color:var(--bg)}
 a:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
 </style>
 </head>
