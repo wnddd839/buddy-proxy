@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +111,9 @@ func TestLogTodayReturnsLastEntry(t *testing.T) {
 }
 
 func TestLogFileMode0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits do not describe Windows ACLs")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "log.json")
 	l := checkin.OpenLog(path)

@@ -186,7 +186,6 @@ func (s *Server) streamResponses(
 		} else {
 			w.Header().Set("Connection", "keep-alive")
 		}
-		w.Header().Set("Connection", "close")
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(http.StatusOK)

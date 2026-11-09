@@ -244,7 +244,8 @@ func (r *Runner) retryFailed(ctx context.Context, rules []normalizedRule, pool a
 		return
 	}
 	// 当天太晚就不再重试，避免半夜跑签到。
-	cutoff := now.In(beijing).Truncate(24 * time.Hour).Add(23*time.Hour + 30*time.Minute)
+	local := now.In(beijing)
+	cutoff := time.Date(local.Year(), local.Month(), local.Day(), 23, 30, 0, 0, beijing)
 	if now.After(cutoff) {
 		return
 	}

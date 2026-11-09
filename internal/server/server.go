@@ -1421,7 +1421,7 @@ func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, pat
 			BaseURL:      strutil.First(selected.BaseURL, s.Svc.Config().BaseURL),
 			AccessToken:  selected.BearerToken,
 			RefreshToken: selected.RefreshToken,
-			HTTPClient:   s.Svc.Provider.For(selected.Proxy),
+			HTTPClient:   s.Svc.RefreshHTTPFor(selected),
 		})
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})

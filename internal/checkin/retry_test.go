@@ -220,9 +220,12 @@ func TestRetryStopsAfterCutoff(t *testing.T) {
 
 	// 首次放到 23:00，重试窗口推到 23:40（已过 23:30 截止）
 	loc := base.Location()
-	late := time.Date(base.Year(), base.Month(), base.Day(), 23, 0, 0, 0, loc)
+	late := base
 	r.due(t.Context(), late.Add(-time.Second), late.Add(time.Second))
 	first := results.AttemptsToday("a1", day)
+	if first != 1 {
+		t.Fatalf("expected an initial failed attempt, got %d", first)
+	}
 
 	after := time.Date(base.Year(), base.Month(), base.Day(), 23, 40, 0, 0, loc)
 	r.due(t.Context(), after.Add(-time.Second), after.Add(time.Second))
