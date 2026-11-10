@@ -38,17 +38,10 @@ kiro-proxy 已发布
 - [@kkl31415926](https://github.com/kkl31415926) · [#16](https://github.com/wnddd839/buddy-proxy/issues/16) 流式 `tool_calls[].index` 缺失导致 Android Studio / OpenAI Java SDK 报错
 - [@kkblank](https://github.com/kkblank) · [#36](https://github.com/wnddd839/buddy-proxy/issues/36) Responses 工具截图被当作 base64 文本导致上下文膨胀（附生产日志与图片/文本 token 对照）
 - [@kylstwang](https://github.com/kylstwang) · [#37](https://github.com/wnddd839/buddy-proxy/issues/37) Linux ARM 路由器运行与预编译发行包需求
-- [@kouekikin24](https://github.com/kouekikin24) · [#45](https://github.com/wnddd839/buddy-proxy/issues/45) 输出 token 上限静默失效（附国内/国际仅改字段名的上游对照与修复验证）
-
-特别感谢 v0.7.0 功能贡献：[@240xu](https://github.com/240xu) 的 [#48](https://github.com/wnddd839/buddy-proxy/pull/48) 波动监测、[#49](https://github.com/wnddd839/buddy-proxy/pull/49) 批量导入和 [#50](https://github.com/wnddd839/buddy-proxy/pull/50) 固定出口，以及 [@kouekikin24](https://github.com/kouekikin24) 的 [#44](https://github.com/wnddd839/buddy-proxy/pull/44) 流重试保护。v0.7.0 在原 PR 基础上适配整合并修复已确认问题；未直接合并原 PR 不影响贡献归属。
-
-v0.7.1 感谢 [@240xu](https://github.com/240xu) 提供 [#52](https://github.com/wnddd839/buddy-proxy/pull/52) 请求体上限、[#53](https://github.com/wnddd839/buddy-proxy/pull/53) 空闲超时配置，以及 [#54](https://github.com/wnddd839/buddy-proxy/issues/54) 限流实测反馈。
-
-v0.7.2 感谢 [@240xu](https://github.com/240xu) 在 [#60](https://github.com/wnddd839/buddy-proxy/pull/60) 提供流式截断与停滞的实测数据，以及 [@ck629](https://github.com/ck629) 报告 [#61](https://github.com/wnddd839/buddy-proxy/issues/61) 自更新下载中断。
-
-v0.7.3 特别感谢 [@240xu](https://github.com/240xu) 提交 [#51](https://github.com/wnddd839/buddy-proxy/pull/51) 隧道 SSE 连接复用修复与部署实测、[#57](https://github.com/wnddd839/buddy-proxy/pull/57) 按账号并发观测、[#60](https://github.com/wnddd839/buddy-proxy/pull/60) 优雅关闭与瞬时 500 重试、[#62](https://github.com/wnddd839/buddy-proxy/pull/62) 国际站 system 补全、[#63](https://github.com/wnddd839/buddy-proxy/pull/63) 模型目录提速、[#64](https://github.com/wnddd839/buddy-proxy/pull/64) OAuth 专用出口、[#65](https://github.com/wnddd839/buddy-proxy/pull/65) 无备选账号时同号重连，以及 [Issue #54](https://github.com/wnddd839/buddy-proxy/issues/54) 的限流实测与观测建议。上述报告、复现证据与方案促成了本版改进；即使最终代码由主线自主实现、未直接合并原 PR，贡献归属与感谢不变。
-
-v0.7.4 感谢 [@240xu](https://github.com/240xu) 在 [#66](https://github.com/wnddd839/buddy-proxy/pull/66) 提供独立签到页、四种调度模式、48h 审计、有方向的模型路由、选号积分下限，以及后续文档与安全修复。
+- [@kouekikin24](https://github.com/kouekikin24) · [#44](https://github.com/wnddd839/buddy-proxy/pull/44) 流重试保护 · [#45](https://github.com/wnddd839/buddy-proxy/issues/45) 输出 token 上限静默失效（附国内/国际仅改字段名的上游对照与修复验证）
+- [@240xu](https://github.com/240xu) · [#48](https://github.com/wnddd839/buddy-proxy/pull/48) 波动监测 · [#49](https://github.com/wnddd839/buddy-proxy/pull/49) 批量导入 · [#50](https://github.com/wnddd839/buddy-proxy/pull/50) 账号固定出口 · [#51](https://github.com/wnddd839/buddy-proxy/pull/51) 隧道 SSE 连接复用修复与部署实测 · [#52](https://github.com/wnddd839/buddy-proxy/pull/52) 请求体上限配置 · [#53](https://github.com/wnddd839/buddy-proxy/pull/53) HTTP keep-alive 空闲超时配置 · [#54](https://github.com/wnddd839/buddy-proxy/issues/54) 限流实测反馈与观测建议 · [#57](https://github.com/wnddd839/buddy-proxy/pull/57) 按账号并发观测 · [#60](https://github.com/wnddd839/buddy-proxy/pull/60) 流式截断与停滞的实测数据、优雅关闭与瞬时 500 重试
+- [@ck629](https://github.com/ck629) · [#61](https://github.com/wnddd839/buddy-proxy/issues/61) 自更新下载中断
+- [@240xu](https://github.com/240xu) · [#62](https://github.com/wnddd839/buddy-proxy/pull/62) 国际站 system 补全 · [#63](https://github.com/wnddd839/buddy-proxy/pull/63) 模型目录提速 · [#64](https://github.com/wnddd839/buddy-proxy/pull/64) OAuth 专用出口 · [#65](https://github.com/wnddd839/buddy-proxy/pull/65) 无备选账号时同号重连 · [#66](https://github.com/wnddd839/buddy-proxy/pull/66) 独立签到页、四种调度模式、48h 审计、有方向的模型路由、选号积分下限，以及后续文档/安全修复
 
 ---
 
