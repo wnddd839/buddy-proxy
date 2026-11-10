@@ -26,30 +26,58 @@
 
 ---
 kiro-proxy 已发布
-感谢这些同学用 issue / PR 把真实问题送上门，按编号排列：
+感谢这些同学用 issue / PR 把真实问题送上门，按全局编号排列：
 
-| # | 贡献者 | 问题 / 贡献 |
-|---:|---|---|
-| [#2](https://github.com/wnddd839/buddy-proxy/issues/2) · [#4](https://github.com/wnddd839/buddy-proxy/issues/4) | [@dyed-fanxing](https://github.com/dyed-fanxing) | ZCode 上下文写入 `git status` 触发 11128；DeepSeek Flash 1M 上下文约 70% 卡住 |
-| [#6](https://github.com/wnddd839/buddy-proxy/issues/6) · [#8](https://github.com/wnddd839/buddy-proxy/issues/8) · [#9](https://github.com/wnddd839/buddy-proxy/issues/9) · [#10](https://github.com/wnddd839/buddy-proxy/issues/10) · [#11](https://github.com/wnddd839/buddy-proxy/issues/11) · [#27](https://github.com/wnddd839/buddy-proxy/pull/27) · [#28](https://github.com/wnddd839/buddy-proxy/issues/28) · [#30](https://github.com/wnddd839/buddy-proxy/issues/30) | [@carter003](https://github.com/carter003) | 换号上限、会话钉号、用量明细、筛选、缓存命中口径、上游会话 ID、Responses 工具回传和分散 `tool_calls` |
-| [#7](https://github.com/wnddd839/buddy-proxy/issues/7) | [@tearslee](https://github.com/tearslee) | 经代理走 DSH / Codex 时缓存读取一直是 0 |
-| [#12](https://github.com/wnddd839/buddy-proxy/pull/12) | [@240xu](https://github.com/240xu) | IDE 模型目录与可对话模型不一致 |
-| [#13](https://github.com/wnddd839/buddy-proxy/issues/13) · [#19](https://github.com/wnddd839/buddy-proxy/issues/19) | [@zeonseoi](https://github.com/zeonseoi) | Qoder CN 同类封装；流式 Markdown 标题缺空格 |
-| [#14](https://github.com/wnddd839/buddy-proxy/issues/14) | [@itaid](https://github.com/itaid) | Claude Code 的 system 指纹触发 11128 |
-| [#15](https://github.com/wnddd839/buddy-proxy/issues/15) · [#17](https://github.com/wnddd839/buddy-proxy/issues/17) · [#18](https://github.com/wnddd839/buddy-proxy/issues/18) · [#20](https://github.com/wnddd839/buddy-proxy/issues/20) · [#22](https://github.com/wnddd839/buddy-proxy/issues/22) · [#23](https://github.com/wnddd839/buddy-proxy/issues/23) · [#24](https://github.com/wnddd839/buddy-proxy/issues/24) · [#25](https://github.com/wnddd839/buddy-proxy/issues/25) · [#29](https://github.com/wnddd839/buddy-proxy/issues/29) · [#31](https://github.com/wnddd839/buddy-proxy/pull/31) · [#32](https://github.com/wnddd839/buddy-proxy/pull/32) · [#33](https://github.com/wnddd839/buddy-proxy/issues/33) | [@kouekikin24](https://github.com/kouekikin24) | 站点切换、双区共存、健康探针、模型别名、6004 冷却、禁用/删号、绑定 Key、原子写、账号测试、国际站误报、断电文件、状态条折行、积分包到期、固定账号 Key |
-| [#16](https://github.com/wnddd839/buddy-proxy/issues/16) | [@kkl31415926](https://github.com/kkl31415926) | 流式 `tool_calls[].index` 缺失导致 SDK 报错 |
-| [#35](https://github.com/wnddd839/buddy-proxy/issues/35) | [@240xu](https://github.com/240xu) | console 模型目录遗漏项与探测矩阵 |
-| [#36](https://github.com/wnddd839/buddy-proxy/issues/36) | [@kkblank](https://github.com/kkblank) | Responses 图片被当作 base64 文本导致上下文膨胀 |
-| [#38](https://github.com/wnddd839/buddy-proxy/issues/38) · [#39](https://github.com/wnddd839/buddy-proxy/issues/39) | [@kouekikin24](https://github.com/kouekikin24) | 积分包到期明细与北京时间解析；固定账号 Key 不可用时的明确失败 |
-| [#37](https://github.com/wnddd839/buddy-proxy/issues/37) | [@kylstwang](https://github.com/kylstwang) | Linux ARM 路由器运行与预编译发行包需求 |
-| [#44](https://github.com/wnddd839/buddy-proxy/pull/44) · [#45](https://github.com/wnddd839/buddy-proxy/issues/45) | [@kouekikin24](https://github.com/kouekikin24) | 流重试保护；输出 token 上限静默失效 |
-| [#48](https://github.com/wnddd839/buddy-proxy/pull/48) · [#49](https://github.com/wnddd839/buddy-proxy/pull/49) · [#50](https://github.com/wnddd839/buddy-proxy/pull/50) | [@240xu](https://github.com/240xu) | 波动监测、批量导入、账号固定出口 |
-| [#51](https://github.com/wnddd839/buddy-proxy/pull/51) · [#52](https://github.com/wnddd839/buddy-proxy/pull/52) · [#53](https://github.com/wnddd839/buddy-proxy/pull/53) · [Issue #54](https://github.com/wnddd839/buddy-proxy/issues/54) | [@240xu](https://github.com/240xu) | 隧道 SSE 连接复用、请求体上限、空闲超时、限流实测与观测建议 |
-| [#57](https://github.com/wnddd839/buddy-proxy/pull/57) | [@240xu](https://github.com/240xu) | 按账号并发观测 |
-| [#60](https://github.com/wnddd839/buddy-proxy/pull/60) | [@240xu](https://github.com/240xu) | 流式截断/停滞数据、优雅关闭与 500 重试 |
-| [#61](https://github.com/wnddd839/buddy-proxy/issues/61) | [@ck629](https://github.com/ck629) | 自更新下载中断 |
-| [#62](https://github.com/wnddd839/buddy-proxy/pull/62) · [#63](https://github.com/wnddd839/buddy-proxy/pull/63) · [#64](https://github.com/wnddd839/buddy-proxy/pull/64) · [#65](https://github.com/wnddd839/buddy-proxy/pull/65) | [@240xu](https://github.com/240xu) | 国际站 system、模型目录提速、OAuth 专用出口、无备选账号同号重连 |
-| [#66](https://github.com/wnddd839/buddy-proxy/pull/66) | [@240xu](https://github.com/240xu) | 独立签到页、四种调度模式、48h 审计、有方向的模型路由、选号积分下限，以及后续文档/安全修复 |
+- [#2](https://github.com/wnddd839/buddy-proxy/issues/2) ZCode 把 git status 写进上下文触发 11128 · [@dyed-fanxing](https://github.com/dyed-fanxing)
+- [#4](https://github.com/wnddd839/buddy-proxy/issues/4) DeepSeek Flash 1M 上下文卡在约 70% · [@dyed-fanxing](https://github.com/dyed-fanxing)
+- [#6](https://github.com/wnddd839/buddy-proxy/issues/6) 换号重试按剩余账号缩小上限、提前终止 · [@carter003](https://github.com/carter003)
+- [#7](https://github.com/wnddd839/buddy-proxy/issues/7) 经代理走 DSH/Codex 时缓存读取一直是 0 · [@tearslee](https://github.com/tearslee)
+- [#8](https://github.com/wnddd839/buddy-proxy/issues/8) 同会话应钉在一个账号，新会话再按额度选号 · [@carter003](https://github.com/carter003)
+- [#9](https://github.com/wnddd839/buddy-proxy/issues/9) 管理台版本号与请求 / token / credit 用量明细 · [@carter003](https://github.com/carter003)
+- [#10](https://github.com/wnddd839/buddy-proxy/issues/10) 用量表账号字段与账号/模型筛选 · [@carter003](https://github.com/carter003)
+- [#11](https://github.com/wnddd839/buddy-proxy/issues/11) hy3 缓存命中率接近 0（按模型对照，非统计算错） · [@carter003](https://github.com/carter003)
+- [#12](https://github.com/wnddd839/buddy-proxy/pull/12) IDE 模型目录与可对话模型对不上 · [@240xu](https://github.com/240xu)
+- [#13](https://github.com/wnddd839/buddy-proxy/issues/13) Qoder CN 同类封装 · [@zeonseoi](https://github.com/zeonseoi)
+- [#14](https://github.com/wnddd839/buddy-proxy/issues/14) Claude Code 的 system 指纹触发上游 11128 · [@itaid](https://github.com/itaid)
+- [#15](https://github.com/wnddd839/buddy-proxy/issues/15) SITE 切换后旧会话钉号硬失败 · [@kouekikin24](https://github.com/kouekikin24)
+- [#16](https://github.com/wnddd839/buddy-proxy/issues/16) 流式 `tool_calls[].index` 缺失导致 Android Studio / OpenAI Java SDK 报错 · [@kkl31415926](https://github.com/kkl31415926)
+- [#17](https://github.com/wnddd839/buddy-proxy/issues/17) 一个进程同时服务国内+国际 · [@kouekikin24](https://github.com/kouekikin24)
+- [#18](https://github.com/wnddd839/buddy-proxy/issues/18) `/health` 是存活探针、上游挂了仍绿灯 · [@kouekikin24](https://github.com/kouekikin24)
+- [#19](https://github.com/wnddd839/buddy-proxy/issues/19) 流式 Markdown 标题缺空格被当纯文本 · [@zeonseoi](https://github.com/zeonseoi)
+- [#20](https://github.com/wnddd839/buddy-proxy/issues/20) `cn:` / `global:` 别名把同一模型拆成多份 · [@kouekikin24](https://github.com/kouekikin24)
+- [#22](https://github.com/wnddd839/buddy-proxy/issues/22) 6004 冷却应对齐上游 reset · [@kouekikin24](https://github.com/kouekikin24)
+- [#23](https://github.com/wnddd839/buddy-proxy/issues/23) 禁号/删号后钉会话 502 · [@kouekikin24](https://github.com/kouekikin24)
+- [#24](https://github.com/wnddd839/buddy-proxy/issues/24) 管理台按当前号池过滤与多 Key · [@kouekikin24](https://github.com/kouekikin24)
+- [#25](https://github.com/wnddd839/buddy-proxy/issues/25) 外部加号被整表回写抹掉 · [@kouekikin24](https://github.com/kouekikin24)
+- [#27](https://github.com/wnddd839/buddy-proxy/pull/27) 同会话应复用上游 `X-Conversation-ID` · [@carter003](https://github.com/carter003)
+- [#28](https://github.com/wnddd839/buddy-proxy/issues/28) Responses 工具回传被滤掉触发 11148 · [@carter003](https://github.com/carter003)
+- [#29](https://github.com/wnddd839/buddy-proxy/issues/29) 账号 Chat 测试对齐渠道探测 · [@kouekikin24](https://github.com/kouekikin24)
+- [#30](https://github.com/wnddd839/buddy-proxy/issues/30) flash 系拒收连续分散 assistant tool_calls · [@carter003](https://github.com/carter003)
+- [#31](https://github.com/wnddd839/buddy-proxy/pull/31) 国际站账号测试误报 11128 · [@kouekikin24](https://github.com/kouekikin24)
+- [#32](https://github.com/wnddd839/buddy-proxy/pull/32) 断电后账号/用量文件长度对、内容全 0 · [@kouekikin24](https://github.com/kouekikin24)
+- [#33](https://github.com/wnddd839/buddy-proxy/issues/33) 切号池后顶栏状态条逐字折行 · [@kouekikin24](https://github.com/kouekikin24)
+- [#35](https://github.com/wnddd839/buddy-proxy/issues/35) console 目录漏 `glm-5.0-turbo` / `minimax-m2.7` / `hunyuan-image-alpha-edit`（附 6 身份 × 6 端点 × 3 host 探测矩阵） · [@240xu](https://github.com/240xu)
+- [#36](https://github.com/wnddd839/buddy-proxy/issues/36) Responses 工具截图被当作 base64 文本导致上下文膨胀（附生产日志与图片/文本 token 对照） · [@kkblank](https://github.com/kkblank)
+- [#37](https://github.com/wnddd839/buddy-proxy/issues/37) Linux ARM 路由器运行与预编译发行包需求 · [@kylstwang](https://github.com/kylstwang)
+- [#38](https://github.com/wnddd839/buddy-proxy/issues/38) 积分包到期明细与北京时间解析提醒 · [@kouekikin24](https://github.com/kouekikin24)
+- [#39](https://github.com/wnddd839/buddy-proxy/issues/39) API Key 固定具体账号与不可用时明确失败 · [@kouekikin24](https://github.com/kouekikin24)
+- [#44](https://github.com/wnddd839/buddy-proxy/pull/44) 流重试保护 · [@kouekikin24](https://github.com/kouekikin24)
+- [#45](https://github.com/wnddd839/buddy-proxy/issues/45) 输出 token 上限静默失效（附国内/国际仅改字段名的上游对照与修复验证） · [@kouekikin24](https://github.com/kouekikin24)
+- [#48](https://github.com/wnddd839/buddy-proxy/pull/48) 波动监测 · [@240xu](https://github.com/240xu)
+- [#49](https://github.com/wnddd839/buddy-proxy/pull/49) 批量导入 · [@240xu](https://github.com/240xu)
+- [#50](https://github.com/wnddd839/buddy-proxy/pull/50) 账号固定出口 · [@240xu](https://github.com/240xu)
+- [#51](https://github.com/wnddd839/buddy-proxy/pull/51) 隧道 SSE 连接复用修复与部署实测 · [@240xu](https://github.com/240xu)
+- [#52](https://github.com/wnddd839/buddy-proxy/pull/52) 请求体上限配置 · [@240xu](https://github.com/240xu)
+- [#53](https://github.com/wnddd839/buddy-proxy/pull/53) HTTP keep-alive 空闲超时配置 · [@240xu](https://github.com/240xu)
+- [#54](https://github.com/wnddd839/buddy-proxy/issues/54) 限流实测反馈与观测建议 · [@240xu](https://github.com/240xu)
+- [#57](https://github.com/wnddd839/buddy-proxy/pull/57) 按账号并发观测 · [@240xu](https://github.com/240xu)
+- [#60](https://github.com/wnddd839/buddy-proxy/pull/60) 流式截断与停滞的实测数据、优雅关闭与瞬时 500 重试 · [@240xu](https://github.com/240xu)
+- [#61](https://github.com/wnddd839/buddy-proxy/issues/61) 自更新下载中断 · [@ck629](https://github.com/ck629)
+- [#62](https://github.com/wnddd839/buddy-proxy/pull/62) 国际站 system 补全 · [@240xu](https://github.com/240xu)
+- [#63](https://github.com/wnddd839/buddy-proxy/pull/63) 模型目录提速 · [@240xu](https://github.com/240xu)
+- [#64](https://github.com/wnddd839/buddy-proxy/pull/64) OAuth 专用出口 · [@240xu](https://github.com/240xu)
+- [#65](https://github.com/wnddd839/buddy-proxy/pull/65) 无备选账号时同号重连 · [@240xu](https://github.com/240xu)
+- [#66](https://github.com/wnddd839/buddy-proxy/pull/66) 独立签到页、四种调度模式、48h 审计、有方向的模型路由、选号积分下限，以及后续文档/安全修复 · [@240xu](https://github.com/240xu)
 
 主线会按仓库规范整合、验证并修复已确认问题；部分 PR 的最终代码由主线自主实现或直接重构，贡献归属与感谢不变。逐版本的发布范围见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -128,7 +156,7 @@ chmod +x ./codebuddy-proxy-linux-amd64
 
 运行中的实例可在管理台顶栏下方点「检查更新 / 更新并重启」，仅从官方 GitHub Release 下载并按 `SHA256SUMS.txt` 校验，成功后自动重启并回连；下载校验失败或新版本启动失败时保留/回滚旧程序。改动只替换可执行文件，不会覆盖 `.env`、账号池或用量文件。**首个带更新器的版本仍需手动升级一次**；Docker 部署请用镜像更新（`docker compose pull && docker compose up -d`）。
 
-当前正式版为 **[v0.7.4](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.4)**：在 PR #66 的方向上落地 Editorial 2.0 六章节管理台：独立自动签到页、有方向的模型路由、选号积分下限和独立保存状态；同时修复递归重试重复改写路由、低于积分门槛仍被兜底选号、国际站 OAuth 刷新出口、签到 23:30 截止、直连 SSE 复用、模型强刷缓存与 Windows 权限测试。
+当前正式版为 **[v0.7.3](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.3)**。**v0.7.4 尚未发布**，待发布改动包括：在 PR #66 的方向上落地 Editorial 2.0 六章节管理台：独立自动签到页、有方向的模型路由、选号积分下限和独立保存状态；同时修复递归重试重复改写路由、低于积分门槛仍被兜底选号、国际站 OAuth 刷新出口、签到 23:30 截止、直连 SSE 复用、模型强刷缓存与 Windows 权限测试。
 
 升级注意：可选 `CODEBUDDY_PROXY_OAUTH_PROXY` 仅用于国际站 OAuth（含 token refresh），配置后需重启；信号停止默认等待 10 分钟，Docker/systemd 的停止超时需不小于该宽限（仓库 Compose 已设为 11 分钟），自更新交接仍为 30 秒。隧道需传递 `X-Forwarded-For` 等转发头才会启用 SSE 关闭连接策略。详情见 [更新日志](CHANGELOG.md) 和 [运维手册](docs/operations/runbook.md)。
 
