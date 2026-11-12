@@ -547,12 +547,52 @@ func hmacUnitN(key []byte, seed, label string) float64 {
 // spreadAllDaySecond 为「全天随机」挑一个体面的时刻（秒级）。
 //   - 92% 落在 07:00–23:30，8% 落在 00:00–07:00（保留夜间不可预测性）
 //   - 秒级精度，不会每天都是 xx:00:00
+//
+// dayHourWeight 是 24 小时的相对活跃权重。
+//
+// 旧实现把一天硬切成「夜间 0-7 点（8%）」和「白天 7:00-23:30（92%）」两段，
+// 结果 06 时几乎没有样本、07 时突然满格 —— 这个台阶本身就是可识别特征，
+// 真人不会有「所有人都在早上 7 点整上线」这种断崖。
+//
+// 现在改成按小时给权重（近似作息曲线）：深夜极低但不是 0，清晨逐渐上升，
+// 白天平稳，晚间有一个小高峰，午夜前后回落。整表线性扫描取一个小时，
+// 再在小时内按秒均匀取值。
+var dayHourWeight = [24]int{
+	2, 1, 1, 1, 1, 2, // 00-05 深夜，权重极低
+	4, 9, //            06-07 清晨渐起
+	12, 13, 13, 12, //   08-11 上午
+	14, 12, //           12-13 午间
+	12, 12, 13, //       14-16 下午
+	14, 14, 13, //       17-19 晚间高峰
+	12, 10, //           20-21
+	7, 4, //             22-23 睡前回落
+}
+
+// spreadAllDaySecond 按小时权重挑一个时刻，秒级精度。
+//
+// 与旧实现的区别：不再有「夜间/白天」二元分支，而是 24 个小时统一按权重抽。
+// 这样 06→07 是渐变的，深夜也不是严格为 0（保留少量不可预测性）。
 func spreadAllDaySecond(key []byte, seed string) int {
-	if hmacUnitN(key, seed, "night") < 0.08 {
-		return int(hmacUnitN(key, seed, "nightslot") * float64(7*60*60))
+	total := 0
+	for _, w := range dayHourWeight {
+		total += w
 	}
-	lo, hi := 7*60*60, 23*60*60+30*60
-	return lo + int(hmacUnitN(key, seed, "dayslot")*float64(hi-lo))
+	pick := int(hmacUnitN(key, seed, "hour") * float64(total))
+	hour := 23
+	for h, w := range dayHourWeight {
+		if pick < w {
+			hour = h
+			break
+		}
+		pick -= w
+	}
+	// 小时内按秒均匀取值：不同 label 保证与上面的 hour 抽取互相独立。
+	offset := int(hmacUnitN(key, seed, "sec") * 3600)
+	sec := hour*3600 + offset
+	if sec >= 24*3600 {
+		sec = 24*3600 - 1
+	}
+	return sec
 }
 
 // windowSecond 在 [lo,hi) 秒内取值，混合均匀与三角分布。
@@ -564,11 +604,24 @@ func windowSecond(key []byte, seed string, lo, hi int) int {
 		return lo
 	}
 	span := float64(hi - lo)
+	// 窗口内**均匀**取值。
+	//
+	// 旧实现混了 0.45 权重的三角分量，把分布压成钟形：实测 09:00-11:00
+	// 下前/后 10% 区间各只有 0.6% 的样本、中间 10% 占 17.9%。用户选
+	// 「09:00-11:00」的意思就是「这个区间里随便一个点」，却几乎拿不到
+	// 边缘时刻（比如想避开整点高峰时完全做不到）。
+	//
+	// 试过两种"加一点点中心偏好"的方案，都会削掉首尾：
+	//   · 三角混合（含反射三角）：三角在两端为 0，混合后边缘必然被压低
+	//   · 均匀向中心收缩：p 只覆盖 [0.06,0.94]，首尾各 6% 宽度取不到
+	// 根因是任何两端归零的分量都会压低边缘。而窗口模式的语义本来就是
+	// 均匀，需要拟人化请用 human 模式，那里有独立的时段权重表。
 	u := hmacUnitN(key, seed, "u")
-	mid := (hmacUnitN(key, seed, "a") + hmacUnitN(key, seed, "b")) / 2
-	const weight = 0.45
-	p := weight*mid + (1-weight)*u
-	return lo + int(p*span)
+	sec := lo + int(u*span)
+	if sec >= hi {
+		sec = hi - 1
+	}
+	return sec
 }
 
 // humanActivityBands 是仿人签到的时段与权重：避开凌晨。
