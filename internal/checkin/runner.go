@@ -99,6 +99,14 @@ func (r *Runner) SetAuto(enabled bool) error {
 // 启动不补签：进程刚起来时把 last 设为当前时刻，之前错过的窗口等明天。
 // 上游 todayCheckedIn / code=10001 负责幂等。
 func (r *Runner) Run(ctx context.Context) {
+	// 启动补跑：把「今天计划时刻已过、但一条记录都没有」的账号补上。
+	//
+	// 为什么需要：last 初始化成 Now() 会跳过重启前所有窗口。若进程整天没跑，
+	// 09:00 排班的账号到 23:00 一次都不会签 —— 实测 70b8cc3 连续两天如此。
+	// 只补「完全没尝试过」的，不补失败过的（那是 retryFailed 的职责，且有自己的
+	// 间隔与次数上限）；并且不晚于 23:30，避免深夜补签。
+	r.catchUp(ctx)
+
 	last := time.Now()
 	for {
 		if ctx.Err() != nil {
@@ -160,6 +168,96 @@ func (r *Runner) nextDueAt(after time.Time) (time.Time, bool) {
 	return best, found
 }
 
+// catchUp 在进程启动时补跑「今天该签但没签」的账号。
+//
+// 判定：今天计划时刻 <= now，且今天的签到日志里该账号完全没有记录。
+// 有记录的一律跳过（成功的不必再签，失败的归 retryFailed 管）。
+// 超过 23:30 不再补，避免深夜惊动上游。
+func (r *Runner) catchUp(ctx context.Context) {
+	if !r.auto.Load() {
+		return
+	}
+	now := time.Now()
+	day := now.In(beijing).Format("2006-01-02")
+	// 用 time.Date 而不是 Truncate(24h)：Truncate 按 UTC 纪元对齐，
+	// 在北京时区会算出次日 07:30（UTC 23:30），凌晨反而会补签。
+	local := now.In(beijing)
+	cutoff := time.Date(local.Year(), local.Month(), local.Day(), 23, 30, 0, 0, beijing)
+	if now.After(cutoff) {
+		return
+	}
+	store, err := r.file.Read()
+	if err != nil {
+		r.log.Warn("checkin: 启动补跑读取规则失败", "error", err)
+		return
+	}
+	rules, err := normalizeRules(store.Rules)
+	if err != nil || len(rules) == 0 {
+		return
+	}
+	pool, err := r.pool.Read()
+	if err != nil {
+		r.log.Warn("checkin: 启动补跑读取号池失败", "error", err)
+		return
+	}
+	var pending []normalizedRule
+	for _, rule := range rules {
+		if ctx.Err() != nil {
+			return
+		}
+		at := r.dueAt(rule, day)
+		if at.IsZero() || at.After(now) {
+			continue // 还没到点，正常调度会处理
+		}
+		if r.results.AttemptsToday(rule.AccountID, day) > 0 {
+			continue // 今天动过了，交给 retryFailed
+		}
+		account, found := findAccount(pool, rule.AccountID)
+		if !found || !account.Enabled || !accounts.HasCredentials(account) {
+			continue
+		}
+		pending = append(pending, rule)
+	}
+	if len(pending) == 0 {
+		return
+	}
+	r.log.Info("checkin: 启动补跑当日漏签账号", "count", len(pending), "day", day)
+	cfg := r.config()
+	// 同样一轮只放一个，避免启动瞬间并发打上游。
+	for _, rule := range pending {
+		if ctx.Err() != nil {
+			return
+		}
+		account, found := findAccount(pool, rule.AccountID)
+		if !found {
+			continue
+		}
+		at := r.dueAt(rule, day)
+		result, degraded, egress := r.runOne(ctx, account, cfg)
+		entry := Entry{
+			AccountID: account.ID,
+			Day:       day,
+			At:        at.UnixMilli(),
+			RanAt:     time.Now().UnixMilli(),
+			OK:        result.OK,
+			Already:   result.AlreadyCheckedIn,
+			Credits:   result.RewardCredits,
+			Message:   result.Message,
+			Egress:    egress,
+			Degraded:  degraded,
+		}
+		if err := r.results.Append(entry); err != nil {
+			r.log.Warn("checkin: 补跑结果落盘失败", "accountId", account.ID, "error", err)
+		}
+		r.log.Info("checkin: 补跑完成", "accountId", account.ID,
+			"planned", at.In(beijing).Format("15:04:05"),
+			"lateMin", int(now.Sub(at).Minutes()),
+			"ok", result.OK, "message", result.Message)
+		// 一个就够；剩下的等下一轮 catchUp? 不——catchUp 只在启动跑一次，
+		// 所以这里要全部补完（数量本来就是「今天漏掉的」，通常个位数）。
+	}
+}
+
 // due 只处理 (prev, now] 之间到点的规则，不落盘「上次跑到哪天」。
 func (r *Runner) due(ctx context.Context, prev, now time.Time) {
 	if !r.auto.Load() {
@@ -185,6 +283,13 @@ func (r *Runner) due(ctx context.Context, prev, now time.Time) {
 	}
 	day := now.In(beijing).Format("2006-01-02")
 
+	// ⚠️ 单轮只放一个账号出去。
+	//
+	// Run() 的 wait 上限是 tickInterval(20s)，正常情况下每轮只有 1 个账号到点。
+	// 但进程卡顿 / GC 停顿 / 时钟跳变会让某一轮的 (prev, now] 变宽，把几十分钟
+	// 内的账号全圈进来 —— 实测就出现过 5 个账号在 19:43:47 同一秒签到，
+	// 排班表完全失效。限制单轮 1 个之后，剩下的账号会在下一轮（≤20s 后）
+	// 依次执行，既不会批量并发，也不会漏。
 	for _, rule := range rules {
 		if ctx.Err() != nil {
 			return
@@ -203,13 +308,16 @@ func (r *Runner) due(ctx context.Context, prev, now time.Time) {
 		entry := Entry{
 			AccountID: account.ID,
 			Day:       day,
-			At:        now.UnixMilli(),
-			OK:        result.OK,
-			Already:   result.AlreadyCheckedIn,
-			Credits:   result.RewardCredits,
-			Message:   result.Message,
-			Egress:    egress,
-			Degraded:  degraded,
+			// At = 计划时刻（排班表事实），RanAt = 真实执行时刻。
+			// 旧实现两者都用 now，导致事后完全看不出是否按点执行。
+			At:       at.UnixMilli(),
+			RanAt:    now.UnixMilli(),
+			OK:       result.OK,
+			Already:  result.AlreadyCheckedIn,
+			Credits:  result.RewardCredits,
+			Message:  result.Message,
+			Egress:   egress,
+			Degraded: degraded,
 		}
 		if err := r.results.Append(entry); err != nil {
 			r.log.Warn("checkin: 结果落盘失败", "accountId", account.ID, "error", err)
@@ -219,6 +327,10 @@ func (r *Runner) due(ctx context.Context, prev, now time.Time) {
 		} else {
 			r.log.Warn("checkin: 自动签到未成功", "accountId", account.ID, "message", result.Message, "degraded", degraded)
 		}
+		// 单轮只放一个「新到点」的账号：剩下的交给下一轮（≤20s 后重算）。
+		// 这样即使 (prev, now] 窗口因为卡顿变宽，也不会把多个账号挤在同一秒。
+		// 注意用 break 而不是 return —— 重试逻辑本轮仍要跑。
+		break
 	}
 	r.retryFailed(ctx, rules, pool, day, now)
 }
@@ -278,13 +390,15 @@ func (r *Runner) retryFailed(ctx context.Context, rules []normalizedRule, pool a
 		entry := Entry{
 			AccountID: account.ID,
 			Day:       day,
-			At:        now.UnixMilli(),
-			OK:        result.OK,
-			Already:   result.AlreadyCheckedIn,
-			Credits:   result.RewardCredits,
-			Message:   result.Message,
-			Egress:    egress,
-			Degraded:  degraded,
+			// 重试没有排班计划时刻，At = RanAt = 本次执行时刻。
+			At:       now.UnixMilli(),
+			RanAt:    now.UnixMilli(),
+			OK:       result.OK,
+			Already:  result.AlreadyCheckedIn,
+			Credits:  result.RewardCredits,
+			Message:  result.Message,
+			Egress:   egress,
+			Degraded: degraded,
 		}
 		if err := r.results.Append(entry); err != nil {
 			r.log.Warn("checkin: 重试结果落盘失败", "accountId", account.ID, "error", err)
@@ -433,12 +547,52 @@ func hmacUnitN(key []byte, seed, label string) float64 {
 // spreadAllDaySecond 为「全天随机」挑一个体面的时刻（秒级）。
 //   - 92% 落在 07:00–23:30，8% 落在 00:00–07:00（保留夜间不可预测性）
 //   - 秒级精度，不会每天都是 xx:00:00
+//
+// dayHourWeight 是 24 小时的相对活跃权重。
+//
+// 旧实现把一天硬切成「夜间 0-7 点（8%）」和「白天 7:00-23:30（92%）」两段，
+// 结果 06 时几乎没有样本、07 时突然满格 —— 这个台阶本身就是可识别特征，
+// 真人不会有「所有人都在早上 7 点整上线」这种断崖。
+//
+// 现在改成按小时给权重（近似作息曲线）：深夜极低但不是 0，清晨逐渐上升，
+// 白天平稳，晚间有一个小高峰，午夜前后回落。整表线性扫描取一个小时，
+// 再在小时内按秒均匀取值。
+var dayHourWeight = [24]int{
+	2, 1, 1, 1, 1, 2, // 00-05 深夜，权重极低
+	4, 9, //            06-07 清晨渐起
+	12, 13, 13, 12, //   08-11 上午
+	14, 12, //           12-13 午间
+	12, 12, 13, //       14-16 下午
+	14, 14, 13, //       17-19 晚间高峰
+	12, 10, //           20-21
+	7, 4, //             22-23 睡前回落
+}
+
+// spreadAllDaySecond 按小时权重挑一个时刻，秒级精度。
+//
+// 与旧实现的区别：不再有「夜间/白天」二元分支，而是 24 个小时统一按权重抽。
+// 这样 06→07 是渐变的，深夜也不是严格为 0（保留少量不可预测性）。
 func spreadAllDaySecond(key []byte, seed string) int {
-	if hmacUnitN(key, seed, "night") < 0.08 {
-		return int(hmacUnitN(key, seed, "nightslot") * float64(7*60*60))
+	total := 0
+	for _, w := range dayHourWeight {
+		total += w
 	}
-	lo, hi := 7*60*60, 23*60*60+30*60
-	return lo + int(hmacUnitN(key, seed, "dayslot")*float64(hi-lo))
+	pick := int(hmacUnitN(key, seed, "hour") * float64(total))
+	hour := 23
+	for h, w := range dayHourWeight {
+		if pick < w {
+			hour = h
+			break
+		}
+		pick -= w
+	}
+	// 小时内按秒均匀取值：不同 label 保证与上面的 hour 抽取互相独立。
+	offset := int(hmacUnitN(key, seed, "sec") * 3600)
+	sec := hour*3600 + offset
+	if sec >= 24*3600 {
+		sec = 24*3600 - 1
+	}
+	return sec
 }
 
 // windowSecond 在 [lo,hi) 秒内取值，混合均匀与三角分布。
@@ -450,11 +604,24 @@ func windowSecond(key []byte, seed string, lo, hi int) int {
 		return lo
 	}
 	span := float64(hi - lo)
+	// 窗口内**均匀**取值。
+	//
+	// 旧实现混了 0.45 权重的三角分量，把分布压成钟形：实测 09:00-11:00
+	// 下前/后 10% 区间各只有 0.6% 的样本、中间 10% 占 17.9%。用户选
+	// 「09:00-11:00」的意思就是「这个区间里随便一个点」，却几乎拿不到
+	// 边缘时刻（比如想避开整点高峰时完全做不到）。
+	//
+	// 试过两种"加一点点中心偏好"的方案，都会削掉首尾：
+	//   · 三角混合（含反射三角）：三角在两端为 0，混合后边缘必然被压低
+	//   · 均匀向中心收缩：p 只覆盖 [0.06,0.94]，首尾各 6% 宽度取不到
+	// 根因是任何两端归零的分量都会压低边缘。而窗口模式的语义本来就是
+	// 均匀，需要拟人化请用 human 模式，那里有独立的时段权重表。
 	u := hmacUnitN(key, seed, "u")
-	mid := (hmacUnitN(key, seed, "a") + hmacUnitN(key, seed, "b")) / 2
-	const weight = 0.45
-	p := weight*mid + (1-weight)*u
-	return lo + int(p*span)
+	sec := lo + int(u*span)
+	if sec >= hi {
+		sec = hi - 1
+	}
+	return sec
 }
 
 // humanActivityBands 是仿人签到的时段与权重：避开凌晨。

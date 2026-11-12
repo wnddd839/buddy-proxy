@@ -17,9 +17,12 @@ func TestReasoningRequestedRespectsExplicitDisableAndPrecedence(t *testing.T) {
 		{"none", provider.ChatOptions{ReasoningEffort: "none"}, false},
 		{"disabled thinking", provider.ChatOptions{Thinking: map[string]any{"type": "disabled"}}, false},
 		{"enabled thinking", provider.ChatOptions{Thinking: map[string]any{"type": "enabled"}}, true},
-		{"object overrides effort", provider.ChatOptions{ReasoningEffort: "high", Reasoning: map[string]any{"effort": "none"}}, false},
-		{"empty object overrides effort", provider.ChatOptions{ReasoningEffort: "high", Reasoning: map[string]any{}}, false},
-		{"enabled object", provider.ChatOptions{ReasoningEffort: "none", Reasoning: map[string]any{"effort": "high"}}, true},
+		// 对象里的 effort=none 明确表示关闭 ⇒ false（这条语义没变）。
+		{"object disables", provider.ChatOptions{Reasoning: map[string]any{"effort": "none"}}, false},
+		// 空对象本身不代表要求思考 —— 它不会让上游思考（实测 thinking=0）。
+		{"empty object alone", provider.ChatOptions{Reasoning: map[string]any{}}, false},
+		// 对象带 effort=high 时会被提升成扁平字段 ⇒ 真正要求思考。
+		{"object effort lifted", provider.ChatOptions{Reasoning: map[string]any{"effort": "high"}}, true},
 		{"explicit thinking disable", provider.ChatOptions{ReasoningEffort: "high", Thinking: map[string]any{"type": "disabled"}}, false},
 	}
 	for _, tt := range tests {

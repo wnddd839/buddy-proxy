@@ -165,14 +165,30 @@ func TestNormalizeToolChoice(t *testing.T) {
 }
 
 func TestApplyReasoningFieldsMapsEffort(t *testing.T) {
+	// 实测：只有扁平的 reasoning_effort 能让上游真的思考。
+	// reasoning 对象不再重复写入（上游不认，写了也没用）。
 	body := map[string]any{"model": "auto"}
 	provider.ApplyReasoningFields(body, provider.ChatOptions{ReasoningEffort: "high"})
-	reasoning, ok := body["reasoning"].(map[string]any)
-	if !ok || reasoning["effort"] != "high" {
-		t.Fatalf("reasoning=%v", body["reasoning"])
-	}
 	if body["reasoning_effort"] != "high" {
 		t.Fatalf("reasoning_effort=%v", body["reasoning_effort"])
+	}
+	if _, ok := body["reasoning"]; ok {
+		t.Fatalf("should not synthesize reasoning object (upstream ignores it): %v", body["reasoning"])
+	}
+}
+
+func TestApplyReasoningFieldsLiftsObjectEffort(t *testing.T) {
+	// 客户端只发对象形式时，必须把 effort 提出来补进扁平字段，
+	// 否则上游完全不思考（这是「设了 max 却不思考」的根因）。
+	body := map[string]any{"model": "auto"}
+	provider.ApplyReasoningFields(body, provider.ChatOptions{
+		Reasoning: map[string]any{"effort": "max"},
+	})
+	if body["reasoning_effort"] != "max" {
+		t.Fatalf("object effort must be lifted to reasoning_effort, got %v", body["reasoning_effort"])
+	}
+	if reasoning, ok := body["reasoning"].(map[string]any); !ok || reasoning["effort"] != "max" {
+		t.Fatalf("object should still be passed through: %v", body["reasoning"])
 	}
 }
 

@@ -22,11 +22,24 @@ const maxEntries = 200
 
 // Entry 是一次签到尝试的结果。一个账号一天可能有多条（失败后重试），
 // 前端取当天最后一条作为「今日状态」。
+// ExecutedAt 返回真实执行时刻；旧日志没有 RanAt 时退回 At。
+func (e Entry) ExecutedAt() int64 {
+	if e.RanAt > 0 {
+		return e.RanAt
+	}
+	return e.At
+}
+
 type Entry struct {
 	AccountID string `json:"accountId"`
 	Day       string `json:"day"`
-	At        int64  `json:"at"`
-	OK        bool   `json:"ok,omitzero"`
+	// At 是「计划时刻」（排班表上的那一秒）。重试没有计划时刻，At=RanAt。
+	At int64 `json:"at"`
+	// RanAt 是真实执行时刻。与 At 的差值就是「迟到多久」，
+	// 也是判断「多个账号是否被同一轮批量打出去」的唯一依据。
+	// 旧日志没有这个字段，读出来是 0，按 At 处理。
+	RanAt int64 `json:"ranAt,omitzero"`
+	OK    bool  `json:"ok,omitzero"`
 	// Already 表示上游回报「今天已签到」——算成功，但没有新积分。
 	Already bool `json:"already,omitzero"`
 	// Credits 是本次签到获得的积分（Already 时为 0）。

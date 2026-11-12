@@ -865,7 +865,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                 <option value="2000">每天 20:00</option>
                 <option value="0900-1100">09:00–11:00 随机</option>
                 <option value="2000-2300">20:00–23:00 随机</option>
-                <option value="spread">整批错开（均匀铺开）</option>
+                <option value="spread">整批错开（一次性定时刻）</option>
               </select>
             </span>
             <p class="setting-note" id="checkinPresetHint">选完立刻套用到当前范围，仍要点「保存」才生效。</p>
@@ -3272,6 +3272,10 @@ if ($('checkinPreset')) $('checkinPreset').onchange = function(){
   // 若 N 个号都设成「每天 09:00」，上游看到的是同一秒 N 次并发签到——非常像机器。
   // 这里按 N 等分一个合理的活跃窗口（08:00–23:00），每个号占一格，再在格内抖动，
   // 既保证分散、又不会溢出窗口。
+  //
+  // ⚠️ 注意语义差异：这里把每个号的 mode 改成 fixed，时刻**一次性写死**，
+  // 之后每天都是同一时刻。它解决的是「N 个号不要同时签到」，
+  // 不是「每天随机」（要每天随机请用「全天随机 / 仿人随机」模式）。
   if (v === 'spread') {
     const ids = [];
     document.querySelectorAll('#checkinRules .checkin-rule').forEach(function(row){
@@ -3300,7 +3304,7 @@ if ($('checkinPreset')) $('checkinPreset').onchange = function(){
     syncCheckinRulesFromDom();
     paintCheckinRuleHint();
     const scope = checkinSiteFilter ? siteLabel(checkinSiteFilter) : '全部';
-    showToast('已把 ' + scope + ' ' + ids.length + ' 个账号错开到 08:00–23:00（每号一个独立时刻）');
+    showToast('已把 ' + scope + ' ' + ids.length + ' 个账号错开到 08:00–23:00（每号一个固定时刻，每天相同；要每天随机请用全天/仿人模式）');
     return;
   }
 
@@ -3326,7 +3330,7 @@ if ($('checkinPreset')) $('checkinPreset').onchange = function(){
 function presetLabel(v){
   return {human:'仿人随机', allday:'全天随机', '0900':'每天 09:00', '1200':'每天 12:00',
           '2000':'每天 20:00', '0900-1100':'09:00–11:00', '2000-2300':'20:00–23:00',
-          spread:'整批错开'}[v] || v;
+          spread:'整批错开（固定时刻）'}[v] || v;
 }
 
 // 模式切换时显隐窗口输入框（fixed/allDay/human 不需要开始结束）。
