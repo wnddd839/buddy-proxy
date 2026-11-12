@@ -19,6 +19,7 @@ func TestSSEConnectionCloseOnlyViaTunnel(t *testing.T) {
 	}{
 		{"chat direct", "/v1/chat/completions", `{"model":"auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil, false},
 		{"chat tunnel", "/v1/chat/completions", `{"model":"auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`, http.Header{"X-Forwarded-For": {"1.2.3.4"}}, true},
+		{"responses direct", "/v1/responses", `{"model":"auto","input":"hi","stream":true}`, nil, false},
 		{"responses tunnel", "/v1/responses", `{"model":"auto","input":"hi","stream":true}`, http.Header{"X-Forwarded-Host": {"proxy.example"}}, true},
 		{"agentic tunnel", "/v1/agentic_search", `{"query":"q","stream":true}`, http.Header{"Forwarded": {"for=1.2.3.4"}}, true},
 	}

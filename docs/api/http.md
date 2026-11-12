@@ -444,10 +444,10 @@ usage chunk 形如：
 | POST · PUT | `/direct-admin/api/pool-site` | 切换**默认**号池区域 `domestic` / `global`，回写 `.env`。请求仍可用 Key 绑定、`X-Site` 或 `cn:`/`global:` 前缀覆盖 |
 | POST · PUT | `/direct-admin/api/pool-product` | 切换上游产品 `codebuddy` / `workbuddy`，回写 `.env`；国内国际账号共用同一选择 |
 | GET | `/direct-admin/api/checkin-config` | 返回每账号自动签到配置：`auto`（总开关）、`allowDirectFallback`、`checkinRetryMin` / `checkinRetryMax`（失败重试）、`rules[]`、`path`（规则文件路径） |
-| POST | `/direct-admin/api/checkin-config` | 保存 `{"auto":bool,"rules":[{"accountId","enabled","start","end"}]}`；写 `proxy-checkin.json` 并把总开关回写 `.env`，立即生效。非法时间/重复账号返回 `400` |
+| POST | `/direct-admin/api/checkin-config` | 保存 `{"auto":bool,"allowDirectFallback":bool,"checkinRetryMin":minutes,"checkinRetryMax":count,"rules":[{"accountId","enabled","start","end","mode","offset"}]}`；写 `proxy-checkin.json` 并把行为开关回写 `.env`，立即生效。非法时间、重复账号、跨零点窗口返回 `400` |
 | GET | `/direct-admin/api/checkin-log` | 最近签到结果（48 小时，按站点分桶）：`entries[]` 含 `accountId` / `day` / `at` / `ok` / `already` / `credits` / `message`，供管理台签到徽章与日志表使用 |
-| GET | `/direct-admin/api/model-routes` | 返回跨区模型路由表：`rules[]`（每条含 `fromSite` / `model` / `site` / `target` / `enabled`）、`catalog`（两站可选模型，下拉用）、`path` |
-| POST | `/direct-admin/api/model-routes` | 保存 `{"rules":[...]}`。`fromSite` 必填（`domestic` / `global`），缺失的旧规则一律不生效且在写回时被 `400` 拒绝；完全命中即改写目标站点+模型，目标站无可用账号就直接失败，不自动回退 |
+| GET | `/direct-admin/api/model-routes` | 返回跨区模型路由表：`rules[]`（每条含 `fromSite` / `match` / `site` / `target` / `note`）、`catalog`（两站可选模型，下拉用）、`path` |
+| POST | `/direct-admin/api/model-routes` | 保存 `{"rules":[...]}`。`fromSite` 必填（`domestic` / `global`），缺失的旧规则一律不生效且在写回时被 `400` 拒绝；完全命中即改写目标站点+模型；同源站/源模型的多条规则按文件顺序构成备用链，仅在目标区域无可用账号或当前模型处于冷却时推进 |
 | GET | `/direct-admin/api/quota-floor` | 返回选号积分下限 `{"quotaFloor":<credits>}`，`0` = 不启用 |
 | POST | `/direct-admin/api/quota-floor` | 保存 `{"quotaFloor":<credits>}`；负数返回 `400`，热更新立即作用于选号并回写 `.env` |
 

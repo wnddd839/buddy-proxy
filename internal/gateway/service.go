@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	modelsCacheTTL = 10 * time.Minute
+	modelsCacheTTL = 60 * time.Second
 	probeCacheTTL  = 20 * time.Second
 	probeTimeout   = 4 * time.Second
 	// defaultMaxAccountRetries 单请求最多尝试的账号数（含换号重试），防止无限递归。
@@ -353,7 +353,8 @@ type CompleteOptions struct {
 	// 避免 429/流重置/OAuth 刷新等无关失败提前耗尽）。
 	EmptyTurnReplays int
 	// RoutedFrom 记录路由改写前的原始模型名（未命中路由时为空）。
-	RoutedFrom string
+	RoutedFrom     string
+	routeFallbacks []modelroute.Rule // Remaining rules from the original source/model snapshot.
 }
 
 // ImageOptions is one pooled image generation or edit.
@@ -448,17 +449,18 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	opts.Model = strutil.First(opts.Model, "auto")
 	// 模型路由：用户在管理台配置「源站点 + 源模型名 → 目标站点 + 目标模型名」。
 	//
-	// 只做**固定改写**，不做任何自动回退：命中即改写到规则指定的站点与模型，
-	// 那个站点没有可用号就直接失败，绝不会偷偷换到别的站点去。
-	// 同 match 配了多条时只认第一条（其余忽略）。
+	// 只在逻辑请求入口匹配一次；递归重试继续使用已选定的目标。
+	// 同源区域和模型的多条规则构成有序备用链，仅在目标无可用账号时推进，
+	// 不把一般上游错误当作跨区降级信号。
 	//
 	// 两条硬规则：
 	//  1. 模型名带 cn:/global: 前缀（客户端硬钉站点）时完全不套用路由；
 	//  2. 规则必须写明源站点，只有请求本来就落在该站点时才改写。
-	if s.ModelRoutes != nil && !opts.FixedAccount && !opts.SiteExplicit {
+	if s.ModelRoutes != nil && !opts.FixedAccount && !opts.SiteExplicit && opts.RetryDepth == 0 && opts.RoutedFrom == "" {
 		from := config.NormalizeSite(s.requestSite(opts))
 		if chain := s.ModelRoutes.Chain(from, opts.Model); len(chain) > 0 {
 			rule := chain[0]
+			opts.routeFallbacks = chain[1:]
 			orig := opts.Model
 			if t := strings.TrimSpace(rule.Target); t != "" {
 				opts.Model = t
@@ -516,6 +518,16 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			if !errors.Is(err, accounts.ErrAccountCoolingDown) {
 				opts.ExcludeIDs = append(append([]string{}, opts.ExcludeIDs...), staleID)
 			}
+			opts.AccountID = ""
+			opts.RetryDepth++
+			return s.CompleteFromPool(ctx, opts)
+		}
+		_, modelCooling := errors.AsType[*accounts.ModelCooldownError](err)
+		if len(opts.routeFallbacks) > 0 && (errors.Is(err, accounts.ErrNoAccounts) || modelCooling) {
+			rule := opts.routeFallbacks[0]
+			opts.routeFallbacks = opts.routeFallbacks[1:]
+			opts.Site = config.NormalizeSite(rule.Site)
+			opts.Model = rule.Target
 			opts.AccountID = ""
 			opts.RetryDepth++
 			return s.CompleteFromPool(ctx, opts)
@@ -689,8 +701,8 @@ func (s *Service) refreshSelected(ctx context.Context, selection accounts.Select
 		BaseURL:      strutil.First(account.BaseURL, s.Config().BaseURL),
 		AccessToken:  account.BearerToken,
 		RefreshToken: account.RefreshToken,
-		// 刷新令牌也走账号自己的出口：同一账号不该在两个 IP 之间跳。
-		HTTPClient: s.Provider.For(account.Proxy),
+		// 国际站优先使用 OAuth 专用出口；未配置时沿用账号固定出口。
+		HTTPClient: s.RefreshHTTPFor(account),
 	})
 	if err != nil {
 		if force || (account.TokenExpiresAt > 0 && account.TokenExpiresAt <= time.Now().UnixMilli()) {
@@ -756,6 +768,8 @@ func pinnedAccountUnusableReason(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, accounts.ErrQuotaBelowFloor):
+		return "quota_below_floor"
 	case errors.Is(err, accounts.ErrAccountDisabled):
 		return "disabled"
 	case errors.Is(err, accounts.ErrAccountNotFound):
@@ -1195,6 +1209,7 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 			DepartmentFullName:  account.DepartmentFullName,
 			APIEndpoint:         provider.AlignAPIEndpoint(product, account.APIEndpoint),
 			ChatCompletionsPath: strutil.First(account.ChatCompletionsPath, s.Config().ChatCompletionsPath),
+			Fresh:               fresh,
 		})
 		if out.OK && len(out.Models) > 0 {
 			s.storeModelsCache(cacheKey, out)
@@ -1758,6 +1773,14 @@ func (s *Service) OAuthHTTPFor(site string) *http.Client {
 		return s.oauthGlobal.HTTP
 	}
 	return nil
+}
+
+// RefreshHTTPFor preserves the dedicated global OAuth egress for all token refreshes.
+func (s *Service) RefreshHTTPFor(account accounts.Account) *http.Client {
+	if client := s.OAuthHTTPFor(strutil.First(account.Site, s.Config().Site)); client != nil {
+		return client
+	}
+	return s.Provider.For(account.Proxy)
 }
 
 // isQuotaExhausted 判断失败是否属于「这个账号额度用尽」类。

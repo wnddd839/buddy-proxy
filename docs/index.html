@@ -23,6 +23,9 @@
       --fg-40: rgba(28, 28, 28, 0.40);
       --fg-20: rgba(28, 28, 28, 0.20);
       --fg-10: rgba(28, 28, 28, 0.10);
+      --fg-04: rgba(28, 28, 28, 0.04);
+      --fs-xs: 11px; --fs-sm: 12px; --fs-base: 14px;
+      --fs-md: 16px; --fs-lg: 20px; --fs-xl: 28px;
       --invert-bg: #1C1C1C;
       --invert-fg: #F9F8F6;
       --display: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", "Noto Serif SC", serif;
@@ -43,7 +46,7 @@
       background: var(--bg);
       color: var(--fg);
       line-height: 1.625;
-      font-size: 14.5px;
+      font-size: var(--fs-base);
       letter-spacing: -0.01em;
       -webkit-font-smoothing: antialiased;
     }
@@ -83,7 +86,7 @@
     }
     .brand-title {
       font-family: var(--display);
-      font-size: 18px;
+      font-size: var(--fs-md);
       font-weight: 400;
       letter-spacing: 0.25em;
       text-transform: uppercase;
@@ -93,7 +96,7 @@
       display: flex;
       gap: 2.2rem;
       align-items: center;
-      font-size: 11.5px;
+      font-size: var(--fs-xs);
       letter-spacing: 0.2em;
       text-transform: uppercase;
       color: var(--fg-60);
@@ -135,12 +138,12 @@
 
     /* Hero Section (大号衬线标题与 12 栏排版) */
     .hero {
-      padding-top: clamp(140px, 20vh, 200px);
+      padding-top: clamp(120px, 16vh, 160px);
       padding-bottom: clamp(64px, 10vh, 120px);
       border-bottom: 1px solid var(--fg-10);
     }
     .hero-kicker {
-      font-size: 11px;
+      font-size: var(--fs-xs);
       letter-spacing: 0.25em;
       text-transform: uppercase;
       color: var(--fg-40);
@@ -149,10 +152,10 @@
     .hero-title {
       font-family: var(--display);
       font-weight: 400;
-      font-size: clamp(3.4rem, 8.5vw, 8.5rem);
-      line-height: 0.92;
+      font-size: clamp(2.5rem, 6.5vw, 6rem);
+      line-height: 1.08;
       letter-spacing: -0.04em;
-      margin-bottom: 3.5rem;
+      margin-bottom: 2.5rem;
       color: var(--fg);
     }
     .hero-title em {
@@ -197,7 +200,7 @@
       align-items: center;
       justify-content: center;
       padding: 14px 32px;
-      font-size: 12px;
+      font-size: var(--fs-sm);
       letter-spacing: 0.16em;
       text-transform: uppercase;
       font-weight: 500;
@@ -250,13 +253,13 @@
 
     .section-num {
       font-family: var(--display);
-      font-size: 16px;
+      font-size: var(--fs-md);
       font-style: italic;
       color: var(--fg-40);
       margin-bottom: 0.75rem;
     }
     .section-label {
-      font-size: 11px;
+      font-size: var(--fs-xs);
       letter-spacing: 0.22em;
       text-transform: uppercase;
       color: var(--fg-40);
@@ -273,7 +276,7 @@
     }
     .section-desc {
       color: var(--fg-60);
-      font-size: 14.5px;
+      font-size: var(--fs-base);
       line-height: 1.7;
       max-width: 32rem;
     }
@@ -298,7 +301,7 @@
     .article-item h3 {
       font-family: var(--display);
       font-weight: 400;
-      font-size: 24px;
+      font-size: var(--fs-lg);
       letter-spacing: -0.015em;
       color: var(--fg);
       transition: font-style 400ms ease;
@@ -308,18 +311,18 @@
     }
     .article-index {
       font-family: var(--mono);
-      font-size: 12px;
+      font-size: var(--fs-sm);
       color: var(--fg-40);
     }
     .article-item p {
       color: var(--fg-60);
-      font-size: 14px;
+      font-size: var(--fs-base);
       line-height: 1.7;
       max-width: 42rem;
     }
     .article-item code {
       font-family: var(--mono);
-      font-size: 12.5px;
+      font-size: var(--fs-sm);
       color: var(--fg);
       background: rgba(28, 28, 28, 0.04);
       padding: 1px 4px;
@@ -343,7 +346,7 @@
       border: none;
       border-right: 1px solid var(--fg-10);
       font-family: var(--sans);
-      font-size: 12px;
+      font-size: var(--fs-sm);
       letter-spacing: 0.12em;
       text-transform: uppercase;
       color: var(--fg-60);
@@ -354,7 +357,7 @@
     .tab-trigger.active {
       background: var(--bg);
       color: var(--fg);
-      font-weight: 600;
+      font-weight: 500;
       box-shadow: inset 0 -2px 0 var(--fg);
     }
     .integration-panel {
@@ -362,7 +365,7 @@
     }
     .integration-code-pre {
       font-family: var(--mono);
-      font-size: 12.5px;
+      font-size: var(--fs-sm);
       line-height: 1.75;
       color: var(--fg-80);
       white-space: pre;
@@ -370,7 +373,7 @@
     }
     .integration-code-pre .dim { color: var(--fg-40); }
     .integration-code-pre .hot {
-      font-weight: 600;
+      font-weight: 500;
       color: var(--fg);
       text-decoration: underline;
       text-underline-offset: 2px;
@@ -394,7 +397,7 @@
       border-bottom: 1px solid var(--fg-10);
     }
     .dl-table th {
-      font-size: 11px;
+      font-size: var(--fs-xs);
       letter-spacing: 0.2em;
       text-transform: uppercase;
       color: var(--fg-40);
@@ -405,7 +408,7 @@
     }
     .dl-table a {
       font-family: var(--mono);
-      font-size: 13.5px;
+      font-size: var(--fs-base);
       color: var(--fg);
       text-decoration: underline;
       text-underline-offset: 3px;
@@ -415,7 +418,7 @@
     }
     .dl-meta {
       margin-top: 2rem;
-      font-size: 13px;
+      font-size: var(--fs-sm);
       color: var(--fg-60);
     }
     .dl-meta a {
@@ -436,21 +439,21 @@
     }
     .step-num {
       font-family: var(--display);
-      font-size: 24px;
+      font-size: var(--fs-lg);
       font-style: italic;
       color: var(--fg-40);
       margin-bottom: 0.75rem;
     }
     .step-card h4 {
       font-family: var(--display);
-      font-size: 19px;
+      font-size: var(--fs-lg);
       font-weight: 400;
       margin-bottom: 0.5rem;
       color: var(--fg);
     }
     .step-card p {
       color: var(--fg-60);
-      font-size: 13.5px;
+      font-size: var(--fs-base);
       line-height: 1.65;
     }
 
@@ -467,14 +470,14 @@
     }
     .notice-block h3 {
       font-family: var(--display);
-      font-size: 18px;
+      font-size: var(--fs-md);
       font-weight: 400;
       margin-bottom: 0.75rem;
       color: var(--fg);
     }
     .notice-block p {
       color: var(--fg-60);
-      font-size: 13.5px;
+      font-size: var(--fs-base);
       line-height: 1.7;
     }
 
@@ -495,7 +498,7 @@
     }
     .cta-desc {
       color: var(--fg-60);
-      font-size: 16px;
+      font-size: var(--fs-md);
       max-width: 38rem;
       margin-bottom: 2.5rem;
       line-height: 1.65;
@@ -506,7 +509,7 @@
       background: var(--invert-bg);
       color: var(--invert-fg);
       padding: 72px 0;
-      font-size: 11.5px;
+      font-size: var(--fs-xs);
       letter-spacing: 0.14em;
       text-transform: uppercase;
     }
@@ -533,7 +536,7 @@
       padding: 12px 24px;
       background: var(--invert-bg);
       color: var(--invert-fg);
-      font-size: 12px;
+      font-size: var(--fs-sm);
       letter-spacing: 0.12em;
       text-transform: uppercase;
       border: 1px solid var(--invert-bg);
@@ -548,6 +551,25 @@
         animation: none !important;
         transition: none !important;
       }
+    }
+    a:focus-visible,button:focus-visible{outline:2px solid var(--fg);outline-offset:4px}
+    .tab-trigger{white-space:nowrap}
+    .col-content{min-width:0}
+    .dl-table{overflow-wrap:anywhere}
+    .dl-table td:first-child{padding-right:20px}
+    .hero-title{text-wrap:balance}
+    @media(max-width:640px){
+      .wrap{width:calc(100% - 32px)}
+      .nav{padding:16px 0}.nav-inner{gap:12px;align-items:center}
+      .brand-title{font-size:var(--fs-base);letter-spacing:.1em}
+      .nav-cta{padding:6px 10px;white-space:nowrap}
+      .hero{padding-top:112px;padding-bottom:48px}
+      .hero-kicker{margin-bottom:24px;letter-spacing:.12em}
+      .hero-grid-12,.grid-12{gap:28px}
+      .hero-btn-row{gap:12px}.btn{padding:12px 18px}
+      .integration-panel{padding:18px 16px}
+      .article-topline{align-items:flex-start}.article-index{white-space:nowrap}
+      .toast-box{right:16px;bottom:16px;max-width:calc(100vw - 32px)}
     }
   </style>
 </head>
@@ -575,7 +597,7 @@
     <!-- Hero Section -->
     <section class="hero" aria-label="Buddy Proxy Hero">
       <div class="wrap">
-        <div class="hero-kicker">Protocol Direct Gateway · Issue No. 05</div>
+        <div class="hero-kicker">Protocol Direct Gateway · Issue No. 07</div>
         <h1 class="hero-title">
           把 CodeBuddy / WorkBuddy<br />
           变成 <em>/v1.</em>
@@ -590,7 +612,7 @@
               <a class="btn btn-solid" href="#releases">下载最新发布</a>
               <a class="btn btn-line" href="http://127.0.0.1:32126/direct-admin/" target="_blank">本地控制台</a>
             </div>
-            <div style="font-size:12px;color:var(--fg-40);letter-spacing:0.08em;text-transform:uppercase">
+            <div style="font-size: var(--fs-sm);color:var(--fg-40);letter-spacing:0.08em;text-transform:uppercase">
               默认端点 127.0.0.1:32126 · 协议层直通 · 本地安全落盘
             </div>
           </div>
@@ -606,79 +628,49 @@
           <div class="section-label">Capabilities</div>
           <h2 class="section-title">一件事做到位.</h2>
           <p class="section-desc">
-            不是多厂商聚合，也不是代理池转发。这个项目只做一件事：把 CodeBuddy / WorkBuddy 账号转为标准 OpenAI 兼容接口。
+            Go 原生协议网关：把你已授权的 CodeBuddy / WorkBuddy 账号接到 OpenAI 兼容客户端，集中管理凭据、出口与请求调度。
           </p>
         </div>
 
         <div class="col-content">
           <article class="article-item">
-            <div class="article-topline">
-              <h3>协议直连架构</h3>
-              <span class="article-index">PROT-01</span>
-            </div>
-            <p>
-              默认 <code>protocol_direct</code>。OAuth 授权完成后直接向上游通讯（CodeBuddy CLI 或 WorkBuddy IDE），不再挂起本地 <code>codebuddy --serve</code> 进程，也不依赖任何外部浏览器扩展或 Cookie 嗅探插件。
-            </p>
+            <div class="article-topline"><h3>协议直连与双产品切换</h3><span class="article-index">PROT-01</span></div>
+            <p>默认 <code>protocol_direct</code>。同一套 OAuth 凭据可在管理台切换 CodeBuddy（CLI）与 WorkBuddy（IDE），国内与国际两区独立调度，无需重登或挂起本地守护进程。</p>
           </article>
 
           <article class="article-item">
-            <div class="article-topline">
-              <h3>标准 OpenAI 形状</h3>
-              <span class="article-index">SPEC-02</span>
-            </div>
-            <p>
-              完整支持 <code>GET /v1/models</code>、<code>GET /v1/model/info</code> 与 <code>POST /v1/chat/completions</code>。流式与非流式调用双向兼容，轻松对接入 NewAPI、Cursor、Claude Code 与 OpenCode。
-            </p>
+            <div class="article-topline"><h3>OpenAI 兼容端点</h3><span class="article-index">SPEC-02</span></div>
+            <p>支持 <code>/v1/chat/completions</code>、Codex CLI 使用的 <code>/v1/responses</code>、混元生图与改图 <code>/v1/images/generations</code> / <code>/v1/images/edits</code>，以及 OpenCode 模型元信息 <code>/v1/model/info</code>。</p>
           </article>
 
           <article class="article-item">
-            <div class="article-topline">
-              <h3>智能号池与自动熔断自愈</h3>
-              <span class="article-index">POOL-03</span>
-            </div>
-            <p>
-              号池按区域隔离轮询。上游 429 时将该账号冷却 2 分钟（111xx 为 5 分钟，部分 5xx 为 30 秒），冷却期内不参与轮询；同区全冷却时选最早恢复者继续服务，避免整体不可用。
-            </p>
+            <div class="article-topline"><h3>官方联网搜索与多步研究</h3><span class="article-index">SRCH-03</span></div>
+            <p>转发 <code>/v1/search</code>、<code>/v1/webfetch</code>、<code>/v1/agentic_search</code>，并为 Responses 与 Chat 提供 <code>web_search</code> 检索桥接与结果回填。</p>
           </article>
 
           <article class="article-item">
-            <div class="article-topline">
-              <h3>直读官网真实 Credits</h3>
-              <span class="article-index">CRED-04</span>
-            </div>
-            <p>
-              管理控制台直接对接官方用量接口，实时拉取并展示「剩余 / 总额」真实数值。剩余额度一目了然，绝无虚标伪造状态。
-            </p>
+            <div class="article-topline"><h3>有方向的跨区模型路由</h3><span class="article-index">ROUT-04</span></div>
+            <p><code>cn:</code> / <code>global:</code> 前缀硬钉区域；可按源区与模型名配置替身改写和有序备用链，在没有可用账号时尝试后续规则。两个方向分别配置。</p>
           </article>
 
           <article class="article-item">
-            <div class="article-topline">
-              <h3>国内与国际双区精准调度</h3>
-              <span class="article-index">ROUT-05</span>
-            </div>
-            <p>
-              请求调度端点严格以<strong>账号自身注册区域</strong>为基准，不依赖反代宿主机的出口 IP，确保国内凭证走腾讯云通道，国际凭证直达海外节点。
-            </p>
+            <div class="article-topline"><h3>智能号池与积分下限保护</h3><span class="article-index">POOL-05</span></div>
+            <p>模型限频按账号与模型隔离冷却，不误伤同号其他模型。支持积分下限（Quota Floor）、会话软钉、额度优先选号和单号传输抖动重连。</p>
           </article>
 
           <article class="article-item">
-            <div class="article-topline">
-              <h3>CodeBuddy 与 WorkBuddy 产品切换</h3>
-              <span class="article-index">PROD-06</span>
-            </div>
-            <p>
-              与站点正交：同一套 OAuth token，管理台一键切 CodeBuddy（CLI 头）或 WorkBuddy（IDE 头）。模型目录随产品切换，无需重新登录。
-            </p>
+            <div class="article-topline"><h3>账号固定出口与 OAuth 专用出口</h3><span class="article-index">EGRS-06</span></div>
+            <p>管理台维护 <code>HTTP / HTTPS / SOCKS5 / SOCKS5h</code> 候选出口，支持真实 HTTPS 连通探测与均衡分配；国际站 OAuth 可单设 <code>CODEBUDDY_PROXY_OAUTH_PROXY</code>。</p>
           </article>
 
           <article class="article-item">
-            <div class="article-topline">
-              <h3>Token 计量与 Reasoning 思考链</h3>
-              <span class="article-index">THNK-07</span>
-            </div>
-            <p>
-              流式响应收尾补发真实 usage chunk 与缓存命中度统计；原生透传 <code>reasoning_effort</code> 思考档位参数，完整支持 Claude 3.7 Thinking 与 DeepSeek R1 思考过程输出。
-            </p>
+            <div class="article-topline"><h3>自动签到与积分到期明细</h3><span class="article-index">CHKN-07</span></div>
+            <p>独立签到页按北京时间配置仿人随机、全天随机、固定时刻或时段窗口，支持批量错峰、失败退避与 48h 审计。余额来自官网接口，套餐包明细标注到期时间。</p>
+          </article>
+
+          <article class="article-item">
+            <div class="article-topline"><h3>实时观测与手动自更新</h3><span class="article-index">OBSV-08</span></div>
+            <p>查看秒级分桶的 1 / 5 / 60m RPM、在途与峰值；滚动基线监测错误率与推理占比，可经 Webhook / SMTP 通知。手动自更新校验 SHA-256，并支持失败回滚。</p>
           </article>
         </div>
       </div>
@@ -698,8 +690,9 @@
 
         <div class="col-content">
           <div class="integration-box">
-            <nav class="integration-nav">
-              <button type="button" class="tab-trigger active" onclick="switchClientTab('claude', this)">Claude Code</button>
+            <nav class="integration-nav" aria-label="客户端接入示例">
+              <button type="button" class="tab-trigger active" onclick="switchClientTab('codex', this)">Codex CLI</button>
+              <button type="button" class="tab-trigger" onclick="switchClientTab('claude', this)">Claude Code</button>
               <button type="button" class="tab-trigger" onclick="switchClientTab('opencode', this)">OpenCode</button>
               <button type="button" class="tab-trigger" onclick="switchClientTab('cursor', this)">Cursor</button>
               <button type="button" class="tab-trigger" onclick="switchClientTab('curl', this)">cURL 终端</button>
@@ -709,7 +702,7 @@
             <div class="integration-panel">
               <pre class="integration-code-pre" id="integrationCodeBlock"></pre>
               <div class="integration-actions">
-                <button type="button" class="btn btn-line" style="padding:8px 18px;font-size:11px" onclick="copyIntegrationCode()">
+                <button type="button" class="btn btn-line" style="padding:8px 18px;font-size: var(--fs-xs)" onclick="copyIntegrationCode()">
                   复制代码片段
                 </button>
               </div>
@@ -727,7 +720,7 @@
           <div class="section-label">Distribution</div>
           <h2 class="section-title">单文件即用，无需安装.</h2>
           <p class="section-desc">
-            下载对应平台可执行文件，直接双击或终端运行。首次启动自动生成 API Key 并安全写入同目录 <code>.env</code>。
+            下载对应平台可执行文件，直接双击或终端运行。首次启动生成网关 API Key，默认写入账号池同目录的 <code>proxy.env</code>。
           </p>
         </div>
 
@@ -740,11 +733,13 @@
               </tr>
             </thead>
             <tbody>
+              <tr><td>Linux ARM64 (aarch64)</td><td><a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-linux-arm64">codebuddy-proxy-linux-arm64</a></td></tr>
+              <tr><td>Linux ARMv7</td><td><a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-linux-armv7">codebuddy-proxy-linux-armv7</a></td></tr>
+              <tr><td>Linux ARMv6</td><td><a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-linux-armv6">codebuddy-proxy-linux-armv6</a></td></tr>
               <tr>
                 <td>Windows 64 位 (x64)</td>
                 <td>
                   <a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-windows-x64.exe">codebuddy-proxy-windows-x64.exe</a>
-                  <span style="color:var(--fg-40);font-size:12px"> (或 <a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/codebuddy-proxy-windows-amd64.exe">windows-amd64.exe</a>)</span>
                 </td>
               </tr>
               <tr>
@@ -768,8 +763,12 @@
             </tbody>
           </table>
 
+          <div class="dl-meta"><p>Docker / GHCR</p><pre class="integration-code-pre">docker run -d --name buddy-proxy -p 127.0.0.1:32126:32126 \
+  -e CODEBUDDY_PROXY_HOST=0.0.0.0 \
+  -v buddy-data:/data \
+  ghcr.io/wnddd839/buddy-proxy:latest</pre></div>
           <div class="dl-meta">
-            环境模板配置文件：<a href="https://github.com/wnddd839/buddy-proxy/raw/main/releases/.env.example">.env.example</a>
+            环境模板配置文件：<a href="https://github.com/wnddd839/buddy-proxy/blob/main/.env.example">.env.example</a>
             · 完整校验哈希表：<a href="https://github.com/wnddd839/buddy-proxy/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a>
           </div>
         </div>
@@ -789,12 +788,12 @@
           <div class="step-card">
             <div class="step-num">01 /</div>
             <h4>运行二进制程序</h4>
-            <p>从 Releases 下载对应架构的文件，双击或在终端启动。程序自动读取同目录配置并打印出专属 API Key。</p>
+            <p>从 Releases 下载对应架构的文件，双击或在终端启动。程序读取配置并生成网关 API Key；到本地管理台查看接入信息。</p>
           </div>
           <div class="step-card">
             <div class="step-num">02 /</div>
-            <h4>进入控制台完成 OAuth</h4>
-            <p>在浏览器打开 <code>http://127.0.0.1:32126/direct-admin/</code>，点击「开始认证」一键完成微信/企微或海外授权，账号自动入池。</p>
+            <h4>OAuth 授权或导入账号</h4>
+            <p>在浏览器打开 <code>http://127.0.0.1:32126/direct-admin/</code>，在账号池完成国内 / 国际站 OAuth，或导入已有凭据；自动签到在独立章节配置。</p>
           </div>
           <div class="step-card">
             <div class="step-num">03 /</div>
@@ -863,23 +862,54 @@
     </div>
   </footer>
 
-  <div class="toast-box" id="siteToast">已复制代码到剪贴板</div>
+  <div class="toast-box" id="siteToast" role="status" aria-live="polite">已复制代码到剪贴板</div>
 
   <script>
     const codeMap = {
-      claude: `# 导出环境变量直接启动 Claude Code 即可直通\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:32126"\nexport ANTHROPIC_API_KEY="你的网关APIKey"\nclaude`,
-      opencode: `// 写入 ~/.opencode/config.json\n{\n  "provider": "codebuddy-proxy",\n  "base_url": "http://127.0.0.1:32126/v1",\n  "api_key": "你的网关APIKey",\n  "model": "claude-3-7-sonnet"\n}`,
-      cursor: `// 在 Cursor Settings -> Models -> OpenAI API Key\nBase URL: http://127.0.0.1:32126/v1\nAPI Key:  你的网关APIKey\nModel:    claude-3-7-sonnet (或 auto)`,
-      curl: `curl http://127.0.0.1:32126/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer 你的网关APIKey" \\\n  -d '{\n    "model": "claude-3-7-sonnet",\n    "messages": [{"role": "user", "content": "Ping!"}]\n  }'`,
-      python: `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="http://127.0.0.1:32126/v1",\n    api_key="你的网关APIKey"\n)\n\nresp = client.chat.completions.create(\n    model="claude-3-7-sonnet",\n    messages=[{"role": "user", "content": "Hello CodeBuddy!"}]\n)\nprint(resp.choices[0].message.content)`
+      codex: `# ~/.codex/config.toml
+model_provider = "buddy-proxy"
+model = "auto"
+
+[model_providers.buddy-proxy]
+name = "Buddy Proxy"
+base_url = "http://127.0.0.1:32126/v1"
+wire_api = "responses"
+env_key = "BUDDY_PROXY_API_KEY"
+
+# 在启动 Codex 的终端设置 BUDDY_PROXY_API_KEY 为网关 Key`,
+      claude: `# Claude Code 原生使用 Anthropic Messages 协议。
+# 本网关提供 OpenAI Chat / Responses，不直接提供 /v1/messages。
+# 请先使用你信任的 Anthropic → OpenAI 适配器，
+# 将适配器上游设为 http://127.0.0.1:32126/v1 并填写网关 API Key。
+# ANTHROPIC_BASE_URL 应指向该适配器，而不是本网关。`,
+      opencode: `// ~/.config/opencode/opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "buddy-proxy": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Buddy Proxy",
+      "options": {
+        "baseURL": "http://127.0.0.1:32126/v1",
+        "apiKey": "{env:BUDDY_PROXY_API_KEY}"
+      },
+      "models": { "auto": { "name": "Auto" } }
+    }
+  },
+  "model": "buddy-proxy/auto"
+}`,
+      cursor: `// 在 Cursor Settings -> Models -> OpenAI API Key\nBase URL: http://127.0.0.1:32126/v1\nAPI Key:  你的网关APIKey\nModel:    auto（或管理台编目中的模型名）`,
+      curl: `curl http://127.0.0.1:32126/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer 你的网关APIKey" \\\n  -d '{\n    "model": "auto",\n    "messages": [{"role": "user", "content": "Ping!"}]\n  }'`,
+      python: `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="http://127.0.0.1:32126/v1",\n    api_key="你的网关APIKey"\n)\n\nresp = client.chat.completions.create(\n    model="auto",\n    messages=[{"role": "user", "content": "Hello CodeBuddy!"}]\n)\nprint(resp.choices[0].message.content)`
     };
 
-    let activeClientKey = 'claude';
+    let activeClientKey = 'codex';
 
     function switchClientTab(key, btn) {
       activeClientKey = key;
       document.querySelectorAll('.tab-trigger').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      document.querySelectorAll('.tab-trigger').forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
       document.getElementById('integrationCodeBlock').textContent = codeMap[key];
     }
 
@@ -893,6 +923,7 @@
 
     function copyIntegrationCode() {
       const text = codeMap[activeClientKey];
+      if (!navigator.clipboard) { showToast('当前环境无法复制，请手动选取'); return; }
       navigator.clipboard.writeText(text).then(() => {
         showToast('已复制代码片段到剪贴板');
       }).catch(() => {

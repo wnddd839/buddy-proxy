@@ -94,6 +94,24 @@ func TestUpsertEnvFileEscapesLineBreaks(t *testing.T) {
 	}
 }
 
+func TestUpsertAndLoadDotEnvLiteralBackslashes(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "proxy.env")
+	value := `admin \new \reports \\share "quoted"`
+	if err := config.UpsertEnvFile(envPath, map[string]string{
+		"CODEBUDDY_PROXY_ADMIN_PASSWORD": value,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", envPath)
+	t.Setenv("CODEBUDDY_PROXY_ADMIN_PASSWORD", "")
+	if _, err := config.LoadDotEnv(); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("CODEBUDDY_PROXY_ADMIN_PASSWORD"); got != value {
+		t.Fatalf("password=%q want %q", got, value)
+	}
+}
+
 func TestResolveEnvFilePathDefaultsToStableHomeFile(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "launch")

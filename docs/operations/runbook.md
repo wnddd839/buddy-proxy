@@ -74,7 +74,7 @@ curl -fsS http://127.0.0.1:32126/readyz
 | 跨域写管理台 API 报 403 | CSRF 保护生效；确认请求 `Origin` 与站点一致 |
 | 账号统计丢失 | 进程被 `SIGKILL` 时内存中的 dirty 统计可能未落盘；正常退出会 flush |
 | 每日签到失败 / 无反应 | 管理台「每日签到」作用于**当前激活号池**（跟随 `CODEBUDDY_SITE`，可切换号池后重试）；单账号总计 20s，批次上限 5 分钟（账号多时需等待）。上游 `active:false` → `supported` 缺省（不支持）；HTTP 401/单账号超时 → `failed` 且批次 `ok=false`；批次 deadline 耗尽、未执行的账号 → `skipped`（批次仍 `ok=false`）；`code=10001` → 幂等成功 |
-| 自动签到没跑 | 先确认总开关 `CODEBUDDY_PROXY_CHECKIN_AUTO` 已开启、规则里该账号 `enabled=true`、时间按**北京时间**填写；启动不补签，进程起来时已过点的窗口当天不会再跑，请手动点「每日签到」。跨零点窗口与 `end < start` 会被保存接口拒绝 |
+| 自动签到没跑 | 在管理台「自动签到」章节检查保存状态与草稿提示；先确认总开关 `CODEBUDDY_PROXY_CHECKIN_AUTO` 已开启、规则里该账号 `enabled=true`、时间按**北京时间**填写；启动不补签，进程起来时已过点的窗口当天不会再跑，请手动点「每日签到」。跨零点窗口与 `end < start` 会被保存接口拒绝 |
 | 回答说到一半截断 / 请求长时间假活 | 上游以 FIN 收尾却没给终止帧时，首内容前按传输层失败换号重放（最多 `maxResetReplays` 次），已下发正文则显式返回 `truncated` 错误，不再补 `finish_reason=stop` 伪装成功；上游连续 3 分钟不吐字节由 `provider.stallGuard` 收敛为失败；内容尚未下发（包括非流式已缓存部分正文）时可换号重放，已下发则显式报错。两者都不新增配置 |
 | 自更新失败 | 见下方「自更新失败排查」 |
 

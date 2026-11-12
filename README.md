@@ -38,15 +38,10 @@ kiro-proxy 已发布
 - [@kkl31415926](https://github.com/kkl31415926) · [#16](https://github.com/wnddd839/buddy-proxy/issues/16) 流式 `tool_calls[].index` 缺失导致 Android Studio / OpenAI Java SDK 报错
 - [@kkblank](https://github.com/kkblank) · [#36](https://github.com/wnddd839/buddy-proxy/issues/36) Responses 工具截图被当作 base64 文本导致上下文膨胀（附生产日志与图片/文本 token 对照）
 - [@kylstwang](https://github.com/kylstwang) · [#37](https://github.com/wnddd839/buddy-proxy/issues/37) Linux ARM 路由器运行与预编译发行包需求
-- [@kouekikin24](https://github.com/kouekikin24) · [#45](https://github.com/wnddd839/buddy-proxy/issues/45) 输出 token 上限静默失效（附国内/国际仅改字段名的上游对照与修复验证）
-
-特别感谢 v0.7.0 功能贡献：[@240xu](https://github.com/240xu) 的 [#48](https://github.com/wnddd839/buddy-proxy/pull/48) 波动监测、[#49](https://github.com/wnddd839/buddy-proxy/pull/49) 批量导入和 [#50](https://github.com/wnddd839/buddy-proxy/pull/50) 固定出口，以及 [@kouekikin24](https://github.com/kouekikin24) 的 [#44](https://github.com/wnddd839/buddy-proxy/pull/44) 流重试保护。v0.7.0 在原 PR 基础上适配整合并修复已确认问题；未直接合并原 PR 不影响贡献归属。
-
-v0.7.1 感谢 [@240xu](https://github.com/240xu) 提供 [#52](https://github.com/wnddd839/buddy-proxy/pull/52) 请求体上限、[#53](https://github.com/wnddd839/buddy-proxy/pull/53) 空闲超时配置，以及 [#54](https://github.com/wnddd839/buddy-proxy/issues/54) 限流实测反馈。
-
-v0.7.2 感谢 [@240xu](https://github.com/240xu) 在 [#60](https://github.com/wnddd839/buddy-proxy/pull/60) 提供流式截断与停滞的实测数据，以及 [@ck629](https://github.com/ck629) 报告 [#61](https://github.com/wnddd839/buddy-proxy/issues/61) 自更新下载中断。
-
-v0.7.3 特别感谢 [@240xu](https://github.com/240xu) 提交 [#51](https://github.com/wnddd839/buddy-proxy/pull/51) 隧道 SSE 连接复用修复与部署实测、[#57](https://github.com/wnddd839/buddy-proxy/pull/57) 按账号并发观测、[#60](https://github.com/wnddd839/buddy-proxy/pull/60) 优雅关闭与瞬时 500 重试、[#62](https://github.com/wnddd839/buddy-proxy/pull/62) 国际站 system 补全、[#63](https://github.com/wnddd839/buddy-proxy/pull/63) 模型目录提速、[#64](https://github.com/wnddd839/buddy-proxy/pull/64) OAuth 专用出口、[#65](https://github.com/wnddd839/buddy-proxy/pull/65) 无备选账号时同号重连，以及 [Issue #54](https://github.com/wnddd839/buddy-proxy/issues/54) 的限流实测与观测建议。上述报告、复现证据与方案促成了本版改进；即使最终代码由主线自主实现、未直接合并原 PR，贡献归属与感谢不变。
+- [@kouekikin24](https://github.com/kouekikin24) · [#44](https://github.com/wnddd839/buddy-proxy/pull/44) 流重试保护 · [#45](https://github.com/wnddd839/buddy-proxy/issues/45) 输出 token 上限静默失效（附国内/国际仅改字段名的上游对照与修复验证）
+- [@240xu](https://github.com/240xu) · [#48](https://github.com/wnddd839/buddy-proxy/pull/48) 波动监测 · [#49](https://github.com/wnddd839/buddy-proxy/pull/49) 批量导入 · [#50](https://github.com/wnddd839/buddy-proxy/pull/50) 账号固定出口 · [#51](https://github.com/wnddd839/buddy-proxy/pull/51) 隧道 SSE 连接复用修复与部署实测 · [#52](https://github.com/wnddd839/buddy-proxy/pull/52) 请求体上限配置 · [#53](https://github.com/wnddd839/buddy-proxy/pull/53) HTTP keep-alive 空闲超时配置 · [#54](https://github.com/wnddd839/buddy-proxy/issues/54) 限流实测反馈与观测建议 · [#57](https://github.com/wnddd839/buddy-proxy/pull/57) 按账号并发观测 · [#60](https://github.com/wnddd839/buddy-proxy/pull/60) 流式截断与停滞的实测数据、优雅关闭与瞬时 500 重试
+- [@ck629](https://github.com/ck629) · [#61](https://github.com/wnddd839/buddy-proxy/issues/61) 自更新下载中断
+- [@240xu](https://github.com/240xu) · [#62](https://github.com/wnddd839/buddy-proxy/pull/62) 国际站 system 补全 · [#63](https://github.com/wnddd839/buddy-proxy/pull/63) 模型目录提速 · [#64](https://github.com/wnddd839/buddy-proxy/pull/64) OAuth 专用出口 · [#65](https://github.com/wnddd839/buddy-proxy/pull/65) 无备选账号时同号重连 · [#66](https://github.com/wnddd839/buddy-proxy/pull/66) 独立签到页、四种调度模式、48h 审计、有方向的模型路由、选号积分下限，以及后续文档/安全修复
 
 ---
 
@@ -123,13 +118,13 @@ chmod +x ./codebuddy-proxy-linux-amd64
 
 运行中的实例可在管理台顶栏下方点「检查更新 / 更新并重启」，仅从官方 GitHub Release 下载并按 `SHA256SUMS.txt` 校验，成功后自动重启并回连；下载校验失败或新版本启动失败时保留/回滚旧程序。改动只替换可执行文件，不会覆盖 `.env`、账号池或用量文件。**首个带更新器的版本仍需手动升级一次**；Docker 部署请用镜像更新（`docker compose pull && docker compose up -d`）。
 
-当前正式版为 **[v0.7.3](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.3)**：修复国际站首条 system 缺失、无可用备选账号时的同号重连（包含备选账号模型冷却场景），为带转发头的 SSE 关闭连接复用；新增国际站 OAuth 专用出口、模型目录提速、优雅关闭宽限和按账号并发观测。RPM 按 1/5/60 分钟窗口计算平均每分钟速率。保留 v0.7.2 的每账号自动签到、流式截断/停滞处理与更新下载重试。
+当前正式版为 **[v0.7.4](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.4)**：在 PR #66 的方向上落地 Editorial 2.0 六章节管理台：独立自动签到页、有方向的模型路由、选号积分下限和独立保存状态；同时修复递归重试重复改写路由、低于积分门槛仍被兜底选号、国际站 OAuth 刷新出口、签到 23:30 截止、直连 SSE 复用、模型强刷缓存与 Windows 权限测试。
 
 升级注意：可选 `CODEBUDDY_PROXY_OAUTH_PROXY` 仅用于国际站 OAuth（含 token refresh），配置后需重启；信号停止默认等待 10 分钟，Docker/systemd 的停止超时需不小于该宽限（仓库 Compose 已设为 11 分钟），自更新交接仍为 30 秒。隧道需传递 `X-Forwarded-For` 等转发头才会启用 SSE 关闭连接策略。详情见 [更新日志](CHANGELOG.md) 和 [运维手册](docs/operations/runbook.md)。
 
-#### v0.7.2 · 每账号自动签到
+#### 每账号自动签到
 
-管理台「客户端接入 → 自动签到」里，每个账号可单独配置：
+管理台「自动签到」章节里，每个账号可单独配置：
 
 | 配置 | 行为 |
 | :--- | :--- |
@@ -147,7 +142,7 @@ chmod +x ./codebuddy-proxy-linux-amd64
 CODEBUDDY_PROXY_CHECKIN_AUTO=true
 ```
 
-#### v0.7.1 · 可选部署配置
+#### 可选部署配置
 
 新增两个可选配置，修改后重启生效，默认行为保持不变：
 

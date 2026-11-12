@@ -26,6 +26,7 @@ var (
 	ErrAccountDisabled    = errors.New("CodeBuddy account is disabled")
 	ErrNoCredentials      = errors.New("CodeBuddy account has no credentials")
 	ErrAccountCoolingDown = errors.New("CodeBuddy account is cooling down")
+	ErrQuotaBelowFloor    = errors.New("CodeBuddy account is below the quota floor")
 )
 
 // ModelCooldownError 表示当前模型的所有候选账号仍在上游限流窗口内。
@@ -574,21 +575,21 @@ func QuotaBlocked(account Account, nowMillis int64) bool {
 // 低于阈值 = 不再参与选号，即使还没到 0——避免把号打到负数或触发上游风控。
 // 与 QuotaBlocked 同一数据源（缓存的 billing credits）与同一时效约束。
 func QuotaBelowFloor(account Account, nowMillis int64, floor float64) bool {
-	if floor <= 0 {
+	if floor <= 0 || account.QuotaUnlimited || account.QuotaRemaining == nil {
 		return false
 	}
-	return quotaBlockedFloor(account, nowMillis, floor)
+	// Unknown/stale billing is not proof of a low balance; refresh it before selection.
+	if account.QuotaCheckedAt <= 0 || nowMillis-account.QuotaCheckedAt > quotaCacheMaxAge.Milliseconds() {
+		return false
+	}
+	if account.QuotaResetAt > 0 && account.QuotaResetAt <= nowMillis {
+		return false
+	}
+	return *account.QuotaRemaining < floor
 }
 
-// quotaBlockedFloor 是两者共用的实现：floor=0 等价于「只在耗尽时拦截」。
 func quotaBlockedFloor(account Account, nowMillis int64, floor float64) bool {
-	if account.QuotaUnlimited {
-		return false
-	}
-	if account.QuotaRemaining == nil {
-		return false
-	}
-	if *account.QuotaRemaining > floor {
+	if account.QuotaUnlimited || account.QuotaRemaining == nil || *account.QuotaRemaining > floor {
 		return false
 	}
 	if account.QuotaResetAt <= nowMillis {
@@ -604,18 +605,6 @@ func unavailableUntil(account Account, nowMillis int64, model string) int64 {
 	until := max(account.CooldownUntil, account.ModelCooldowns[model])
 	if QuotaBlocked(account, nowMillis) {
 		until = max(until, account.QuotaResetAt)
-	}
-	return until
-}
-
-// unavailableUntilFloor 同上，但把「积分低于 floor」也视为不可用。
-// floor<=0 时与 unavailableUntil 等价。
-func unavailableUntilFloor(account Account, nowMillis int64, model string, floor float64) int64 {
-	until := unavailableUntil(account, nowMillis, model)
-	if QuotaBelowFloor(account, nowMillis, floor) {
-		// 没有上游重置时间可用（还没到 0），保守挡 10 分钟，
-		// 到点后会重新探测余额（refreshCandidateQuotas）。
-		until = max(until, nowMillis+int64(10*time.Minute/time.Millisecond))
 	}
 	return until
 }
@@ -654,7 +643,10 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			if opts.Site != "" && config.NormalizeSite(account.Site) != config.NormalizeSite(opts.Site) {
 				return Selection{}, fmt.Errorf("CodeBuddy account site mismatch: account=%s, configured=%s", account.Site, config.NormalizeSite(opts.Site))
 			}
-			if opts.CheckCooldown && unavailableUntilFloor(account, now, opts.Model, floor) > now {
+			if QuotaBelowFloor(account, now, floor) {
+				return Selection{}, fmt.Errorf("%w: %s", ErrQuotaBelowFloor, opts.AccountID)
+			}
+			if opts.CheckCooldown && unavailableUntil(account, now, opts.Model) > now {
 				return Selection{}, fmt.Errorf("%w: %s", ErrAccountCoolingDown, opts.AccountID)
 			}
 			store.Accounts[i].LastSelectedAt = now
@@ -706,7 +698,11 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			}
 			continue
 		}
-		if blockedUntil := unavailableUntilFloor(account, now, opts.Model, floor); blockedUntil > now {
+		// The floor is a hard exclusion, never an all-cooling fallback candidate.
+		if QuotaBelowFloor(account, now, floor) {
+			continue
+		}
+		if blockedUntil := unavailableUntil(account, now, opts.Model); blockedUntil > now {
 			if blockedUntil > 0 && (fallbackIdx < 0 || blockedUntil < fallbackUntil) {
 				fallbackIdx = idx
 				fallbackUntil = blockedUntil
@@ -768,7 +764,7 @@ func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site, model strin
 		if _, skip := exclude[account.ID]; skip {
 			continue
 		}
-		if unavailableUntilFloor(account, now, model, floor) > now {
+		if QuotaBelowFloor(account, now, floor) || unavailableUntil(account, now, model) > now {
 			continue
 		}
 		remaining, ok := quotaScore(account)

@@ -106,12 +106,13 @@ func unquoteEnvValue(value string) string {
 	if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
 		inner := value[1 : len(value)-1]
 		if value[0] == '"' {
-			// Undo escapeEnvValue's CR/LF escapes. Without this the loader
-			// would hand a literal backslash-n to callers instead of a newline.
-			inner = strings.ReplaceAll(inner, `\n`, "\n")
-			inner = strings.ReplaceAll(inner, `\r`, "\r")
-			inner = strings.ReplaceAll(inner, `\"`, `"`)
-			inner = strings.ReplaceAll(inner, `\\`, `\`)
+			// Decode once so an escaped backslash cannot become a CR/LF escape.
+			inner = strings.NewReplacer(
+				`\\`, `\`,
+				`\"`, `"`,
+				`\n`, "\n",
+				`\r`, "\r",
+			).Replace(inner)
 		}
 		return inner
 	}
