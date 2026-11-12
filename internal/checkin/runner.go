@@ -179,7 +179,10 @@ func (r *Runner) catchUp(ctx context.Context) {
 	}
 	now := time.Now()
 	day := now.In(beijing).Format("2006-01-02")
-	cutoff := now.In(beijing).Truncate(24 * time.Hour).Add(23*time.Hour + 30*time.Minute)
+	// 用 time.Date 而不是 Truncate(24h)：Truncate 按 UTC 纪元对齐，
+	// 在北京时区会算出次日 07:30（UTC 23:30），凌晨反而会补签。
+	local := now.In(beijing)
+	cutoff := time.Date(local.Year(), local.Month(), local.Day(), 23, 30, 0, 0, beijing)
 	if now.After(cutoff) {
 		return
 	}
