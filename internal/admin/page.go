@@ -1020,7 +1020,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
         <div class="section-head">
           <div>
             <h2>模型路由（有方向）</h2>
-            <p>一条规则 = <strong>某个区收到某个模型名</strong>时，改用<strong>另一个区（或同区）的某个模型</strong>执行。两个方向各配各的，互不影响。没配置的模型一字节不改。</p>
+            <p>一条规则 = <strong>某个区收到某个模型名</strong>时，改用<strong>另一个区（或同区）的某个模型</strong>执行。两个方向各配各的，互不影响。没配置的模型一字节不改。<br>「<strong>生效时机</strong>」决定它什么时候动手：<strong>立即改写</strong> = 命中就换；<strong>源区用尽才跳</strong> = 先用源区跑，源区没号可用了才换到目标区。</p>
           </div>
           <div class="actions">
             <button class="teal" id="btnRouteAdd" type="button" disabled>+ 新增路由</button>

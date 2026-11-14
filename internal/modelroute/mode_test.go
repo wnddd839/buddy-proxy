@@ -47,3 +47,15 @@ func TestRuleModeDefault(t *testing.T) {
 		t.Fatal("mode 应大小写/空格不敏感")
 	}
 }
+
+// 审计日志必须能看出这条规则是「立即改写」还是「兜底」，否则事后追不了账。
+func TestAuditLineIncludesMode(t *testing.T) {
+	got := AuditLine([]Rule{{
+		FromSite: "domestic", Match: "hy4free", Site: "global", Target: "hy4free",
+		Mode: ModeOnExhausted,
+	}})
+	want := "[onExhausted]domestic:hy4free→global/hy4free"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}

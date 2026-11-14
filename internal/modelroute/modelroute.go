@@ -247,9 +247,13 @@ func AuditLine(rules []Rule) string {
 	}
 	parts := make([]string, 0, len(rules))
 	for _, r := range rules {
-		parts = append(parts, fmt.Sprintf("%s:%s→%s/%s",
+		line := fmt.Sprintf("%s:%s→%s/%s",
 			canonicalSite(r.FromSite), strings.TrimSpace(r.Match),
-			canonicalSite(r.Site), strings.TrimSpace(r.Target)))
+			canonicalSite(r.Site), strings.TrimSpace(r.Target))
+		if r.OnExhausted() {
+			line = "[" + ModeOnExhausted + "]" + line
+		}
+		parts = append(parts, line)
 	}
 	return strings.Join(parts, ", ")
 }
