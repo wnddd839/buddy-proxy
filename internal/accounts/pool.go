@@ -640,6 +640,26 @@ func unavailableUntil(account Account, nowMillis int64, model string) int64 {
 	return until
 }
 
+// UsableForModel 是「这个号现在能不能真的被 Select 选中」的唯一判据。
+//
+// 之前网关里有 5 份各自实现的候选筛选（listSelectableAccounts /
+// nextSelectableAccount / hasAlternativeAccount / siteHasUsableAccount /
+// listQuotaRefreshCandidates），检查项各不相同，导致同一个号在一处算「可用」、
+// 在另一处算「不可用」。典型后果：换号重试挑中一个额度已耗尽的号，
+// 白打一次上游再失败。任何判断候选的代码都必须走这里。
+//
+// 注意：这里不包含 Select 的「全冷却兜底」——那个兜底只在确实无号时降级，
+// 不属于「有可用候选」的语义。
+func UsableForModel(account Account, nowMillis int64, model string, floor float64) bool {
+	if !account.Enabled || !HasCredentials(account) {
+		return false
+	}
+	if QuotaBelowFloor(account, nowMillis, floor) {
+		return false
+	}
+	return unavailableUntil(account, nowMillis, model) <= nowMillis
+}
+
 func clearQuotaCache(account *Account) {
 	account.QuotaRemaining = nil
 	account.QuotaUnlimited = false
@@ -868,8 +888,17 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 					cooldowns[selection.Model] = now + cooldown.Milliseconds()
 					p.mem.Accounts[i].ModelCooldowns = cooldowns
 				} else {
-					p.mem.Accounts[i].CooldownUntil = now + cooldown.Milliseconds()
-					p.mem.Accounts[i].CooldownSource = CooldownSourceUpstream
+					until := now + cooldown.Milliseconds()
+					// 额度类失败时调用方（resolveFailureCooldown）已经用上游 billing
+					// 快照把 CooldownUntil 对齐到 QuotaResetAt 并标了 quota 来源。
+					// 这里必须让位，否则每次真实 429 都会把可自愈的额度冷却改回
+					// upstream，自愈逻辑等于没写（旧实现就是这么废掉两个号的）。
+					keepQuota := p.mem.Accounts[i].CooldownSource == CooldownSourceQuota &&
+						p.mem.Accounts[i].CooldownUntil >= until
+					if !keepQuota {
+						p.mem.Accounts[i].CooldownUntil = until
+						p.mem.Accounts[i].CooldownSource = CooldownSourceUpstream
+					}
 				}
 			}
 		}

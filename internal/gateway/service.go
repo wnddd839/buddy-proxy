@@ -533,20 +533,12 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			opts.RetryDepth++
 			return s.CompleteFromPool(ctx, opts)
 		}
-		_, modelCooling := errors.AsType[*accounts.ModelCooldownError](err)
-		if len(opts.routeFallbacks) > 0 && (errors.Is(err, accounts.ErrNoAccounts) || modelCooling) {
-			rule := opts.routeFallbacks[0]
-			opts.routeFallbacks = opts.routeFallbacks[1:]
-			opts.Site = config.NormalizeSite(rule.Site)
-			opts.Model = rule.Target
-			opts.AccountID = ""
-			opts.RetryDepth++
-			return s.CompleteFromPool(ctx, opts)
-		}
-		// 源站点确实没号可用（全禁用 / 全冷却且无兜底 / 全在积分下限下 /
-		// 该模型整体在限流窗口内）⇒ 这才是「用尽」，延迟路由可以跳了。
-		if routeExhausted(err) && s.advanceDeferredRoute(&opts) {
-			return s.CompleteFromPool(ctx, opts)
+		// 两条链（always 的 routeFallbacks 与 onExhausted 的 deferredRoute）
+		// 必须都能推进，否则 onExhausted 规则配成多跳时第二跳永远不会被消费。
+		if routeExhausted(err) {
+			if s.advanceRouteFallback(&opts) || s.advanceDeferredRoute(&opts) {
+				return s.CompleteFromPool(ctx, opts)
+			}
 		}
 		return CompleteResult{}, err
 	}
@@ -845,7 +837,7 @@ func isRetryExhausted(err error) bool {
 // hasAlternativeAccount 判断该站点除当前账号外还有没有能用的候选。
 //
 // 只读实现（不走 Pool.Select）：Select 会写 LastSelectedAt，拿它做探测会污染
-// 选号统计。冷却中的账号不算候选 —— 换过去也会被 Select 拒掉，等于没有。
+// 选号统计。判据与 Select 保持一致（accounts.UsableForModel）。
 func (s *Service) hasAlternativeAccount(site, currentID string, exclude []string) bool {
 	if s == nil || s.Pool == nil {
 		return false
@@ -860,20 +852,16 @@ func (s *Service) hasAlternativeAccount(site, currentID string, exclude []string
 		skip[id] = struct{}{}
 	}
 	now := time.Now().UnixMilli()
+	floor := s.Pool.QuotaFloor()
 	want := config.NormalizeSite(site)
 	for _, item := range store.Accounts {
 		if _, ok := skip[item.ID]; ok {
 			continue
 		}
-		if !item.Enabled || !accounts.HasCredentials(item) {
-			continue
-		}
 		if config.NormalizeSite(item.Site) != want {
 			continue
 		}
-		// 与 listSelectableAccounts 同口径：冷却中或额度耗尽的号即使存在，
-		// Select 也选不到（只剩全冷却兜底），对本次重试等于没有候选。
-		if accounts.InCooldown(item, now) || accounts.QuotaBlocked(item, now) {
+		if !accounts.UsableForModel(item, now, "", floor) {
 			continue
 		}
 		return true
@@ -956,6 +944,7 @@ func (s *Service) listSelectableAccounts(exclude []string, site string) []accoun
 	}
 	site = config.NormalizeSite(strutil.First(site, s.ActivePoolSite()))
 	now := time.Now().UnixMilli()
+	floor := s.Pool.QuotaFloor()
 	skip := map[string]struct{}{}
 	for _, id := range exclude {
 		if id != "" {
@@ -964,16 +953,15 @@ func (s *Service) listSelectableAccounts(exclude []string, site string) []accoun
 	}
 	out := make([]accounts.Account, 0, len(store.Accounts))
 	for _, account := range store.Accounts {
-		if !account.Enabled || !accounts.HasCredentials(account) {
-			continue
-		}
 		if site != "" && config.NormalizeSite(account.Site) != site {
 			continue
 		}
 		if _, ok := skip[account.ID]; ok {
 			continue
 		}
-		if accounts.InCooldown(account, now) || accounts.QuotaBlocked(account, now) {
+		// model 传空：这里回答的是「这个号整体上还能不能干活」，
+		// 模型级冷却由调用方按具体模型再判一次。
+		if !accounts.UsableForModel(account, now, "", floor) {
 			continue
 		}
 		out = append(out, account)
@@ -1809,9 +1797,9 @@ func otherSite(site string) string {
 	return "domestic"
 }
 
-// siteHasUsableAccount 报告目标站点是否存在「启用 + 有凭据 + 未冷却 + 未超额」的号。
-// 不做实际选号，只用来避免无意义的跨区（否则会把错误信息换成更有误导性的
-// no accounts for site=xxx）。
+// siteHasUsableAccount 报告目标站点是否存在「启用 + 有凭据 + 未冷却 + 未超额 + 未低于积分下限」
+// 且对 model 可用的号。不做实际选号，只用来避免无意义的跨区
+// （否则会把错误信息换成更有误导性的 no accounts for site=xxx）。
 func (s *Service) siteHasUsableAccount(site, model string) bool {
 	if s == nil || s.Pool == nil {
 		return false
@@ -1824,16 +1812,10 @@ func (s *Service) siteHasUsableAccount(site, model string) bool {
 	floor := s.Pool.QuotaFloor()
 	want := config.NormalizeSite(site)
 	for _, item := range store.Accounts {
-		if !item.Enabled || !accounts.HasCredentials(item) {
-			continue
-		}
 		if config.NormalizeSite(item.Site) != want {
 			continue
 		}
-		if accounts.InCooldown(item, now) || accounts.QuotaBlocked(item, now) || accounts.QuotaBelowFloor(item, now, floor) {
-			continue
-		}
-		if until := item.ModelCooldowns[model]; until > now {
+		if !accounts.UsableForModel(item, now, model, floor) {
 			continue
 		}
 		return true
@@ -1855,6 +1837,40 @@ func routeExhausted(err error) bool {
 	}
 	_, cooling := errors.AsType[*accounts.ModelCooldownError](err)
 	return cooling
+}
+
+// advanceRouteFallback 推进 always 模式规则的备用链（chain[1:]）。
+// 与 advanceDeferredRoute 语义一致，只是链来源不同。
+func (s *Service) advanceRouteFallback(opts *CompleteOptions) bool {
+	if opts == nil || len(opts.routeFallbacks) == 0 {
+		return false
+	}
+	from := config.NormalizeSite(s.requestSite(*opts))
+	for len(opts.routeFallbacks) > 0 {
+		rule := opts.routeFallbacks[0]
+		opts.routeFallbacks = opts.routeFallbacks[1:]
+		target := strutil.First(strings.TrimSpace(rule.Target), opts.Model)
+		nextSite := config.NormalizeSite(strutil.First(strings.TrimSpace(rule.Site), from))
+		if nextSite == from && target == opts.Model {
+			continue
+		}
+		if nextSite != from && !s.siteHasUsableAccount(nextSite, target) {
+			s.Log.Warn("route fallback skipped: target site has no usable account",
+				"fromSite", from, "toSite", nextSite, "target", target)
+			continue
+		}
+		if nextSite != from {
+			opts.ExcludeIDs = nil
+		}
+		opts.Model = target
+		opts.Site = nextSite
+		opts.AccountID = ""
+		opts.RetryDepth++
+		s.Log.Warn("model route fallback applied",
+			"fromSite", from, "toSite", nextSite, "target", target)
+		return true
+	}
+	return false
 }
 
 // advanceDeferredRoute 在判定「源站点用尽」后推进 mode=onExhausted 的路由链。
@@ -1883,10 +1899,14 @@ func (s *Service) advanceDeferredRoute(opts *CompleteOptions) bool {
 		if opts.RoutedFrom == "" {
 			opts.RoutedFrom = opts.Model
 		}
+		// 跨区时清空排除列表：目标站是另一批号，源站的失败记录没有意义。
+		// 同站替身必须保留：刚失败的号还在同一批候选里，清空会立刻重打它。
+		if nextSite != from {
+			opts.ExcludeIDs = nil
+		}
 		opts.Model = target
 		opts.Site = nextSite
 		opts.AccountID = ""
-		opts.ExcludeIDs = nil
 		opts.RetryDepth++
 		s.Log.Warn("model route applied after source exhausted",
 			"fromSite", from, "toSite", nextSite, "target", target)
@@ -1934,8 +1954,11 @@ func isQuotaExhausted(err error) bool {
 		strings.Contains(msg, "quota")
 }
 
-// nextSelectableAccount 在指定站点/模型上找一个「未排除且没在冷却」的账号。
+// nextSelectableAccount 在指定站点/模型上找一个「真正能被选中」的账号。
 // 找不到就返回 false —— 调用方据此返回冷却提示而不是继续打上游。
+//
+// 判据必须与 Pool.Select 一致（走 accounts.UsableForModel）：以前这里只查
+// 冷却，漏了额度耗尽和积分下限，会挑中一个必失败的号白打一次上游。
 func (s *Service) nextSelectableAccount(site, model string, excludeIDs []string) (string, bool) {
 	if s == nil || s.Pool == nil {
 		return "", false
@@ -1945,26 +1968,19 @@ func (s *Service) nextSelectableAccount(site, model string, excludeIDs []string)
 		return "", false
 	}
 	now := time.Now().UnixMilli()
+	floor := s.Pool.QuotaFloor()
 	exclude := make(map[string]struct{}, len(excludeIDs))
 	for _, id := range excludeIDs {
 		exclude[id] = struct{}{}
 	}
 	for _, account := range store.Accounts {
-		if !account.Enabled || !accounts.HasCredentials(account) {
-			continue
-		}
 		if config.NormalizeSite(account.Site) != config.NormalizeSite(site) {
 			continue
 		}
 		if _, skip := exclude[account.ID]; skip {
 			continue
 		}
-		// 跳过仍在冷却的（含模型级冷却）
-		blocked := account.CooldownUntil
-		if until := account.ModelCooldowns[model]; until > blocked {
-			blocked = until
-		}
-		if blocked > now {
+		if !accounts.UsableForModel(account, now, model, floor) {
 			continue
 		}
 		return account.ID, true
