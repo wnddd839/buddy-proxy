@@ -1648,7 +1648,8 @@ function renderModels(data){
     const mult = (typeof m === 'object' && m && m.creditMultiplier != null) ? m.creditMultiplier : null;
     const badge = credits ? (' · ' + (free ? '免费' : credits.replace(/\s*credits$/i,''))) : '';
     const tip = [id, credits ? ('倍率 ' + credits) : '', (m && m.description) ? m.description : ''].filter(Boolean).join(' | ');
-    return '<button type="button" class="chip btnish" data-copy="' + escapeHtml(id) + '" title="' + escapeHtml(tip || '点击复制') + '">' + escapeHtml(baseLabel + badge) + (free ? ' <span class="badge on">免费</span>' : (mult!=null && credits ? ' <span class="badge site">' + escapeHtml(String(mult)+'x') + '</span>' : '')) + siteTag + '</button>';
+    const sitesAttr = (m && Array.isArray(m.sites)) ? m.sites.join(',') : '';
+    return '<button type="button" class="chip btnish" data-copy="' + escapeHtml(id) + '" data-sites="' + escapeHtml(sitesAttr) + '" title="' + escapeHtml(tip || '点击复制') + '">' + escapeHtml(baseLabel + badge) + (free ? ' <span class="badge on">免费</span>' : (mult!=null && credits ? ' <span class="badge site">' + escapeHtml(String(mult)+'x') + '</span>' : '')) + siteTag + '</button>';
   }).join('');
   chips.querySelectorAll('[data-copy]').forEach(function(btn){
     btn.addEventListener('click', function(){ copyText(btn.getAttribute('data-copy'), '模型', btn); });
@@ -1665,10 +1666,12 @@ function paintModelAvailability(){
   const now = Date.now();
   chips.querySelectorAll('[data-copy]').forEach(function(btn){
     const id = btn.getAttribute('data-copy');
+    const sites = String(btn.getAttribute('data-sites') || '').split(',').filter(Boolean);
     let ok = 0, cool = 0;
     (lastAccounts || []).forEach(function(a){
-      if (!a.enabled) return;
-      if (!a.loggedIn && a.hasCredentials === false) return;
+      if (!a.enabled || a.hasCredentials === false) return;
+      // 只在某站上架的模型，不把另一区的号算成可用。
+      if (sites.length && sites.indexOf(normalizeSite(a.site)) < 0) return;
       const until = (a.modelCooldowns || {})[id] || 0;
       const accountCool = (a.cooldownUntil || 0) > now;
       if (until > now || accountCool) cool++;
