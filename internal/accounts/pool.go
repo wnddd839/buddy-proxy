@@ -29,6 +29,31 @@ var (
 	ErrQuotaBelowFloor    = errors.New("CodeBuddy account is below the quota floor")
 )
 
+// CooldownUntil 的两种来源。见 Account.CooldownSource。
+const (
+	CooldownSourceQuota    = "quota"
+	CooldownSourceUpstream = "upstream"
+)
+
+// normalizeCooldownSource 归一冷却来源，并把加字段之前写入的旧数据分类。
+// 旧数据没有标记，但额度冷却的 CooldownUntil 与 QuotaResetAt 精确相等，
+// 可以据此无歧义地认出来。
+func normalizeCooldownSource(source string, cooldownUntil, quotaResetAt int64) string {
+	if cooldownUntil <= 0 {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case CooldownSourceQuota:
+		return CooldownSourceQuota
+	case CooldownSourceUpstream:
+		return CooldownSourceUpstream
+	}
+	if quotaResetAt > 0 && cooldownUntil == quotaResetAt {
+		return CooldownSourceQuota
+	}
+	return CooldownSourceUpstream
+}
+
 // ModelCooldownError 表示当前模型的所有候选账号仍在上游限流窗口内。
 // 与「账号整体冷却」区分：换模型还有救，不该降级打上游。
 type ModelCooldownError struct {
@@ -114,10 +139,15 @@ type Account struct {
 	FailedRequests  int64      `json:"failedRequests"`
 	LastError       string     `json:"lastError,omitempty"`
 	CooldownUntil   int64      `json:"cooldownUntil,omitempty"`
-	QuotaRemaining  *float64   `json:"quotaRemaining,omitempty"`
-	QuotaUnlimited  bool       `json:"quotaUnlimited,omitempty"`
-	QuotaResetAt    int64      `json:"quotaResetAt,omitempty"`
-	QuotaCheckedAt  int64      `json:"quotaCheckedAt,omitempty"`
+	// CooldownSource 记录冷却的来由，决定它能不能自动解除：
+	//   quota    —— 上游额度耗尽，冷却到 QuotaResetAt；余额恢复就成了脏数据，必须清掉。
+	//   upstream —— 请求被上游限流，只能靠一次成功请求（MarkResult ok）解除。
+	// 空值按 upstream 处理，兼容加字段之前写入的数据。
+	CooldownSource string   `json:"cooldownSource,omitempty"`
+	QuotaRemaining *float64 `json:"quotaRemaining,omitempty"`
+	QuotaUnlimited bool     `json:"quotaUnlimited,omitempty"`
+	QuotaResetAt   int64    `json:"quotaResetAt,omitempty"`
+	QuotaCheckedAt int64    `json:"quotaCheckedAt,omitempty"`
 
 	ModelCooldowns map[string]int64 `json:"modelCooldowns,omitempty"`
 }
@@ -527,6 +557,7 @@ func NormalizeAccount(raw Account, now int64) Account {
 		FailedRequests:      raw.FailedRequests,
 		LastError:           strutil.Compact(raw.LastError),
 		CooldownUntil:       raw.CooldownUntil,
+		CooldownSource:      normalizeCooldownSource(raw.CooldownSource, raw.CooldownUntil, raw.QuotaResetAt),
 		ModelCooldowns:      maps.Clone(raw.ModelCooldowns),
 		QuotaRemaining:      cloneFloatPtr(raw.QuotaRemaining),
 		QuotaUnlimited:      raw.QuotaUnlimited,
@@ -607,6 +638,26 @@ func unavailableUntil(account Account, nowMillis int64, model string) int64 {
 		until = max(until, account.QuotaResetAt)
 	}
 	return until
+}
+
+// UsableForModel 是「这个号现在能不能真的被 Select 选中」的唯一判据。
+//
+// 之前网关里有 5 份各自实现的候选筛选（listSelectableAccounts /
+// nextSelectableAccount / hasAlternativeAccount / siteHasUsableAccount /
+// listQuotaRefreshCandidates），检查项各不相同，导致同一个号在一处算「可用」、
+// 在另一处算「不可用」。典型后果：换号重试挑中一个额度已耗尽的号，
+// 白打一次上游再失败。任何判断候选的代码都必须走这里。
+//
+// 注意：这里不包含 Select 的「全冷却兜底」——那个兜底只在确实无号时降级，
+// 不属于「有可用候选」的语义。
+func UsableForModel(account Account, nowMillis int64, model string, floor float64) bool {
+	if !account.Enabled || !HasCredentials(account) {
+		return false
+	}
+	if QuotaBelowFloor(account, nowMillis, floor) {
+		return false
+	}
+	return unavailableUntil(account, nowMillis, model) <= nowMillis
 }
 
 func clearQuotaCache(account *Account) {
@@ -818,6 +869,7 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 			p.mem.Accounts[i].SuccessRequests++
 			p.mem.Accounts[i].LastError = ""
 			p.mem.Accounts[i].CooldownUntil = 0
+			p.mem.Accounts[i].CooldownSource = ""
 			p.mem.Accounts[i].ModelCooldowns = maps.Clone(p.mem.Accounts[i].ModelCooldowns)
 			delete(p.mem.Accounts[i].ModelCooldowns, selection.Model)
 			// 全冷却降级打成功，说明「耗尽」快照已经过期；正常成功不能清额度，否则 PreferQuota 立刻失效。
@@ -836,7 +888,22 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 					cooldowns[selection.Model] = now + cooldown.Milliseconds()
 					p.mem.Accounts[i].ModelCooldowns = cooldowns
 				} else {
-					p.mem.Accounts[i].CooldownUntil = now + cooldown.Milliseconds()
+					until := now + cooldown.Milliseconds()
+					// 额度类失败时调用方（resolveFailureCooldown）已经用上游 billing
+					// 快照把 CooldownUntil 对齐到 QuotaResetAt 并标了 quota 来源。
+					// 这里必须让位，否则每次真实 429 都会把可自愈的额度冷却改回
+					// upstream，自愈逻辑等于没写（旧实现就是这么废掉两个号的）。
+					//
+					// 判据不能比时间戳：until 是 now+cooldown，而 quota 冷却记的是
+					// 上游给的 resetAt，两次取 now 之间有毫秒级漂移，精确比较会误判。
+					// 只要现有冷却还没到期、且来源是 quota，就说明额度探测给出的
+					// 时间窗仍然有效，保留它。
+					keepQuota := p.mem.Accounts[i].CooldownSource == CooldownSourceQuota &&
+						p.mem.Accounts[i].CooldownUntil > now
+					if !keepQuota {
+						p.mem.Accounts[i].CooldownUntil = until
+						p.mem.Accounts[i].CooldownSource = CooldownSourceUpstream
+					}
 				}
 			}
 		}
@@ -846,7 +913,12 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 	return nil
 }
 
-// ApplyQuotaState 将上游 billing 快照写入账号，并在配额耗尽时对齐 cooldownUntil。
+// ApplyQuotaState 将上游 billing 快照写入账号，并让 cooldownUntil 跟着额度走。
+//
+// 只设不清是旧实现的硬伤：上游提前补回额度后，账号仍会冷却到 resetAt，
+// 而冷却号选不中 ⇒ 永远拿不到一次成功 ⇒ 永远解不开（实测两个号 886 积分
+// 白废 4 天）。现在按来源区分：quota 冷却在余额恢复的瞬间自动解除，
+// upstream 冷却（真实限流）不受影响。
 func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited bool, resetAt, checkedAt int64) (Account, error) {
 	accountID = strings.TrimSpace(accountID)
 	if accountID == "" {
@@ -865,12 +937,66 @@ func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited b
 			continue
 		}
 		account := &p.mem.Accounts[i]
+		// 没有来源标记的旧数据：额度冷却的指纹是 CooldownUntil 与 QuotaResetAt
+		// 精确相等（MarkResult 写的是 now+固定时长，撞不上上游给的整点重置）。
+		legacyQuotaCooldown := account.CooldownSource == "" &&
+			account.CooldownUntil > 0 && account.CooldownUntil == account.QuotaResetAt
+		exhausted := !unlimited && remaining != nil && *remaining <= 0
+		recovered := unlimited || (remaining != nil && *remaining > 0)
 		account.QuotaRemaining = cloneFloatPtr(remaining)
 		account.QuotaUnlimited = unlimited
 		account.QuotaResetAt = resetAt
 		account.QuotaCheckedAt = checkedAt
-		if !unlimited && remaining != nil && *remaining <= 0 && resetAt > now && resetAt > account.CooldownUntil {
+		switch {
+		case exhausted && resetAt > now && resetAt > account.CooldownUntil:
 			account.CooldownUntil = resetAt
+			account.CooldownSource = CooldownSourceQuota
+		case recovered && (account.CooldownSource == CooldownSourceQuota || legacyQuotaCooldown):
+			account.CooldownUntil = 0
+			account.CooldownSource = ""
+		}
+		updated = *account
+		found = true
+		break
+	}
+	if !found {
+		p.mu.Unlock()
+		return Account{}, fmt.Errorf("%w: %s", ErrAccountNotFound, accountID)
+	}
+	p.markDirtyLocked()
+	p.mu.Unlock()
+	return updated, nil
+}
+
+// ClearCooldowns 清空账号级冷却标记：CooldownUntil/CooldownSource。
+//
+// 语义是「以刚拉到的余额为准重置账号级冷却」：额度耗尽写的 quota 冷却在余额
+// 恢复后必须能解开，否则号会一直锁到 resetAt。
+//
+// ⚠️ 不动 ModelCooldowns：模型冷却记的是「上游对这个模型限流到什么时候」，
+// 是真实 429 的证据，不能被一次余额刷新抹掉。要解除只能等它到期，或按真实
+// 请求重新测得可用。
+func (p *Pool) ClearCooldowns(accountID string) (Account, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return Account{}, fmt.Errorf("%w: empty id", ErrAccountNotFound)
+	}
+	p.mu.Lock()
+	if err := p.ensureLoadedLocked(); err != nil {
+		p.mu.Unlock()
+		return Account{}, err
+	}
+	found := false
+	var updated Account
+	for i := range p.mem.Accounts {
+		if p.mem.Accounts[i].ID != accountID {
+			continue
+		}
+		account := &p.mem.Accounts[i]
+		// 停用的号不参与轮换，保持原状：下次启用时还能看到它曾被上游限流的证据。
+		if account.Enabled {
+			account.CooldownUntil = 0
+			account.CooldownSource = ""
 		}
 		updated = *account
 		found = true
@@ -1129,32 +1255,34 @@ type Summary struct {
 	ChatCompletionsPath string `json:"chatCompletionsPath,omitempty"`
 	Transport           string `json:"transport"`
 	// Proxy 回显为打码后的 URL（密码替换成 ***），前端据此显示「已绑出口」。
-	Proxy               string   `json:"proxy,omitempty"`
-	AuthType            string   `json:"authType"`
-	HasCredentials      bool     `json:"hasCredentials"`
-	LoggedIn            bool     `json:"loggedIn"`
-	UserID              string   `json:"userId,omitempty"`
-	UserName            string   `json:"userName,omitempty"`
-	UserNickname        string   `json:"userNickname,omitempty"`
-	AuthMode            string   `json:"authMode,omitempty"`
-	BearerTokenPreview  string   `json:"bearerTokenPreview,omitempty"`
-	RefreshTokenPreview string   `json:"refreshTokenPreview,omitempty"`
-	APIKeyPreview       string   `json:"apiKeyPreview,omitempty"`
-	CreatedAt           int64    `json:"createdAt"`
-	UpdatedAt           int64    `json:"updatedAt"`
-	LastUsedAt          int64    `json:"lastUsedAt,omitempty"`
-	LastSelectedAt      int64    `json:"lastSelectedAt,omitempty"`
-	SuccessRequests     int64    `json:"successRequests"`
-	FailedRequests      int64    `json:"failedRequests"`
-	LastError           string   `json:"lastError,omitempty"`
-	TokenExpiresAt      int64    `json:"tokenExpiresAt,omitempty"`
-	TokenExpired        bool     `json:"tokenExpired"`
-	CooldownUntil       int64    `json:"cooldownUntil,omitempty"`
-	QuotaRemaining      *float64 `json:"quotaRemaining,omitempty"`
-	QuotaUnlimited      bool     `json:"quotaUnlimited,omitempty"`
-	QuotaResetAt        int64    `json:"quotaResetAt,omitempty"`
-	QuotaCheckedAt      int64    `json:"quotaCheckedAt,omitempty"`
-	QuotaExhausted      bool     `json:"quotaExhausted"`
+	Proxy               string `json:"proxy,omitempty"`
+	AuthType            string `json:"authType"`
+	HasCredentials      bool   `json:"hasCredentials"`
+	LoggedIn            bool   `json:"loggedIn"`
+	UserID              string `json:"userId,omitempty"`
+	UserName            string `json:"userName,omitempty"`
+	UserNickname        string `json:"userNickname,omitempty"`
+	AuthMode            string `json:"authMode,omitempty"`
+	BearerTokenPreview  string `json:"bearerTokenPreview,omitempty"`
+	RefreshTokenPreview string `json:"refreshTokenPreview,omitempty"`
+	APIKeyPreview       string `json:"apiKeyPreview,omitempty"`
+	CreatedAt           int64  `json:"createdAt"`
+	UpdatedAt           int64  `json:"updatedAt"`
+	LastUsedAt          int64  `json:"lastUsedAt,omitempty"`
+	LastSelectedAt      int64  `json:"lastSelectedAt,omitempty"`
+	SuccessRequests     int64  `json:"successRequests"`
+	FailedRequests      int64  `json:"failedRequests"`
+	LastError           string `json:"lastError,omitempty"`
+	TokenExpiresAt      int64  `json:"tokenExpiresAt,omitempty"`
+	TokenExpired        bool   `json:"tokenExpired"`
+	CooldownUntil       int64  `json:"cooldownUntil,omitempty"`
+	// CooldownSource 让管理台区分「额度冷却（会自动解除）」与「限流冷却」。
+	CooldownSource string   `json:"cooldownSource,omitempty"`
+	QuotaRemaining *float64 `json:"quotaRemaining,omitempty"`
+	QuotaUnlimited bool     `json:"quotaUnlimited,omitempty"`
+	QuotaResetAt   int64    `json:"quotaResetAt,omitempty"`
+	QuotaCheckedAt int64    `json:"quotaCheckedAt,omitempty"`
+	QuotaExhausted bool     `json:"quotaExhausted"`
 
 	// 签到状态由调用方（服务端）注入：账号池本身不读签到日志，
 	// 保持 accounts 包与 checkin 包互不依赖。
@@ -1206,6 +1334,7 @@ func SummarizeAccount(account Account) Summary {
 		TokenExpiresAt:      account.TokenExpiresAt,
 		TokenExpired:        account.TokenExpiresAt > 0 && account.TokenExpiresAt <= time.Now().UnixMilli(),
 		CooldownUntil:       account.CooldownUntil,
+		CooldownSource:      account.CooldownSource,
 		ModelCooldowns:      maps.Clone(account.ModelCooldowns),
 		QuotaRemaining:      cloneFloatPtr(account.QuotaRemaining),
 		QuotaUnlimited:      account.QuotaUnlimited,

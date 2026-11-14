@@ -608,7 +608,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="eyebrow">Gateway Console · Overview</div>
           <h1>账号、模型与网关状态</h1>
           <p class="lede">监控 OAuth 登录、账号池状态与请求健康度。</p>
-        </div><button class="primary" id="btnRefresh" type="button">刷新状态</button></div>
+        </div><button class="primary" id="btnRefresh" type="button" title="重新拉取每个号的余额，并按余额重置启用账号的账号级冷却（模型冷却不动）">刷新状态</button></div>
         <div class="metrics">
           <div class="metric"><div class="k">登录态</div><div class="v sm" id="mLogin">未登录</div></div>
           <div class="metric"><div class="k">Credits 余额</div><div class="v sm" id="mCredits">—</div></div>
@@ -1020,7 +1020,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
         <div class="section-head">
           <div>
             <h2>模型路由（有方向）</h2>
-            <p>一条规则 = <strong>某个区收到某个模型名</strong>时，改用<strong>另一个区（或同区）的某个模型</strong>执行。两个方向各配各的，互不影响。没配置的模型一字节不改。</p>
+            <p>一条规则 = <strong>某个区收到某个模型名</strong>时，改用<strong>另一个区（或同区）的某个模型</strong>执行。两个方向各配各的，互不影响。没配置的模型一字节不改。<br>「<strong>生效时机</strong>」决定它什么时候动手：<strong>立即改写</strong> = 命中就换；<strong>源区用尽才跳</strong> = 先用源区跑，源区没号可用了才换到目标区。</p>
           </div>
           <div class="actions">
             <button class="teal" id="btnRouteAdd" type="button" disabled>+ 新增路由</button>
@@ -1494,6 +1494,7 @@ function renderAccounts(summary, activeSite) {
   box.querySelectorAll('.package-expiry').forEach(function(d){ d.open = expanded.has(d.closest('.account').getAttribute('data-account-id')); });
   box.querySelectorAll('button[data-act]').forEach(function(btn){ btn.addEventListener('click', onAccountAction); });
   renderAttention(summary, activeSite);
+  paintModelAvailability();
 }
 
 // formatNextCheckin 把「下次签到时刻」格式化成 HH:MM（今天）或「明天 HH:MM」。
@@ -1546,7 +1547,8 @@ function accountStates(a){
   if (a.quotaExhausted && a.quotaResetAt) {
     out.push({level:'bad', text:'配额耗尽 · ' + formatResetAt(a.quotaResetAt) + ' 恢复'});
   } else if (a.cooldownUntil && a.cooldownUntil > now) {
-    out.push({level:'warn', text:'冷却中 · ' + formatResetAt(a.cooldownUntil) + ' 恢复'});
+    const quotaCool = a.cooldownSource === 'quota';
+    out.push({level:'warn', text:(quotaCool ? '额度冷却' : '冷却中') + ' · ' + formatResetAt(a.cooldownUntil) + (quotaCool ? ' 重探' : ' 恢复')});
   } else if (a.quotaRemaining != null && Number(a.quotaRemaining) <= 0) {
     out.push({level:'warn', text:'配额可能已耗尽'});
   }
@@ -1646,10 +1648,50 @@ function renderModels(data){
     const mult = (typeof m === 'object' && m && m.creditMultiplier != null) ? m.creditMultiplier : null;
     const badge = credits ? (' · ' + (free ? '免费' : credits.replace(/\s*credits$/i,''))) : '';
     const tip = [id, credits ? ('倍率 ' + credits) : '', (m && m.description) ? m.description : ''].filter(Boolean).join(' | ');
-    return '<button type="button" class="chip btnish" data-copy="' + escapeHtml(id) + '" title="' + escapeHtml(tip || '点击复制') + '">' + escapeHtml(baseLabel + badge) + (free ? ' <span class="badge on">免费</span>' : (mult!=null && credits ? ' <span class="badge site">' + escapeHtml(String(mult)+'x') + '</span>' : '')) + siteTag + '</button>';
+    const sitesAttr = (m && Array.isArray(m.sites)) ? m.sites.join(',') : '';
+    return '<button type="button" class="chip btnish" data-copy="' + escapeHtml(id) + '" data-sites="' + escapeHtml(sitesAttr) + '" title="' + escapeHtml(tip || '点击复制') + '">' + escapeHtml(baseLabel + badge) + (free ? ' <span class="badge on">免费</span>' : (mult!=null && credits ? ' <span class="badge site">' + escapeHtml(String(mult)+'x') + '</span>' : '')) + siteTag + '</button>';
   }).join('');
   chips.querySelectorAll('[data-copy]').forEach(function(btn){
     btn.addEventListener('click', function(){ copyText(btn.getAttribute('data-copy'), '模型', btn); });
+  });
+  paintModelAvailability();
+}
+
+// 模型列表只列模型元数据，看不出「这个模型现在还有几个号能用」。
+// 模型级冷却只在账号卡片里显示，导致「模型明明在列表里、请求却 429」。
+// 这里按当前账号池把可选中数直接画在 chip 上：可用 N / 冷却 M。
+function paintModelAvailability(){
+  const chips = $('modelChips');
+  if (!chips) return;
+  const now = Date.now();
+  chips.querySelectorAll('[data-copy]').forEach(function(btn){
+    const id = btn.getAttribute('data-copy');
+    const sites = String(btn.getAttribute('data-sites') || '').split(',').filter(Boolean);
+    let ok = 0, cool = 0;
+    (lastAccounts || []).forEach(function(a){
+      if (!a.enabled || a.hasCredentials === false) return;
+      // 只在某站上架的模型，不把另一区的号算成可用。
+      if (sites.length && sites.indexOf(normalizeSite(a.site)) < 0) return;
+      const until = (a.modelCooldowns || {})[id] || 0;
+      const accountCool = (a.cooldownUntil || 0) > now;
+      if (until > now || accountCool) cool++;
+      else ok++;
+    });
+    let tag = btn.querySelector('.model-avail');
+    if (!tag) {
+      tag = document.createElement('span');
+      tag.className = 'badge model-avail';
+      btn.appendChild(tag);
+    }
+    if (!ok && !cool) {
+      tag.className = 'badge model-avail muted';
+      tag.textContent = '无号可用';
+      tag.title = '当前号池没有启用账号';
+      return;
+    }
+    tag.className = 'badge model-avail ' + (ok === 0 ? 'bad' : (cool ? 'warn' : 'on'));
+    tag.textContent = '可用 ' + ok + (cool ? ' · 冷却 ' + cool : '');
+    tag.title = '可用 ' + ok + ' 个号' + (cool ? '，' + cool + ' 个号仍在冷却（账号级或该模型级）' : '');
   });
 }
 
@@ -3009,19 +3051,7 @@ function paintRouteRules(){
     const match = r.match || '';
     const target = r.target || '';
     const hopTag = o.seq > 1 ? '<span class="route-hop">备用 ' + o.seq + '</span>' : '';
-    // 人话摘要：把这条规则到底做了什么讲清楚
-    let explain;
-    if (!match) {
-      explain = '还没填源模型。左边选「哪个区收到的请求」，右边填该区真实有的模型名。';
-    } else if (!target) {
-      explain = siteLabel(fromSite) + '站收到 <code>' + escapeHtml(match) + '</code> 的请求 → 还没选要改成哪个模型。';
-    } else if (fromSite === toSite && match === target) {
-      explain = '源和目标完全一样，这条规则不会有任何效果。';
-    } else if (fromSite === toSite) {
-      explain = siteLabel(fromSite) + '站收到 <code>' + escapeHtml(match) + '</code> 的请求 → 改用同站的 <code>' + escapeHtml(target) + '</code> 执行（模型替身，不跨区）。';
-    } else {
-      explain = siteLabel(fromSite) + '站收到 <code>' + escapeHtml(match) + '</code> 的请求 → 改用<b>' + siteLabel(toSite) + '站</b>的 <code>' + escapeHtml(target) + '</code> 执行。';
-    }
+    const mode = routeMode(r);
     return '<div class="route-rule" data-idx="' + i + '">' +
       '<div class="route-line">' +
         '<label>源区域 <select data-rf="fromSite">' + routeSiteOptions(fromSite) + '</select></label>' +
@@ -3031,17 +3061,40 @@ function paintRouteRules(){
         '<label>目标区域 <select data-rf="site">' + routeSiteOptions(toSite) + '</select></label>' +
         '<label>目标模型 <input type="text" data-rf="target" placeholder="gpt-5.6" value="' + escapeHtml(target) + '" list="routeToList' + i + '"/>' +
           '<datalist id="routeToList' + i + '">' + routeOptionsForSite(toSite) + '</datalist></label>' +
+        '<label>生效时机 <select data-rf="mode">' +
+          '<option value="always"' + (mode === 'always' ? ' selected' : '') + '>立即改写</option>' +
+          '<option value="onExhausted"' + (mode === 'onExhausted' ? ' selected' : '') + '>源区用尽才跳</option>' +
+        '</select></label>' +
         '<label>备注 <input type="text" data-rf="note" placeholder="选填" value="' + escapeHtml(r.note || '') + '"/></label>' +
         '<span class="spacer"></span>' +
         '<button class="ghost" data-route-up="' + i + '" type="button" title="上移（同链时优先级更高）">↑</button>' +
         '<button class="ghost" data-route-down="' + i + '" type="button" title="下移（同链时优先级更低）">↓</button>' +
         '<button class="danger" data-route-del="' + i + '" type="button">删除</button>' +
       '</div>' +
-      '<p class="route-explain">' + explain + '</p>' +
+      '<p class="route-explain">' + routeExplainHtml(r) + '</p>' +
       '</div>';
   }).join('');
 
   bindRouteRowEvents(box);
+}
+
+// routeMode 归一一条路由的生效时机；老规则没有这个字段，按「立即改写」。
+function routeMode(r){
+  return (r && String(r.mode || '').toLowerCase() === 'onexhausted') ? 'onExhausted' : 'always';
+}
+
+// routeExplainHtml 把一条路由讲成人话；生效时机决定它是「改写」还是「兜底」。
+function routeExplainHtml(r){
+  const fs = normalizeSite(r.fromSite), ts = normalizeSite(r.site);
+  const onExhausted = routeMode(r) === 'onExhausted';
+  if (!r.match) return '还没填源模型。左边选「哪个区收到的请求」，右边填该区真实有的模型名。';
+  if (!r.target) return siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 还没选要改成哪个模型。';
+  if (fs === ts && r.match === r.target) return '源和目标完全一样，这条规则不会有任何效果。';
+  const lead = onExhausted
+    ? siteLabel(fs) + '站有号时正常用 <code>' + escapeHtml(r.match) + '</code>，用尽后才 '
+    : siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → ';
+  if (fs === ts) return lead + '改用同站的 <code>' + escapeHtml(r.target) + '</code> 执行（模型替身，不跨区）。';
+  return lead + '改用<b>' + siteLabel(ts) + '站</b>的 <code>' + escapeHtml(r.target) + '</code> 执行。';
 }
 
 // syncRouteRulesFromDom 把界面上的当前值写回 routeRules（改动未保存也不丢）。
@@ -3051,7 +3104,7 @@ function syncRouteRulesFromDom(){
   const next = [];
   rows.forEach(function(row){
     function val(f){ const el = row.querySelector('[data-rf="'+f+'"]'); return el ? el.value.trim() : ''; }
-    next.push({fromSite: val('fromSite') || 'domestic', match: val('match'), site: val('site') || 'global', target: val('target'), note: val('note')});
+    next.push({fromSite: val('fromSite') || 'domestic', match: val('match'), site: val('site') || 'global', target: val('target'), mode: val('mode') || 'always', note: val('note')});
   });
   routeRules = next;
   routeChanged();
@@ -3102,18 +3155,14 @@ function bindRouteRowEvents(box){
       if (!r) return;
       const p = row.querySelector('.route-explain');
       if (!p) return;
-      const fs = normalizeSite(r.fromSite), ts = normalizeSite(r.site);
-      if (!r.match) {
-        p.innerHTML = '还没填源模型。左边选「哪个区收到的请求」，右边填该区真实有的模型名。';
-      } else if (!r.target) {
-        p.innerHTML = siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 还没选要改成哪个模型。';
-      } else if (fs === ts && r.match === r.target) {
-        p.innerHTML = '源和目标完全一样，这条规则不会有任何效果。';
-      } else if (fs === ts) {
-        p.innerHTML = siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 改用同站的 <code>' + escapeHtml(r.target) + '</code> 执行（模型替身，不跨区）。';
-      } else {
-        p.innerHTML = siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 改用<b>' + siteLabel(ts) + '站</b>的 <code>' + escapeHtml(r.target) + '</code> 执行。';
-      }
+      p.innerHTML = routeExplainHtml(r);
+    };
+  });
+  // 改生效时机要重画：摘要文案会从「改写」变成「兜底」。
+  box.querySelectorAll('[data-rf="mode"]').forEach(function(sel){
+    sel.onchange = function(){
+      syncRouteRulesFromDom();
+      paintRouteRules();
     };
   });
 }
@@ -3121,7 +3170,9 @@ function bindRouteRowEvents(box){
 if ($('btnRouteAdd')) $('btnRouteAdd').onclick = function(){
   syncRouteRulesFromDom();
   // 默认给一个「国内 → 国际」的常见形态，用户改两个下拉即可。
-  routeRules.push({fromSite:'domestic', match:'', site:'global', target:'', note:''});
+  // 跨区默认按「源区用尽才跳」新建：保存后不会立刻劫走还没耗尽的流量；
+  // 同站替身（模型别名）仍然默认立即改写。
+  routeRules.push({fromSite:'domestic', match:'', site:'global', target:'', mode:'onExhausted', note:''});
   paintRouteRules();
 };
 
