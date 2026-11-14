@@ -1125,6 +1125,13 @@ func (s *Service) RefreshPoolUsage(ctx context.Context, site string) []PoolUsage
 				return
 			}
 			state := billing.QuotaStateFromUsage(usage, time.Now())
+			// 「刷新状态」= 人工重置：先把启用号的冷却标记清空（账号级 + 模型级），
+			// 再按刚取到的余额重新落 quota 冷却。顺序不能反 —— 反了会让「余额充足
+			// 但模型冷却还在」的号继续被 Select 排除，用户看到的就是「面板显示能用、
+			// 请求却报 rate limited」。
+			if _, clearErr := s.Pool.ClearCooldowns(account.ID); clearErr != nil {
+				s.Log.Debug("admin cooldown clear failed", "accountId", account.ID, "error", clearErr.Error())
+			}
 			if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
 				s.Log.Debug("admin quota apply failed", "accountId", account.ID, "error", applyErr.Error())
 			}

@@ -968,6 +968,52 @@ func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited b
 	return updated, nil
 }
 
+// ClearCooldowns 清空账号的冷却标记：账号级 CooldownUntil/CooldownSource
+// 与全部模型级 ModelCooldowns。
+//
+// 语义是「人工重置」：上游给的 resetAt 只是估算 —— 实测 429 文案写「10 小时后
+// 重置」的号，2.5 小时后就已经能正常出字。管理台点「刷新状态」意味着「以我刚
+// 拉到的上游余额为准，把历史冷却标记作废」，否则会出现「面板显示余额充足、
+// 请求却因为模型冷却被直接拒绝」的矛盾。
+//
+// 只清标记，不伪造余额：真正额度耗尽的号会在随后的 ApplyQuotaState 里重新拿到
+// quota 冷却；上游真在限流时，下一次真实 429 也会被 MarkResult 重新写上。
+func (p *Pool) ClearCooldowns(accountID string) (Account, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return Account{}, fmt.Errorf("%w: empty id", ErrAccountNotFound)
+	}
+	p.mu.Lock()
+	if err := p.ensureLoadedLocked(); err != nil {
+		p.mu.Unlock()
+		return Account{}, err
+	}
+	found := false
+	var updated Account
+	for i := range p.mem.Accounts {
+		if p.mem.Accounts[i].ID != accountID {
+			continue
+		}
+		account := &p.mem.Accounts[i]
+		// 停用的号不参与轮换，保持原状：下次启用时还能看到它曾被上游限流的证据。
+		if account.Enabled {
+			account.CooldownUntil = 0
+			account.CooldownSource = ""
+			account.ModelCooldowns = nil
+		}
+		updated = *account
+		found = true
+		break
+	}
+	if !found {
+		p.mu.Unlock()
+		return Account{}, fmt.Errorf("%w: %s", ErrAccountNotFound, accountID)
+	}
+	p.markDirtyLocked()
+	p.mu.Unlock()
+	return updated, nil
+}
+
 func (p *Pool) Upsert(account Account) (Account, Store, error) {
 	if !HasCredentials(account) {
 		return Account{}, Store{}, ErrNoCredentials

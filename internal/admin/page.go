@@ -608,7 +608,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="eyebrow">Gateway Console · Overview</div>
           <h1>账号、模型与网关状态</h1>
           <p class="lede">监控 OAuth 登录、账号池状态与请求健康度。</p>
-        </div><button class="primary" id="btnRefresh" type="button">刷新状态</button></div>
+        </div><button class="primary" id="btnRefresh" type="button" title="重新拉取每个号的余额，并清空启用账号的冷却标记（账号级 + 模型级）">刷新状态</button></div>
         <div class="metrics">
           <div class="metric"><div class="k">登录态</div><div class="v sm" id="mLogin">未登录</div></div>
           <div class="metric"><div class="k">Credits 余额</div><div class="v sm" id="mCredits">—</div></div>
