@@ -8,10 +8,9 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 )
 
-// 「刷新状态」的语义是人工重置：启用号的冷却标记必须被整体清空。
-// 旧实现只清账号级冷却、不碰 ModelCooldowns，导致面板显示余额充足、
-// 请求却仍然被 Select 以「模型冷却」直接拒绝。
-func TestClearCooldownsDropsAccountAndModelMarkers(t *testing.T) {
+// 「刷新状态」重置的是**账号级**冷却；模型级 ModelCooldowns 是上游真实 429
+// 的证据，不能被一次余额刷新抹掉。
+func TestClearCooldownsResetsAccountCooldownOnly(t *testing.T) {
 	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
 	t.Cleanup(func() { _ = pool.Close() })
 
@@ -23,11 +22,12 @@ func TestClearCooldownsDropsAccountAndModelMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
+	modelUntil := now.Add(10 * time.Hour).UnixMilli()
 	if _, _, err := pool.UpdateAccount(created.ID, func(a accounts.Account) accounts.Account {
 		a.CooldownUntil = now.Add(6 * time.Hour).UnixMilli()
 		a.CooldownSource = accounts.CooldownSourceUpstream
 		a.ModelCooldowns = map[string]int64{
-			"hy4free": now.Add(10 * time.Hour).UnixMilli(),
+			"hy4free": modelUntil,
 			"hy3":     now.Add(2 * time.Hour).UnixMilli(),
 		}
 		return a
@@ -42,8 +42,11 @@ func TestClearCooldownsDropsAccountAndModelMarkers(t *testing.T) {
 	if cleared.CooldownUntil != 0 || cleared.CooldownSource != "" {
 		t.Fatalf("账号级冷却未清：until=%d source=%q", cleared.CooldownUntil, cleared.CooldownSource)
 	}
-	if len(cleared.ModelCooldowns) != 0 {
-		t.Fatalf("模型级冷却未清：%v", cleared.ModelCooldowns)
+	if len(cleared.ModelCooldowns) != 2 {
+		t.Fatalf("模型级冷却被误清：%v", cleared.ModelCooldowns)
+	}
+	if cleared.ModelCooldowns["hy4free"] != modelUntil {
+		t.Fatalf("hy4free 冷却被动过：%d", cleared.ModelCooldowns["hy4free"])
 	}
 
 	store, err := pool.Read()
@@ -51,15 +54,23 @@ func TestClearCooldownsDropsAccountAndModelMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := store.Accounts[0]
-	if got.CooldownUntil != 0 || len(got.ModelCooldowns) != 0 {
-		t.Fatalf("落盘后仍有冷却：%+v", got)
+	if got.CooldownUntil != 0 {
+		t.Fatalf("落盘后账号级冷却仍在：%d", got.CooldownUntil)
+	}
+	if len(got.ModelCooldowns) != 2 {
+		t.Fatalf("落盘后模型冷却被误清：%v", got.ModelCooldowns)
 	}
 	if !got.Enabled {
 		t.Fatal("清冷却不应改动启用状态")
 	}
-	// 清完之后必须真的能被选中（这是整件事的目的）。
-	if _, err := pool.Select(accounts.SelectOptions{Site: "domestic", Model: "hy4free"}); err != nil {
-		t.Fatalf("冷却清空后仍选不中：%v", err)
+
+	// 账号级冷却清掉后，不带模型选号必须能选中。
+	if _, err := pool.Select(accounts.SelectOptions{Site: "domestic"}); err != nil {
+		t.Fatalf("账号级冷却清空后仍选不中：%v", err)
+	}
+	// 模型仍在限流窗口内：按模型选号必须继续拒绝（这是上游的真实证据）。
+	if _, err := pool.Select(accounts.SelectOptions{Site: "domestic", Model: "hy4free"}); err == nil {
+		t.Fatal("模型冷却仍在，按 hy4free 选号不应成功")
 	}
 }
 

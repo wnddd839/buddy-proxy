@@ -1125,10 +1125,10 @@ func (s *Service) RefreshPoolUsage(ctx context.Context, site string) []PoolUsage
 				return
 			}
 			state := billing.QuotaStateFromUsage(usage, time.Now())
-			// 「刷新状态」= 人工重置：先把启用号的冷却标记清空（账号级 + 模型级），
-			// 再按刚取到的余额重新落 quota 冷却。顺序不能反 —— 反了会让「余额充足
-			// 但模型冷却还在」的号继续被 Select 排除，用户看到的就是「面板显示能用、
-			// 请求却报 rate limited」。
+			// 「刷新状态」= 以刚取到的余额为准重置**账号级**冷却，再重新落 quota 状态。
+			// 顺序不能反：先落 quota 会把旧冷却当成已有的更晚截止时刻保留下来。
+			// 模型级 ModelCooldowns 不在此处处理 —— 它是真实 429 的证据，只按到期
+			// 时间或真实请求结果解除。
 			if _, clearErr := s.Pool.ClearCooldowns(account.ID); clearErr != nil {
 				s.Log.Debug("admin cooldown clear failed", "accountId", account.ID, "error", clearErr.Error())
 			}

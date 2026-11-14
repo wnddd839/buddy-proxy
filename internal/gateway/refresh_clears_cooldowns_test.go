@@ -13,9 +13,8 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 )
 
-// 「刷新状态」= 人工重置。启用号刷新成功后，账号级与模型级冷却都必须清空，
-// 否则会出现「面板显示余额充足、请求却报 rate limited」的矛盾。
-func TestRefreshPoolUsageClearsCooldownMarkers(t *testing.T) {
+// 「刷新状态」重置账号级冷却，但不动模型级冷却（真实 429 的证据）。
+func TestRefreshPoolUsageClearsAccountCooldownKeepsModelMarkers(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(config.Config{Site: "domestic", AccountsPath: filepath.Join(dir, "accounts.json")},
 		slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
@@ -30,10 +29,11 @@ func TestRefreshPoolUsageClearsCooldownMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
+	modelUntil := now.Add(10 * time.Hour).UnixMilli()
 	if _, _, err := svc.Pool.UpdateAccount(created.ID, func(a accounts.Account) accounts.Account {
 		a.CooldownUntil = now.Add(6 * time.Hour).UnixMilli()
 		a.CooldownSource = accounts.CooldownSourceUpstream
-		a.ModelCooldowns = map[string]int64{"hy4free": now.Add(10 * time.Hour).UnixMilli()}
+		a.ModelCooldowns = map[string]int64{"hy4free": modelUntil}
 		return a
 	}); err != nil {
 		t.Fatal(err)
@@ -52,8 +52,8 @@ func TestRefreshPoolUsageClearsCooldownMarkers(t *testing.T) {
 	if got.CooldownUntil != 0 || got.CooldownSource != "" {
 		t.Fatalf("刷新后账号级冷却未清：until=%d source=%q", got.CooldownUntil, got.CooldownSource)
 	}
-	if len(got.ModelCooldowns) != 0 {
-		t.Fatalf("刷新后模型级冷却未清：%v", got.ModelCooldowns)
+	if got.ModelCooldowns["hy4free"] != modelUntil {
+		t.Fatalf("模型级冷却被误清：%v", got.ModelCooldowns)
 	}
 	if got.QuotaRemaining == nil || *got.QuotaRemaining != 42 {
 		t.Fatalf("余额未落库：%v", got.QuotaRemaining)
