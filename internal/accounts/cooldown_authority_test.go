@@ -31,9 +31,11 @@ func TestMarkResultKeepsQuotaCooldownSource(t *testing.T) {
 	if _, err := pool.ApplyQuotaState(created.ID, remainingPtr(0), false, reset.UnixMilli(), now.UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-	// ② 紧接着 MarkResult 报失败，cooldown 正好等于到 resetAt 的剩余时长
+	// ② 紧接着 MarkResult 报失败，cooldown 时长按调用方真实算法给：
+	//    resolveFailureCooldown 返回的是「从它自己的 now 到 resetAt」，
+	//    与上面 ApplyQuotaState 用的 now 有毫秒级漂移 —— 这里刻意复现该漂移。
 	if err := pool.MarkResult(selection, false, "429 usage exceeds frequency limit (code 6004)",
-		reset.Sub(now)); err != nil {
+		time.Until(reset)); err != nil {
 		t.Fatal(err)
 	}
 

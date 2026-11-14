@@ -893,8 +893,13 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 					// 快照把 CooldownUntil 对齐到 QuotaResetAt 并标了 quota 来源。
 					// 这里必须让位，否则每次真实 429 都会把可自愈的额度冷却改回
 					// upstream，自愈逻辑等于没写（旧实现就是这么废掉两个号的）。
+					//
+					// 判据不能比时间戳：until 是 now+cooldown，而 quota 冷却记的是
+					// 上游给的 resetAt，两次取 now 之间有毫秒级漂移，精确比较会误判。
+					// 只要现有冷却还没到期、且来源是 quota，就说明额度探测给出的
+					// 时间窗仍然有效，保留它。
 					keepQuota := p.mem.Accounts[i].CooldownSource == CooldownSourceQuota &&
-						p.mem.Accounts[i].CooldownUntil >= until
+						p.mem.Accounts[i].CooldownUntil > now
 					if !keepQuota {
 						p.mem.Accounts[i].CooldownUntil = until
 						p.mem.Accounts[i].CooldownSource = CooldownSourceUpstream
