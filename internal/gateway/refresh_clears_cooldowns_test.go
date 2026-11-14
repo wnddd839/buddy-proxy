@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,5 +59,15 @@ func TestRefreshPoolUsageClearsAccountCooldownKeepsModelMarkers(t *testing.T) {
 	}
 	if got.QuotaRemaining == nil || *got.QuotaRemaining != 42 {
 		t.Fatalf("余额未落库：%v", got.QuotaRemaining)
+	}
+
+	// 管理台账号列表拿到的就是这份摘要：模型冷却必须在 JSON 里，
+	// 否则前端 accountStates() 永远渲染不出「模型冷却」这条阻塞原因。
+	payload, err := json.Marshal(accounts.SummarizeStore(store, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"modelCooldowns":{"hy4free":`) {
+		t.Fatalf("账号摘要未携带模型冷却：%s", string(payload))
 	}
 }
