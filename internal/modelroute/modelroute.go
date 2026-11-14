@@ -26,12 +26,45 @@ import (
 //
 // 匹配顺序 = 数组顺序；同 FromSite + 同 Match 的多条 = 备用链。
 type Rule struct {
-	FromSite string `json:"fromSite"`       // 源站点：domestic / global（必填）
-	Match    string `json:"match"`          // 源模型名（客户端请求的，精确匹配，不区分大小写）
-	Site     string `json:"site"`           // 目标站点：domestic / global（必填）
-	Target   string `json:"target"`         // 目标上游模型名
-	Note     string `json:"note,omitempty"` // 备注，仅展示
+	FromSite string `json:"fromSite"` // 源站点：domestic / global（必填）
+	Match    string `json:"match"`    // 源模型名（客户端请求的，精确匹配，不区分大小写）
+	// Mode 决定这条规则「什么时候生效」：
+	//   always      —— 命中就改写（默认，空值同义）
+	//   onExhausted —— 先按源站点原模型正常选号，只有源站点用尽时才改写
+	Mode   string `json:"mode,omitempty"`
+	Site   string `json:"site"`           // 目标站点：domestic / global（必填）
+	Target string `json:"target"`         // 目标上游模型名
+	Note   string `json:"note,omitempty"` // 备注，仅展示
 }
+
+// 路由生效时机。
+const (
+	ModeAlways      = "always"
+	ModeOnExhausted = "onExhausted"
+)
+
+// normalizeMode 归一 mode 字面量；第二个返回值表示是否合法。
+// 比较必须大小写不敏感：配置文件是手写/前端写入的，别要求用户记住驼峰。
+func normalizeMode(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", ModeAlways:
+		return ModeAlways, true
+	case strings.ToLower(ModeOnExhausted):
+		return ModeOnExhausted, true
+	}
+	return "", false
+}
+
+// ModeOrDefault 返回归一后的生效时机；空值按 always（向后兼容老规则）。
+func (r Rule) ModeOrDefault() string {
+	if mode, ok := normalizeMode(r.Mode); ok {
+		return mode
+	}
+	return ModeAlways
+}
+
+// OnExhausted 报告这条规则是否要等到源站点用尽才改写。
+func (r Rule) OnExhausted() bool { return r.ModeOrDefault() == ModeOnExhausted }
 
 type Store struct {
 	Version int    `json:"version"`
@@ -131,6 +164,9 @@ func Validate(rules []Rule) error {
 		if strings.TrimSpace(rule.Target) == "" {
 			return fmt.Errorf("modelroute: 模型 %q 缺少 target", rule.Match)
 		}
+		if _, ok := normalizeMode(rule.Mode); !ok {
+			return fmt.Errorf("modelroute: 模型 %q 的 mode %q 无效（只能是 always 或 onExhausted）", rule.Match, rule.Mode)
+		}
 	}
 	return nil
 }
@@ -156,8 +192,8 @@ func canonicalSite(value string) string {
 
 // Chain 返回「当前请求落在 fromSite 站点、模型名为 model」时的完整路由链（按文件顺序）。
 //
-// 一条 = 固定路由；多条 = 备用链：本站无可用号且「全站 429 换区」开关打开时，
-// 按顺序改用下一跳。大小写不敏感。
+// 一条 = 固定路由；多条 = 备用链：链首按 Mode 决定「立即改写」还是
+// 「源站点用尽才改写」，其余各跳都在源站点用尽后按顺序推进。大小写不敏感。
 //
 // fromSite 是这次请求实际要去的站点（已由前缀 / X-Site / Key 绑定 / 全局默认决定）。
 // 只返回 FromSite 与它一致的规则 —— 方向不同的一律不命中，这是「客户端显式指定

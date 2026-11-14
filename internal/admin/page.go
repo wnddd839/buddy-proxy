@@ -1546,7 +1546,8 @@ function accountStates(a){
   if (a.quotaExhausted && a.quotaResetAt) {
     out.push({level:'bad', text:'配额耗尽 · ' + formatResetAt(a.quotaResetAt) + ' 恢复'});
   } else if (a.cooldownUntil && a.cooldownUntil > now) {
-    out.push({level:'warn', text:'冷却中 · ' + formatResetAt(a.cooldownUntil) + ' 恢复'});
+    const quotaCool = a.cooldownSource === 'quota';
+    out.push({level:'warn', text:(quotaCool ? '额度冷却' : '冷却中') + ' · ' + formatResetAt(a.cooldownUntil) + (quotaCool ? ' 重探' : ' 恢复')});
   } else if (a.quotaRemaining != null && Number(a.quotaRemaining) <= 0) {
     out.push({level:'warn', text:'配额可能已耗尽'});
   }
@@ -3009,19 +3010,7 @@ function paintRouteRules(){
     const match = r.match || '';
     const target = r.target || '';
     const hopTag = o.seq > 1 ? '<span class="route-hop">备用 ' + o.seq + '</span>' : '';
-    // 人话摘要：把这条规则到底做了什么讲清楚
-    let explain;
-    if (!match) {
-      explain = '还没填源模型。左边选「哪个区收到的请求」，右边填该区真实有的模型名。';
-    } else if (!target) {
-      explain = siteLabel(fromSite) + '站收到 <code>' + escapeHtml(match) + '</code> 的请求 → 还没选要改成哪个模型。';
-    } else if (fromSite === toSite && match === target) {
-      explain = '源和目标完全一样，这条规则不会有任何效果。';
-    } else if (fromSite === toSite) {
-      explain = siteLabel(fromSite) + '站收到 <code>' + escapeHtml(match) + '</code> 的请求 → 改用同站的 <code>' + escapeHtml(target) + '</code> 执行（模型替身，不跨区）。';
-    } else {
-      explain = siteLabel(fromSite) + '站收到 <code>' + escapeHtml(match) + '</code> 的请求 → 改用<b>' + siteLabel(toSite) + '站</b>的 <code>' + escapeHtml(target) + '</code> 执行。';
-    }
+    const mode = routeMode(r);
     return '<div class="route-rule" data-idx="' + i + '">' +
       '<div class="route-line">' +
         '<label>源区域 <select data-rf="fromSite">' + routeSiteOptions(fromSite) + '</select></label>' +
@@ -3031,17 +3020,40 @@ function paintRouteRules(){
         '<label>目标区域 <select data-rf="site">' + routeSiteOptions(toSite) + '</select></label>' +
         '<label>目标模型 <input type="text" data-rf="target" placeholder="gpt-5.6" value="' + escapeHtml(target) + '" list="routeToList' + i + '"/>' +
           '<datalist id="routeToList' + i + '">' + routeOptionsForSite(toSite) + '</datalist></label>' +
+        '<label>生效时机 <select data-rf="mode">' +
+          '<option value="always"' + (mode === 'always' ? ' selected' : '') + '>立即改写</option>' +
+          '<option value="onExhausted"' + (mode === 'onExhausted' ? ' selected' : '') + '>源区用尽才跳</option>' +
+        '</select></label>' +
         '<label>备注 <input type="text" data-rf="note" placeholder="选填" value="' + escapeHtml(r.note || '') + '"/></label>' +
         '<span class="spacer"></span>' +
         '<button class="ghost" data-route-up="' + i + '" type="button" title="上移（同链时优先级更高）">↑</button>' +
         '<button class="ghost" data-route-down="' + i + '" type="button" title="下移（同链时优先级更低）">↓</button>' +
         '<button class="danger" data-route-del="' + i + '" type="button">删除</button>' +
       '</div>' +
-      '<p class="route-explain">' + explain + '</p>' +
+      '<p class="route-explain">' + routeExplainHtml(r) + '</p>' +
       '</div>';
   }).join('');
 
   bindRouteRowEvents(box);
+}
+
+// routeMode 归一一条路由的生效时机；老规则没有这个字段，按「立即改写」。
+function routeMode(r){
+  return (r && String(r.mode || '').toLowerCase() === 'onexhausted') ? 'onExhausted' : 'always';
+}
+
+// routeExplainHtml 把一条路由讲成人话；生效时机决定它是「改写」还是「兜底」。
+function routeExplainHtml(r){
+  const fs = normalizeSite(r.fromSite), ts = normalizeSite(r.site);
+  const onExhausted = routeMode(r) === 'onExhausted';
+  if (!r.match) return '还没填源模型。左边选「哪个区收到的请求」，右边填该区真实有的模型名。';
+  if (!r.target) return siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 还没选要改成哪个模型。';
+  if (fs === ts && r.match === r.target) return '源和目标完全一样，这条规则不会有任何效果。';
+  const lead = onExhausted
+    ? siteLabel(fs) + '站有号时正常用 <code>' + escapeHtml(r.match) + '</code>，用尽后才 '
+    : siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → ';
+  if (fs === ts) return lead + '改用同站的 <code>' + escapeHtml(r.target) + '</code> 执行（模型替身，不跨区）。';
+  return lead + '改用<b>' + siteLabel(ts) + '站</b>的 <code>' + escapeHtml(r.target) + '</code> 执行。';
 }
 
 // syncRouteRulesFromDom 把界面上的当前值写回 routeRules（改动未保存也不丢）。
@@ -3051,7 +3063,7 @@ function syncRouteRulesFromDom(){
   const next = [];
   rows.forEach(function(row){
     function val(f){ const el = row.querySelector('[data-rf="'+f+'"]'); return el ? el.value.trim() : ''; }
-    next.push({fromSite: val('fromSite') || 'domestic', match: val('match'), site: val('site') || 'global', target: val('target'), note: val('note')});
+    next.push({fromSite: val('fromSite') || 'domestic', match: val('match'), site: val('site') || 'global', target: val('target'), mode: val('mode') || 'always', note: val('note')});
   });
   routeRules = next;
   routeChanged();
@@ -3102,18 +3114,14 @@ function bindRouteRowEvents(box){
       if (!r) return;
       const p = row.querySelector('.route-explain');
       if (!p) return;
-      const fs = normalizeSite(r.fromSite), ts = normalizeSite(r.site);
-      if (!r.match) {
-        p.innerHTML = '还没填源模型。左边选「哪个区收到的请求」，右边填该区真实有的模型名。';
-      } else if (!r.target) {
-        p.innerHTML = siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 还没选要改成哪个模型。';
-      } else if (fs === ts && r.match === r.target) {
-        p.innerHTML = '源和目标完全一样，这条规则不会有任何效果。';
-      } else if (fs === ts) {
-        p.innerHTML = siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 改用同站的 <code>' + escapeHtml(r.target) + '</code> 执行（模型替身，不跨区）。';
-      } else {
-        p.innerHTML = siteLabel(fs) + '站收到 <code>' + escapeHtml(r.match) + '</code> 的请求 → 改用<b>' + siteLabel(ts) + '站</b>的 <code>' + escapeHtml(r.target) + '</code> 执行。';
-      }
+      p.innerHTML = routeExplainHtml(r);
+    };
+  });
+  // 改生效时机要重画：摘要文案会从「改写」变成「兜底」。
+  box.querySelectorAll('[data-rf="mode"]').forEach(function(sel){
+    sel.onchange = function(){
+      syncRouteRulesFromDom();
+      paintRouteRules();
     };
   });
 }
@@ -3121,7 +3129,9 @@ function bindRouteRowEvents(box){
 if ($('btnRouteAdd')) $('btnRouteAdd').onclick = function(){
   syncRouteRulesFromDom();
   // 默认给一个「国内 → 国际」的常见形态，用户改两个下拉即可。
-  routeRules.push({fromSite:'domestic', match:'', site:'global', target:'', note:''});
+  // 跨区默认按「源区用尽才跳」新建：保存后不会立刻劫走还没耗尽的流量；
+  // 同站替身（模型别名）仍然默认立即改写。
+  routeRules.push({fromSite:'domestic', match:'', site:'global', target:'', mode:'onExhausted', note:''});
   paintRouteRules();
 };
 

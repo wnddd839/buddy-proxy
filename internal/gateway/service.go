@@ -355,6 +355,9 @@ type CompleteOptions struct {
 	// RoutedFrom 记录路由改写前的原始模型名（未命中路由时为空）。
 	RoutedFrom     string
 	routeFallbacks []modelroute.Rule // Remaining rules from the original source/model snapshot.
+	// deferredRoute 是 mode=onExhausted 的整条路由链：先按源站点原模型跑，
+	// 只有判定「源站点用尽」时才推进。用一条少一条，天然不会来回弹跳。
+	deferredRoute []modelroute.Rule
 }
 
 // ImageOptions is one pooled image generation or edit.
@@ -459,18 +462,26 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if s.ModelRoutes != nil && !opts.FixedAccount && !opts.SiteExplicit && opts.RetryDepth == 0 && opts.RoutedFrom == "" {
 		from := config.NormalizeSite(s.requestSite(opts))
 		if chain := s.ModelRoutes.Chain(from, opts.Model); len(chain) > 0 {
-			rule := chain[0]
-			opts.routeFallbacks = chain[1:]
-			orig := opts.Model
-			if t := strings.TrimSpace(rule.Target); t != "" {
-				opts.Model = t
+			if chain[0].OnExhausted() {
+				// 「源站点用尽才跳」：先按原站点原模型选号，选不到或中途额度耗尽
+				// 才把链推进到目标站点/模型。链首也留着，不预先改写。
+				opts.deferredRoute = chain
+				s.Log.Info("model route deferred until source exhausted",
+					"fromSite", from, "match", opts.Model, "hops", len(chain))
+			} else {
+				rule := chain[0]
+				opts.routeFallbacks = chain[1:]
+				orig := opts.Model
+				if t := strings.TrimSpace(rule.Target); t != "" {
+					opts.Model = t
+				}
+				if site := strings.TrimSpace(rule.Site); site != "" {
+					opts.Site = config.NormalizeSite(site)
+				}
+				opts.RoutedFrom = orig
+				s.Log.Info("model route applied",
+					"fromSite", from, "match", orig, "toSite", opts.Site, "target", opts.Model)
 			}
-			if site := strings.TrimSpace(rule.Site); site != "" {
-				opts.Site = config.NormalizeSite(site)
-			}
-			opts.RoutedFrom = orig
-			s.Log.Info("model route applied",
-				"fromSite", from, "match", orig, "toSite", opts.Site, "target", opts.Model)
 		}
 	}
 	if opts.FixedAccount && opts.AccountID == "" {
@@ -530,6 +541,11 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			opts.Model = rule.Target
 			opts.AccountID = ""
 			opts.RetryDepth++
+			return s.CompleteFromPool(ctx, opts)
+		}
+		// 源站点确实没号可用（全禁用 / 全冷却且无兜底 / 全在积分下限下 /
+		// 该模型整体在限流窗口内）⇒ 这才是「用尽」，延迟路由可以跳了。
+		if routeExhausted(err) && s.advanceDeferredRoute(&opts) {
 			return s.CompleteFromPool(ctx, opts)
 		}
 		return CompleteResult{}, err
@@ -599,6 +615,16 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				opts.ExcludeIDs = next
 				opts.AccountID = id
 				opts.RetryDepth++
+				return s.CompleteFromPool(ctx, opts)
+			}
+			// 同区已经没有可换的号了：本次失败才算「源站点用尽」，
+			// 这时才允许 mode=onExhausted 的路由改写到另一个站点。
+			// （请求一进来就换区会把本来能用的源站点号池绕过去。）
+			if s.advanceDeferredRoute(&opts) {
+				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+				if pinKey != "" {
+					s.Pins.Forget(pinKey)
+				}
 				return s.CompleteFromPool(ctx, opts)
 			}
 		}
@@ -681,6 +707,7 @@ func MergeRefreshedToken(existing accounts.Account, token *oauth.TokenData) acco
 	updated.LastUsedAt = existing.LastUsedAt
 	updated.LastSelectedAt = existing.LastSelectedAt
 	updated.CooldownUntil = existing.CooldownUntil
+	updated.CooldownSource = existing.CooldownSource
 	updated.ModelCooldowns = existing.ModelCooldowns
 	updated.QuotaRemaining = existing.QuotaRemaining
 	updated.QuotaUnlimited = existing.QuotaUnlimited
@@ -954,10 +981,61 @@ func (s *Service) listSelectableAccounts(exclude []string, site string) []accoun
 	return out
 }
 
-// needsQuotaRefresh 任一可选账号缺快照或超过 TTL，新会话就要补探，避免只查过部分号时 PreferQuota 看不见更厚的号。
+// maxQuotaRefreshCooled 限制每次补探额外带上几个额度冷却号。
+// 长期真耗尽的号不该让每个新会话都多等一次上游探测。
+const maxQuotaRefreshCooled = 4
+
+// listQuotaRefreshCandidates 返回「值得打一次额度接口」的号。
+//
+// includeCooled 时额外带上 quota 来源的冷却号：它们的余额可能在上游 resetAt
+// 之前就被补回来，但 Select 永远选不到冷却号 ⇒ 只有额度快照能让冷却自动解除。
+// 换号路径（staleOnly=false）不带，避免每次换号都多打几次上游。
+func (s *Service) listQuotaRefreshCandidates(exclude []string, site string, includeCooled bool) []accounts.Account {
+	out := s.listSelectableAccounts(exclude, site)
+	if !includeCooled {
+		return out
+	}
+	store, err := s.Pool.Read()
+	if err != nil {
+		return out
+	}
+	site = config.NormalizeSite(strutil.First(site, s.ActivePoolSite()))
+	now := time.Now().UnixMilli()
+	skip := make(map[string]struct{}, len(out)+len(exclude))
+	for _, id := range exclude {
+		skip[id] = struct{}{}
+	}
+	for _, account := range out {
+		skip[account.ID] = struct{}{}
+	}
+	extra := 0
+	for _, account := range store.Accounts {
+		if extra >= maxQuotaRefreshCooled {
+			break
+		}
+		if !account.Enabled || !accounts.HasCredentials(account) {
+			continue
+		}
+		if site != "" && config.NormalizeSite(account.Site) != site {
+			continue
+		}
+		if _, ok := skip[account.ID]; ok {
+			continue
+		}
+		if account.CooldownSource != accounts.CooldownSourceQuota || !accounts.InCooldown(account, now) {
+			continue
+		}
+		out = append(out, account)
+		skip[account.ID] = struct{}{}
+		extra++
+	}
+	return out
+}
+
+// needsQuotaRefresh 任一候选缺快照或超过 TTL，新会话就要补探，避免只查过部分号时 PreferQuota 看不见更厚的号。
 func (s *Service) needsQuotaRefresh(exclude []string, site string) bool {
 	now := time.Now().UnixMilli()
-	for _, account := range s.listSelectableAccounts(exclude, site) {
+	for _, account := range s.listQuotaRefreshCandidates(exclude, site, true) {
 		if !quotaSnapshotFresh(account, now) {
 			return true
 		}
@@ -971,7 +1049,7 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, 
 		return
 	}
 	now := time.Now().UnixMilli()
-	candidates := s.listSelectableAccounts(exclude, site)
+	candidates := s.listQuotaRefreshCandidates(exclude, site, staleOnly)
 	if staleOnly {
 		filtered := candidates[:0]
 		for _, account := range candidates {
@@ -1031,8 +1109,8 @@ type PoolUsageItem struct {
 	Error            string             `json:"error,omitzero"`
 }
 
-// RefreshPoolUsage 对当前号池已启用且有凭据的账号并行打上游套餐接口，
-// 写入 QuotaState。冷却中 / 配额耗尽的号也会打，方便页面看到是否已恢复。
+// RefreshPoolUsage 对已启用且有凭据的账号并行打上游套餐接口，写入 QuotaState。
+// site 为空刷新全部站点。冷却中 / 配额耗尽的号也会打，方便页面看到是否已恢复。
 // 15 秒自动轮询不要走这里。
 func (s *Service) RefreshPoolUsage(ctx context.Context, site string) []PoolUsageItem {
 	if s == nil || s.Pool == nil || s.Provider == nil {
@@ -1092,7 +1170,9 @@ func (s *Service) listPoolAccountsForUsage(site string) []accounts.Account {
 	if err != nil {
 		return nil
 	}
-	site = config.NormalizeSite(strutil.First(site, s.ActivePoolSite()))
+	// site 为空 = 全部站点：管理台「刷新」要看到每个号的真实余额，
+	// 只刷当前号池会把另一区的号留在过期快照上。
+	site = config.OptionalSite(site)
 	out := make([]accounts.Account, 0, len(store.Accounts))
 	for _, account := range store.Accounts {
 		if !account.Enabled || !accounts.HasCredentials(account) {
@@ -1756,6 +1836,60 @@ func (s *Service) siteHasUsableAccount(site, model string) bool {
 		if until := item.ModelCooldowns[model]; until > now {
 			continue
 		}
+		return true
+	}
+	return false
+}
+
+// routeExhausted 判断一次选号失败是否属于「源站点真的用尽了」。
+//
+// 只有这三类算：源站点一个能用的号都没有（含全在积分下限下）、
+// 以及该模型整体还在上游限流窗口内。其余错误（站点不匹配、内部错误）
+// 不该触发跨区 —— 跨过去也只是把错误换成更难排查的上游 429。
+func routeExhausted(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, accounts.ErrNoAccounts) || errors.Is(err, accounts.ErrQuotaBelowFloor) {
+		return true
+	}
+	_, cooling := errors.AsType[*accounts.ModelCooldownError](err)
+	return cooling
+}
+
+// advanceDeferredRoute 在判定「源站点用尽」后推进 mode=onExhausted 的路由链。
+//
+// 返回 false 表示没有可跳的下一跳：没配路由、链已走完，或目标站点确实没有
+// 能接住这个模型的号。最后一种情况跳过 —— 跨区过去只会拿到 429，
+// 还把一次请求的额度白烧掉。
+func (s *Service) advanceDeferredRoute(opts *CompleteOptions) bool {
+	if opts == nil || len(opts.deferredRoute) == 0 {
+		return false
+	}
+	from := config.NormalizeSite(s.requestSite(*opts))
+	for len(opts.deferredRoute) > 0 {
+		rule := opts.deferredRoute[0]
+		opts.deferredRoute = opts.deferredRoute[1:]
+		target := strutil.First(strings.TrimSpace(rule.Target), opts.Model)
+		nextSite := config.NormalizeSite(strutil.First(strings.TrimSpace(rule.Site), from))
+		if nextSite == from && target == opts.Model {
+			continue // 空跳：站点和模型都没变
+		}
+		if nextSite != from && !s.siteHasUsableAccount(nextSite, target) {
+			s.Log.Warn("model route skipped: target site has no usable account",
+				"fromSite", from, "toSite", nextSite, "target", target)
+			continue
+		}
+		if opts.RoutedFrom == "" {
+			opts.RoutedFrom = opts.Model
+		}
+		opts.Model = target
+		opts.Site = nextSite
+		opts.AccountID = ""
+		opts.ExcludeIDs = nil
+		opts.RetryDepth++
+		s.Log.Warn("model route applied after source exhausted",
+			"fromSite", from, "toSite", nextSite, "target", target)
 		return true
 	}
 	return false
