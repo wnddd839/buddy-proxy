@@ -1494,6 +1494,7 @@ function renderAccounts(summary, activeSite) {
   box.querySelectorAll('.package-expiry').forEach(function(d){ d.open = expanded.has(d.closest('.account').getAttribute('data-account-id')); });
   box.querySelectorAll('button[data-act]').forEach(function(btn){ btn.addEventListener('click', onAccountAction); });
   renderAttention(summary, activeSite);
+  paintModelAvailability();
 }
 
 // formatNextCheckin 把「下次签到时刻」格式化成 HH:MM（今天）或「明天 HH:MM」。
@@ -1651,6 +1652,43 @@ function renderModels(data){
   }).join('');
   chips.querySelectorAll('[data-copy]').forEach(function(btn){
     btn.addEventListener('click', function(){ copyText(btn.getAttribute('data-copy'), '模型', btn); });
+  });
+  paintModelAvailability();
+}
+
+// 模型列表只列模型元数据，看不出「这个模型现在还有几个号能用」。
+// 模型级冷却只在账号卡片里显示，导致「模型明明在列表里、请求却 429」。
+// 这里按当前账号池把可选中数直接画在 chip 上：可用 N / 冷却 M。
+function paintModelAvailability(){
+  const chips = $('modelChips');
+  if (!chips) return;
+  const now = Date.now();
+  chips.querySelectorAll('[data-copy]').forEach(function(btn){
+    const id = btn.getAttribute('data-copy');
+    let ok = 0, cool = 0;
+    (lastAccounts || []).forEach(function(a){
+      if (!a.enabled) return;
+      if (!a.loggedIn && a.hasCredentials === false) return;
+      const until = (a.modelCooldowns || {})[id] || 0;
+      const accountCool = (a.cooldownUntil || 0) > now;
+      if (until > now || accountCool) cool++;
+      else ok++;
+    });
+    let tag = btn.querySelector('.model-avail');
+    if (!tag) {
+      tag = document.createElement('span');
+      tag.className = 'badge model-avail';
+      btn.appendChild(tag);
+    }
+    if (!ok && !cool) {
+      tag.className = 'badge model-avail muted';
+      tag.textContent = '无号可用';
+      tag.title = '当前号池没有启用账号';
+      return;
+    }
+    tag.className = 'badge model-avail ' + (ok === 0 ? 'bad' : (cool ? 'warn' : 'on'));
+    tag.textContent = '可用 ' + ok + (cool ? ' · 冷却 ' + cool : '');
+    tag.title = '可用 ' + ok + ' 个号' + (cool ? '，' + cool + ' 个号仍在冷却（账号级或该模型级）' : '');
   });
 }
 
