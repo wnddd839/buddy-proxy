@@ -141,3 +141,53 @@ func checkinTestAccount(baseURL, id string) accounts.Account {
 		AuthStatus:  accounts.AuthStatus{UserID: "user-1"},
 	}
 }
+
+// Exercise the real scheduler, account file, upstream HTTP and audit log together.
+func TestRunnerDelayedWindowDoesNotLoseAccounts(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"active": true, "today_checked_in": true}})
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	pool := checkinTestPool(t, dir, accounts.Store{Accounts: []accounts.Account{checkinTestAccount(upstream.URL, "a1"), checkinTestAccount(upstream.URL, "a2")}})
+	file := Open(filepath.Join(dir, "rules.json"))
+	if err := file.Write(Store{Rules: []Rule{{AccountID: "a1", Enabled: true, Start: "09:00"}, {AccountID: "a2", Enabled: true, Start: "09:00"}}}); err != nil {
+		t.Fatal(err)
+	}
+	log := OpenLog(filepath.Join(dir, "log.json"))
+	runner := NewRunner(file, log, pool, provider.NewClient(config.Config{}), nil, func() config.Config { return config.Config{CheckinAuto: true} })
+	now := time.Now().In(beijing)
+	at := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, beijing)
+	runner.due(t.Context(), at.Add(-time.Second), at.Add(time.Hour))
+	if calls.Load() != 2 {
+		t.Fatalf("delayed window lost accounts: calls=%d, want 2", calls.Load())
+	}
+	entries, err := log.Read()
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("entries=%v err=%v", entries, err)
+	}
+	for _, e := range entries {
+		if e.At != at.UnixMilli() || e.RanAt == 0 {
+			t.Fatalf("missing schedule/execution evidence: %+v", e)
+		}
+	}
+}
+
+func TestCheckinLogUsesExecutionTime(t *testing.T) {
+	log := OpenLog(filepath.Join(t.TempDir(), "log.json"))
+	now := time.Now()
+	day := now.In(beijing).Format("2006-01-02")
+	planned := now.Add(-49 * time.Hour).UnixMilli()
+	actual := now.Add(-time.Minute).UnixMilli()
+	if err := log.Append(Entry{AccountID: "a1", Day: day, At: planned, RanAt: actual, OK: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := log.LastAttemptToday("a1", day); !ok || got != actual {
+		t.Fatalf("last execution=%d found=%v, want %d", got, ok, actual)
+	}
+	if got := log.Count48h("a1", now); got != 1 {
+		t.Fatalf("recent execution was pruned: count=%d", got)
+	}
+}

@@ -538,13 +538,42 @@ func isPortalDomain(domain string) bool {
 
 // NormalizeToolChoice 将 OpenAI 风格 tool_choice 转为 CodeBuddy protocol_direct 接受的字符串。
 // 对象形式会导致上游 11101（tool_choice 类型不匹配）。
+//
 // ApplyReasoningFields 将客户端思考档位写入上游 body。
-// 实测仅传 reasoning_effort 不会触发 reasoning_content；需 reasoning.effort。
+//
+// ⚠️ 2026-11-12 实测订正（此前记录的结论是反的，已作废）：
+// 上游 **只认扁平的 `reasoning_effort` 字段**；`reasoning:{effort:...}` 这个
+// 对象形式**完全不生效**。同一 prompt 直连上游的对照数据：
+//
+//	都不传              thinking_chars=0    reasoning_tokens=0
+//	只传 reasoning_effort  thinking_chars=487  reasoning_tokens=142   ← 生效
+//	只传 reasoning 对象    thinking_chars=0    reasoning_tokens=0     ← 无效
+//	两者都传             thinking_chars=270  reasoning_tokens=73    ← 部分生效
+//
+// 所以这里必须**始终**写 reasoning_effort，不能因为客户端带了 reasoning
+// 对象就跳过它——否则客户端传 `reasoning:{effort:"max"}` 时思考被静默关掉，
+// 表现为「设了 max 但完全不思考」。
+//
+// 另外注意：各档位（minimal/low/medium/high/xhigh/max）在上游侧**没有稳定
+// 梯度**，实测 think_chars 在 384~726 之间随机波动、medium 反而最高。
+// 上游实际是「开/关」二元语义，具体档位值只用于透传给支持的模型。
 func ApplyReasoningFields(body map[string]any, opts ChatOptions) {
+	// 对象形式原样透传（部分模型可能认），但不再作为「是否发 reasoning_effort」的开关。
 	if opts.Reasoning != nil {
 		body["reasoning"] = opts.Reasoning
-	} else if effort := strings.TrimSpace(opts.ReasoningEffort); effort != "" {
-		body["reasoning"] = map[string]any{"effort": effort}
+	}
+
+	effort := strings.TrimSpace(opts.ReasoningEffort)
+	// reasoning 对象里若带了 effort，也提取出来补进扁平字段——
+	// 很多 OpenAI 兼容客户端只发对象形式，不补发扁平字段就会静默不思考。
+	if effort == "" && opts.Reasoning != nil {
+		if raw, ok := opts.Reasoning["effort"]; ok {
+			if s, ok := raw.(string); ok {
+				effort = strings.TrimSpace(s)
+			}
+		}
+	}
+	if effort != "" {
 		body["reasoning_effort"] = effort
 	}
 	if opts.Thinking != nil {
@@ -552,12 +581,14 @@ func ApplyReasoningFields(body map[string]any, opts ChatOptions) {
 	}
 }
 
-// ReasoningRequested uses the same object-over-effort precedence as the upstream body.
-// An explicit disable is not a request for reasoning, even if other fields are present.
+// ReasoningRequested 报告「这次请求是否要求上游思考」。
+// 必须与 ApplyReasoningFields 的判定保持一致，否则监测器统计的口径会和
+// 实际发给上游的东西对不上（那正是旧版「推理缺失率常年 40%」的成因之一）。
 func ReasoningRequested(opts ChatOptions) bool {
 	body := make(map[string]any)
 	ApplyReasoningFields(body, opts)
 	enabled := false
+
 	if thinking, ok := body["thinking"].(map[string]any); ok {
 		kind, _ := thinking["type"].(string)
 		switch strings.ToLower(strings.TrimSpace(kind)) {
@@ -567,8 +598,9 @@ func ReasoningRequested(opts ChatOptions) bool {
 			enabled = true
 		}
 	}
-	if reasoning, ok := body["reasoning"].(map[string]any); ok {
-		effort, _ := reasoning["effort"].(string)
+
+	// 扁平字段是真正生效的那个（见 ApplyReasoningFields 的实测说明）。
+	if effort, ok := body["reasoning_effort"].(string); ok {
 		switch strings.ToLower(strings.TrimSpace(effort)) {
 		case "none", "disabled", "off":
 			return false
@@ -576,6 +608,7 @@ func ReasoningRequested(opts ChatOptions) bool {
 			enabled = true
 		}
 	}
+
 	return enabled
 }
 
@@ -865,7 +898,16 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 		body["max_completion_tokens"] = opts.MaxCompletionTokens
 	}
 	if opts.Tools != nil {
-		body["tools"] = opts.Tools
+		// 客户端可能送来「裸属性字典」形状的 parameters（顶层直接是属性名、
+		// required:true 写在属性里）。这种定义上游会以 400 code 11129
+		// 「invalid function call parameters」拒收——实测 automation_task_create
+		// 只要带上就让整轮请求失败，与对话内容无关。合法 schema 原样透传。
+		if tools, changed := SanitizeToolSchemas(asSlice(opts.Tools)); len(changed) > 0 {
+			logSanitizedToolSchemas(c.Log, changed)
+			body["tools"] = tools
+		} else {
+			body["tools"] = opts.Tools
+		}
 	}
 	if choice := NormalizeToolChoice(opts.ToolChoice); choice != nil {
 		body["tool_choice"] = choice
@@ -941,7 +983,7 @@ func (c *Client) logUpstreamFailure(upstreamMsg string, status int, body map[str
 	if c != nil && c.Log != nil {
 		logger = c.Log
 	}
-	logger.Warn("codebuddy upstream failure",
+	fields := []any{
 		"status", status,
 		"upstreamMessage", strutil.Truncate(upstreamMsg, 300),
 		"region", region,
@@ -950,7 +992,20 @@ func (c *Client) logUpstreamFailure(upstreamMsg string, status int, body map[str
 		"domain", domain,
 		"model", model,
 		"request", DescribeUpstreamBody(body),
-	)
+	}
+	// 上游 4xx 常常只回一句「invalid function call parameters」，而日志里的
+	// 请求指纹只有 preview 前 200 字，看不到 tool_calls.arguments 原文。
+	// 需要排障时设 CODEBUDDY_PROXY_DUMP_FAILURES=<目录> 落一份完整请求体。
+	if status >= 400 {
+		if dir := FailureDumpDir(); dir != "" {
+			if path, dumpErr := dumpUpstreamFailure(dir, status, body, upstreamMsg); dumpErr != nil {
+				fields = append(fields, "dumpError", dumpErr.Error())
+			} else if path != "" {
+				fields = append(fields, "dump", path)
+			}
+		}
+	}
+	logger.Warn("codebuddy upstream failure", fields...)
 }
 
 // DescribeUpstreamBody 返回归一化上游请求体的脱敏指纹。
