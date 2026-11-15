@@ -150,3 +150,18 @@ func TestRouteOnExhaustedRespectsExplicitSite(t *testing.T) {
 		t.Fatalf("不该打上游，实际 %v", got)
 	}
 }
+
+func TestAlwaysRouteAdvancesAfterUpstreamQuotaFailure(t *testing.T) {
+	svc := routeFixture(t, []modelroute.Rule{
+		{FromSite: "domestic", Match: "hy4free", Site: "domestic", Target: "alias-1"},
+		{FromSite: "domestic", Match: "hy4free", Site: "global", Target: "hy4free"},
+	})
+	tr := svc.Provider.HTTP.Transport.(*scriptedChatTransport)
+	tr.byAuth["token-d1"] = http.StatusTooManyRequests
+	if err := completeModelOnce(t, svc, "hy4free"); err != nil {
+		t.Fatalf("always fallback chain was not consumed: %v", err)
+	}
+	if got := sentTokens(t, svc); len(got) != 2 || got[0] != "token-d1" || got[1] != "token-g1" {
+		t.Fatalf("unexpected request sequence: %v", got)
+	}
+}
