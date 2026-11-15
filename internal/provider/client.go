@@ -608,16 +608,7 @@ func ReasoningRequested(opts ChatOptions) bool {
 			enabled = true
 		}
 	}
-	// 对象形式也看一眼，但只作为补充（它本身不会让上游思考）。
-	if reasoning, ok := body["reasoning"].(map[string]any); ok {
-		effort, _ := reasoning["effort"].(string)
-		switch strings.ToLower(strings.TrimSpace(effort)) {
-		case "none", "disabled", "off":
-			return false
-		case "minimal", "low", "medium", "high", "xhigh", "max":
-			enabled = true
-		}
-	}
+
 	return enabled
 }
 

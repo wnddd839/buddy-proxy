@@ -18,6 +18,7 @@ func TestReasoningRequestedRespectsExplicitDisableAndPrecedence(t *testing.T) {
 		{"disabled thinking", provider.ChatOptions{Thinking: map[string]any{"type": "disabled"}}, false},
 		{"enabled thinking", provider.ChatOptions{Thinking: map[string]any{"type": "enabled"}}, true},
 		// 对象里的 effort=none 明确表示关闭 ⇒ false（这条语义没变）。
+		{"flat effort wins", provider.ChatOptions{ReasoningEffort: "high", Reasoning: map[string]any{"effort": "none"}}, true},
 		{"object disables", provider.ChatOptions{Reasoning: map[string]any{"effort": "none"}}, false},
 		// 空对象本身不代表要求思考 —— 它不会让上游思考（实测 thinking=0）。
 		{"empty object alone", provider.ChatOptions{Reasoning: map[string]any{}}, false},

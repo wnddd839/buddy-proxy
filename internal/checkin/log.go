@@ -102,7 +102,7 @@ func (l *Log) readLocked() ([]Entry, error) {
 		return []Entry{}, nil
 	}
 	sort.SliceStable(store.Entries, func(i, j int) bool {
-		return store.Entries[i].At < store.Entries[j].At
+		return store.Entries[i].ExecutedAt() < store.Entries[j].ExecutedAt()
 	})
 	return store.Entries, nil
 }
@@ -130,7 +130,7 @@ func (l *Log) Append(e Entry) error {
 	cutoff := time.Now().Add(-Retention).UnixMilli()
 	kept := entries[:0]
 	for _, item := range entries {
-		if item.At < cutoff {
+		if item.ExecutedAt() < cutoff {
 			continue
 		}
 		kept = append(kept, item)
@@ -167,7 +167,7 @@ func (l *Log) Today(accountID, day string) (Entry, bool) {
 		if e.AccountID != accountID || e.Day != day {
 			continue
 		}
-		if !found || e.At >= best.At {
+		if !found || e.ExecutedAt() >= best.ExecutedAt() {
 			best = e
 			found = true
 		}
@@ -185,7 +185,7 @@ func (l *Log) Count48h(accountID string, now time.Time) int {
 	cutoff := now.Add(-Retention).UnixMilli()
 	n := 0
 	for _, e := range entries {
-		if e.AccountID == accountID && e.OK && e.At >= cutoff {
+		if e.AccountID == accountID && e.OK && e.ExecutedAt() >= cutoff {
 			n++
 		}
 	}
@@ -236,8 +236,8 @@ func (l *Log) LastAttemptToday(accountID, day string) (int64, bool) {
 		if e.AccountID != accountID || e.Day != day {
 			continue
 		}
-		if !found || e.At >= last {
-			last = e.At
+		if !found || e.ExecutedAt() >= last {
+			last = e.ExecutedAt()
 			found = true
 		}
 	}
