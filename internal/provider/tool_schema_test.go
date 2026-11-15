@@ -226,3 +226,25 @@ func contains(list []string, want string) bool {
 	}
 	return false
 }
+
+func TestSanitizePreservesJSONSchemaConstraints(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"object","additionalProperties":false}`,
+		`{"properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}`,
+		`{"$ref":"#/$defs/Args","$defs":{"Args":{"type":"object"}}}`,
+		`{"anyOf":[{"type":"object"},{"type":"null"}]}`,
+		`{"type":"array","items":{"type":"string"}}`,
+	} {
+		var params map[string]any
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			t.Fatal(err)
+		}
+		tool := map[string]any{"function": map[string]any{"name": "test", "parameters": params}}
+		before, _ := json.Marshal(tool)
+		out, changed := SanitizeToolSchemas([]any{tool})
+		after, _ := json.Marshal(out[0])
+		if len(changed) != 0 || string(before) != string(after) {
+			t.Errorf("valid schema corrupted: %s -> %s", before, after)
+		}
+	}
+}

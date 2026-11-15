@@ -3,6 +3,8 @@ package provider
 import (
 	"encoding/json"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -47,14 +49,8 @@ func SanitizeToolSchemas(tools []any) (out []any, sanitized []string) {
 			out = append(out, raw)
 			continue
 		}
-		clone := make(map[string]any, len(tool))
-		for k, v := range tool {
-			clone[k] = v
-		}
-		fnClone := make(map[string]any, len(fn))
-		for k, v := range fn {
-			fnClone[k] = v
-		}
+		clone := maps.Clone(tool)
+		fnClone := maps.Clone(fn)
 		fnClone["parameters"] = fixed
 		clone["function"] = fnClone
 		out = append(out, clone)
@@ -66,59 +62,28 @@ func SanitizeToolSchemas(tools []any) (out []any, sanitized []string) {
 // normalizeParameterSchema 把 parameters 规整成合法 JSON Schema。
 // 返回新对象与是否发生改写；无改写时返回原对象（调用方据此跳过复制）。
 func normalizeParameterSchema(params map[string]any) (map[string]any, bool) {
-	// 已有标准外壳：只做嵌套层的 required 上提（深拷贝后再改）。
-	if strings.EqualFold(toString(params["type"]), "object") && params["properties"] != nil {
-		if _, ok := params["properties"].(map[string]any); ok {
-			clone := deepCloneMap(params)
-			if promoteNestedRequired(clone) {
-				return clone, true
-			}
-			return params, false
-		}
-	}
-
-	// 裸属性字典：顶层每个 key 都是一个属性。
-	props := make(map[string]any, len(params))
-	required := make([]string, 0, 4)
-	changed := false
+	// Only recognize a bare dictionary when every value is a property schema.
+	// Never infer a wrapper by deleting JSON Schema keywords or constraints.
+	bare := true
 	for key, value := range params {
-		// 这几个是 schema 关键字而非属性名；出现时说明它其实已是标准 schema，
-		// 只是 type 写错或缺失，按标准结构补 type 即可。
-		// ⚠️ 不能把 "title" 列为关键字：它同时也是合法属性名（automation_task_create
-		// 的必填字段之一），曾因此把 title 属性整个丢掉。
 		switch key {
-		case "type", "properties", "required", "additionalProperties", "description", "$schema", "definitions", "$defs":
-			changed = true
-			continue
+		case "properties", "$schema", "$id", "$ref", "$defs", "definitions", "allOf", "anyOf", "oneOf", "not", "if", "then", "else", "items", "additionalProperties", "patternProperties", "dependentSchemas":
+			bare = false
 		}
-		child, ok := value.(map[string]any)
-		if !ok {
-			props[key] = value
-			continue
+		if _, ok := value.(map[string]any); !ok {
+			bare = false
 		}
-		childClone := deepCloneMap(child)
-		if isTrue(childClone["required"]) {
-			delete(childClone, "required")
-			required = append(required, key)
-			changed = true
-		}
-		if promoteNestedRequired(childClone) {
-			changed = true
-		}
-		props[key] = childClone
 	}
-
-	// 没有任何属性、也没有 schema 关键字 ⇒ 空参数工具，给个空 object 即可。
-	if len(props) == 0 {
-		return map[string]any{"type": "object", "properties": map[string]any{}}, true
+	clone := deepCloneMap(params)
+	if bare {
+		schema := map[string]any{"type": "object", "properties": clone}
+		promoteNestedRequired(schema)
+		return schema, true
 	}
-
-	schema := map[string]any{"type": "object", "properties": props}
-	if len(required) > 0 {
-		schema["required"] = required
+	if promoteNestedRequired(clone) {
+		return clone, true
 	}
-	// 裸字典一定不是标准形状，算改写。
-	return schema, true || changed
+	return params, false
 }
 
 // promoteNestedRequired 递归把子属性里的 required:true 提升为父级 required 数组。
@@ -146,9 +111,11 @@ func promoteNestedRequired(node map[string]any) bool {
 		if !ok {
 			continue
 		}
-		if isTrue(child["required"]) {
+		if requiredFlag, ok := child["required"].(bool); ok {
 			delete(child, "required")
-			required = append(required, key)
+			if requiredFlag {
+				required = append(required, key)
+			}
 			changed = true
 		}
 		if promoteNestedRequired(child) {
@@ -157,15 +124,12 @@ func promoteNestedRequired(node map[string]any) bool {
 	}
 	if changed || len(required) > 0 {
 		if len(required) > 0 {
-			node["required"] = dedupeStrings(required)
+			required = dedupeStrings(required)
+			slices.Sort(required)
+			node["required"] = required
 		}
 	}
 	return changed
-}
-
-func isTrue(value any) bool {
-	b, ok := value.(bool)
-	return ok && b
 }
 
 func toString(value any) string {

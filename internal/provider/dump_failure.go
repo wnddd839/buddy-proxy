@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,8 @@ import (
 func FailureDumpDir() string {
 	return strings.TrimSpace(os.Getenv("CODEBUDDY_PROXY_DUMP_FAILURES"))
 }
+
+var failureDumpMu sync.Mutex
 
 const (
 	// 只留最近若干份，避免长期开启把磁盘写满。
@@ -35,8 +38,14 @@ func dumpUpstreamFailure(dir string, status int, body map[string]any, upstreamMs
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	failureDumpMu.Lock()
+	defer failureDumpMu.Unlock()
 	now := time.Now()
-	base := filepath.Join(dir, fmt.Sprintf("%s-%d", now.Format("20060102T150405.000"), status))
+	file, err := os.CreateTemp(dir, fmt.Sprintf("buddy-failure-%s-%d-*.request.json", now.Format("20060102T150405.000000000"), status))
+	if err != nil {
+		return "", err
+	}
+	base := strings.TrimSuffix(file.Name(), ".request.json")
 
 	payload, err := json.MarshalIndent(body, "", " ")
 	if err != nil {
@@ -46,7 +55,12 @@ func dumpUpstreamFailure(dir string, status int, body map[string]any, upstreamMs
 	if len(payload) > maxFailureDumpBytes {
 		payload = append(payload[:maxFailureDumpBytes], []byte("\n\n/* TRUNCATED: exceeded dump size limit */\n")...)
 	}
-	if err := os.WriteFile(base+".request.json", payload, 0o600); err != nil {
+	if _, err := file.Write(payload); err != nil {
+		file.Close()
+		os.Remove(file.Name())
+		return "", err
+	}
+	if err := file.Close(); err != nil {
 		return "", err
 	}
 
@@ -212,7 +226,7 @@ func pruneFailureDumps(dir string) {
 	stamps := make([]string, 0, len(entries))
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasSuffix(name, ".request.json") {
+		if !strings.HasPrefix(name, "buddy-failure-") || !strings.HasSuffix(name, ".request.json") {
 			continue
 		}
 		stamps = append(stamps, strings.TrimSuffix(name, ".request.json"))
