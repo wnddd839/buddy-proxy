@@ -437,7 +437,7 @@ usage chunk 形如：
 | Method | Path | 说明 |
 |--------|------|------|
 | GET | `/direct-admin/api/concurrency` | 按账号并发观测完整快照：`globalInFlight`、各账号 `inFlight` / `rpm1` / `rpm5` / `rpm60` / `peakInFlight`（RPM 为最近 1/5/60 分钟请求数除以窗口分钟数，JSON 数字可带小数；秒级分桶，启动不足窗口也按完整窗口计算）、最近一小时限流事件（含触发瞬间在途数）。仅内存计数，进程重启后清空 |
-| GET | `/direct-admin/api/status` | 运行状态 + 账号摘要 + 配置快照；含 `version`、`build`（`version` / 可选 `commit` / `builtAt`）、进程级 `stats`、`concurrency` 数字汇总（`globalInFlight` / `accounts` / `rateLimits`，**均为数字**）。`?fresh=1` 时强制探活上游，并对当前号池已启用账号并行拉取最新 Credits（写入额度快照，响应带 `accountUsages`）。15 秒轮询不要带 `fresh` |
+| GET | `/direct-admin/api/status` | 运行状态 + 账号摘要 + 配置快照；含 `version`、`build`（`version` / 可选 `commit` / `builtAt`）、进程级 `stats`、`concurrency` 数字汇总（`globalInFlight` / `accounts` / `rateLimits`，**均为数字**）。`?fresh=1` 时强制探活上游，并对两站已启用且有凭据的账号并行拉取最新 Credits（写入额度快照，响应带 `accountUsages`）；只有余额恢复证据才解除 `quota` 冷却，真实账号级和模型级限流保留。15 秒轮询不要带 `fresh` |
 | GET | `/direct-admin/api/usage` | 用量汇总 + 分页明细 + 趋势 `series`；默认落盘 `proxy-usage.json`（约 400 条环形缓冲 + 90 日汇总） |
 | GET | `/direct-admin/api/client-config` | 前端配置（baseUrl / apiKey / site / requireApiKey） |
 | POST | `/direct-admin/api/client-config/generate-key` | 生成 `cbp_...` Key，写入 `~/.codebuddy/proxy.env`（或已有 `.env`）并立即生效 |
@@ -445,9 +445,9 @@ usage chunk 形如：
 | POST · PUT | `/direct-admin/api/pool-product` | 切换上游产品 `codebuddy` / `workbuddy`，回写 `.env`；国内国际账号共用同一选择 |
 | GET | `/direct-admin/api/checkin-config` | 返回每账号自动签到配置：`auto`（总开关）、`allowDirectFallback`、`checkinRetryMin` / `checkinRetryMax`（失败重试）、`rules[]`、`path`（规则文件路径） |
 | POST | `/direct-admin/api/checkin-config` | 保存 `{"auto":bool,"allowDirectFallback":bool,"checkinRetryMin":minutes,"checkinRetryMax":count,"rules":[{"accountId","enabled","start","end","mode","offset"}]}`；写 `proxy-checkin.json` 并把行为开关回写 `.env`，立即生效。非法时间、重复账号、跨零点窗口返回 `400` |
-| GET | `/direct-admin/api/checkin-log` | 最近签到结果（48 小时，按站点分桶）：`entries[]` 含 `accountId` / `day` / `at` / `ok` / `already` / `credits` / `message`，供管理台签到徽章与日志表使用 |
-| GET | `/direct-admin/api/model-routes` | 返回跨区模型路由表：`rules[]`（每条含 `fromSite` / `match` / `site` / `target` / `note`）、`catalog`（两站可选模型，下拉用）、`path` |
-| POST | `/direct-admin/api/model-routes` | 保存 `{"rules":[...]}`。`fromSite` 必填（`domestic` / `global`），缺失的旧规则一律不生效且在写回时被 `400` 拒绝；完全命中即改写目标站点+模型；同源站/源模型的多条规则按文件顺序构成备用链，仅在目标区域无可用账号或当前模型处于冷却时推进 |
+| GET | `/direct-admin/api/checkin-log` | 最近签到结果（48 小时，按站点分桶）：`entries[]` 含 `accountId` / `day` / `at`（计划时刻）/ 可选 `ranAt`（执行时刻，旧记录回退 `at`）/ `ok` / `already` / `credits` / `message`，供管理台签到徽章与日志表使用 |
+| GET | `/direct-admin/api/model-routes` | 返回跨区模型路由表：`rules[]`（每条含 `fromSite` / `match` / 可选 `mode` / `site` / `target` / `note`）、`catalog`（两站可选模型，下拉用）、`path` |
+| POST | `/direct-admin/api/model-routes` | 保存 `{"rules":[...]}`。`fromSite` 必填（`domestic` / `global`），缺失的旧规则一律不生效且在写回时被 `400` 拒绝；`mode` 可选 `always`（默认，命中即改写）或 `onExhausted`（源区域该模型无候选、额度低于下限或所有候选限流时才改写）；同源站/源模型的多条规则按文件顺序构成备用链，实际上游额度失败且同区无可换账号时也会推进；显式站点及固定账号不套用路由 |
 | GET | `/direct-admin/api/quota-floor` | 返回选号积分下限 `{"quotaFloor":<credits>}`，`0` = 不启用 |
 | POST | `/direct-admin/api/quota-floor` | 保存 `{"quotaFloor":<credits>}`；负数返回 `400`，热更新立即作用于选号并回写 `.env` |
 
@@ -651,3 +651,12 @@ Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS
 ```json
 {"error":{"message":"Unsupported route: /v1/models/auto","type":"not_found_error"}}
 ```
+
+
+## v0.7.5 上游兼容与管理摘要
+
+Chat/Responses 的 function `parameters` 只对明确裸属性字典和属性内布尔 `required` 做兼容规整；合法 Schema（含引用、组合、数组、`additionalProperties` 等约束）不丢失、不改写调用方原对象。未知形状保持透传。该兼容不承诺修复所有上游 11129。
+
+推理对象仍透传；若仅给 `reasoning.effort`，同时补上游扁平 `reasoning_effort`。两者冲突时显式扁平字段优先；具体档位效果取决于上游模型。
+
+账号摘要新增可选 `cooldownSource`（`quota` / `upstream`），并继续提供 `modelCooldowns`。余额查询成功不等于 chat 限流解除；模型可用数为管理台按当前快照推算，不增加或改变公开 `/v1/models` 协议字段。
