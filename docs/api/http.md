@@ -644,6 +644,56 @@ Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS
 
 ---
 
+## 管理台 · System Prompt 面板（`/direct-admin/api/*`）
+
+需管理台鉴权（`/direct-admin/api/` 统一走 `authorizeAdmin`）。
+
+### `GET /direct-admin/api/system-prompt`
+
+返回当前模式、指标与实时事件流：
+
+```json
+{
+  "ok": true,
+  "mode": "auto",
+  "stats": {"total":0,"keep":0,"fold":0,"degraded":0,"blocked":0,"ok":0,"failed":0,"recovered":0},
+  "statsScope": "date:20261115",
+  "recent": [],
+  "dates": ["20261115"]
+}
+```
+
+- `statsScope` 为 `date:YYYYMMDD` 时，`stats` 来自当天落盘 jsonl 全量（重启不清零）；
+  为 `memory` 时是进程内近 24h（重启清零）。
+- `recent` 最多 200 条（最新在前），内存环形缓冲容量 500。
+- `recovered` 统计「11128 被拦截后折叠重放成功」的次数。
+
+### `GET /direct-admin/api/system-prompt/events`
+
+按天回溯落盘事件。参数：`date`（`YYYYMMDD`，默认今天）、`page`（默认 1）、
+`size`（默认 100，上限 500）、`onlyProblems`（`1`/`true` 等）。
+
+`onlyProblems=1` 包含：传输层失败（`status=0`）、`status>=400`、非空 `errorCode`、
+`degraded`（被 11128 拦截触发降级）。一次 auto 降级产生两条事件，用同一
+`requestId` 关联：`keep/400/11128/degraded` 与 `fold/200/recovered:true`。
+
+响应含 `total` / `hasMore` / `events`。
+
+### `POST /direct-admin/api/system-prompt`
+
+热切换模式，同时写入 env 文件持久化：
+
+```json
+{"mode": "fold"}
+```
+
+`mode` 只接受 `auto` / `keep` / `fold`，其它值返回 400。
+
+> 事件按天写入账号池同目录的 `proxy-systemprompt-YYYYMMDD.jsonl`，保留 7 天、权限 0600。
+> **只存 system 的 SHA-256 前 8 位指纹与字节数，不存 system / user 原文。**
+
+---
+
 ## 未匹配路由
 
 兜底返回 `404`：
