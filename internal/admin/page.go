@@ -3273,12 +3273,12 @@ async function loadCheckinLog(){
   const nameById = {};
   (lastAccounts || []).forEach(function(a){ nameById[a.id] = a.label || a.id; });
   // 按时间倒序：最新的在最上面
-  const sorted = rows.slice().sort(function(x, y){ return (y.at || 0) - (x.at || 0); });
+  const sorted = rows.slice().sort(function(x, y){ return (y.ranAt || y.at || 0) - (x.ranAt || x.at || 0); });
   if (!sorted.length) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty" style="border:none">最近 48 小时还没有签到记录。</td></tr>';
   } else {
     tbody.innerHTML = sorted.map(function(e){
-      const at = new Date(Number(e.at || 0));
+      const at = new Date(Number(e.ranAt || e.at || 0));
       const time = isNaN(at.getTime()) ? '—' :
         (at.getMonth() + 1) + '/' + at.getDate() + ' ' +
         String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0');

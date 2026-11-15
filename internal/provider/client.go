@@ -23,8 +23,9 @@ import (
 )
 
 type Client struct {
-	HTTP       *http.Client
-	IDEVersion string
+	HTTP           *http.Client
+	IDEVersion     string
+	FailureDumpDir string
 	// Log 上游失败排障日志；为空时回退 slog.Default()。网关 New 时注入进程 logger。
 	Log *slog.Logger
 	// StallTimeout 上游流停滞看门狗：连续这么久收不到字节就主动断开。
@@ -110,10 +111,11 @@ func NewClient(cfg config.Config) *Client {
 			Timeout:   0,
 			Transport: transport,
 		},
-		base:         transport,
-		IDEVersion:   strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
-		Log:          slog.Default(),
-		StallTimeout: defaultStallTimeout,
+		FailureDumpDir: cfg.FailureDumpDir,
+		base:           transport,
+		IDEVersion:     strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
+		Log:            slog.Default(),
+		StallTimeout:   defaultStallTimeout,
 	}
 }
 
@@ -996,8 +998,8 @@ func (c *Client) logUpstreamFailure(upstreamMsg string, status int, body map[str
 	// 上游 4xx 常常只回一句「invalid function call parameters」，而日志里的
 	// 请求指纹只有 preview 前 200 字，看不到 tool_calls.arguments 原文。
 	// 需要排障时设 CODEBUDDY_PROXY_DUMP_FAILURES=<目录> 落一份完整请求体。
-	if status >= 400 {
-		if dir := FailureDumpDir(); dir != "" {
+	if c != nil && status >= 400 {
+		if dir := c.FailureDumpDir; dir != "" {
 			if path, dumpErr := dumpUpstreamFailure(dir, status, body, upstreamMsg); dumpErr != nil {
 				fields = append(fields, "dumpError", dumpErr.Error())
 			} else if path != "" {

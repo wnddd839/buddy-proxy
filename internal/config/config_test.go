@@ -14,8 +14,12 @@ func TestLoadUsagePathDefault(t *testing.T) {
 	accounts := filepath.Join(dir, "proxy-accounts.json")
 	t.Setenv("CODEBUDDY_PROXY_ACCOUNTS_PATH", accounts)
 	t.Setenv("CODEBUDDY_PROXY_USAGE_PATH", "")
+	t.Setenv("CODEBUDDY_PROXY_DUMP_FAILURES", "  "+filepath.Join(dir, "dumps")+"  ")
 
 	cfg := config.Load()
+	if cfg.FailureDumpDir != filepath.Join(dir, "dumps") {
+		t.Fatalf("dump directory=%q", cfg.FailureDumpDir)
+	}
 	want := filepath.Join(dir, "proxy-usage.json")
 	if cfg.UsagePath != want {
 		t.Fatalf("UsagePath=%q want %q", cfg.UsagePath, want)
