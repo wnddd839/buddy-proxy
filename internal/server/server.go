@@ -721,7 +721,7 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		_ = s.Svc.ProbeUpstream(r.Context(), fresh)
 		payload := s.Svc.Status()
 		if fresh {
-			usages := s.Svc.RefreshPoolUsage(r.Context(), s.Svc.ActivePoolSite())
+			usages := s.Svc.RefreshPoolUsage(r.Context(), "")
 			payload = s.Svc.Status()
 			payload["accountUsages"] = usages
 			payload["creditsRefreshed"] = true
