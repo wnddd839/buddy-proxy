@@ -608,7 +608,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="eyebrow">Gateway Console · Overview</div>
           <h1>账号、模型与网关状态</h1>
           <p class="lede">监控 OAuth 登录、账号池状态与请求健康度。</p>
-        </div><button class="primary" id="btnRefresh" type="button" title="重新拉取每个号的余额，并按余额重置启用账号的账号级冷却（模型冷却不动）">刷新状态</button></div>
+        </div><button class="primary" id="btnRefresh" type="button" title="重新拉取每个号的余额；有恢复证据时解除额度冷却，真实限流保持不变">刷新状态</button></div>
         <div class="metrics">
           <div class="metric"><div class="k">登录态</div><div class="v sm" id="mLogin">未登录</div></div>
           <div class="metric"><div class="k">Credits 余额</div><div class="v sm" id="mCredits">—</div></div>
@@ -1667,14 +1667,18 @@ function paintModelAvailability(){
   chips.querySelectorAll('[data-copy]').forEach(function(btn){
     const id = btn.getAttribute('data-copy');
     const sites = String(btn.getAttribute('data-sites') || '').split(',').filter(Boolean);
-    let ok = 0, cool = 0;
+    let ok = 0, cool = 0, blocked = 0;
     (lastAccounts || []).forEach(function(a){
-      if (!a.enabled || a.hasCredentials === false) return;
+      if (!a.enabled || !a.hasCredentials) return;
       // 只在某站上架的模型，不把另一区的号算成可用。
       if (sites.length && sites.indexOf(normalizeSite(a.site)) < 0) return;
       const until = (a.modelCooldowns || {})[id] || 0;
       const accountCool = (a.cooldownUntil || 0) > now;
-      if (until > now || accountCool) cool++;
+      if (until > now || accountCool) { cool++; return; }
+      const fresh = a.quotaCheckedAt > 0 && now - a.quotaCheckedAt <= 6*3600000;
+      const quotaBlocked = !a.quotaUnlimited && a.quotaRemaining != null && Number(a.quotaRemaining) <= 0 && a.quotaResetAt > now && (!a.quotaCheckedAt || fresh);
+      const belowFloor = !a.quotaUnlimited && a.quotaRemaining != null && fresh && quotaFloorSaved > 0 && Number(a.quotaRemaining) < quotaFloorSaved;
+      if (quotaBlocked || belowFloor) blocked++;
       else ok++;
     });
     let tag = btn.querySelector('.model-avail');
@@ -1683,15 +1687,15 @@ function paintModelAvailability(){
       tag.className = 'badge model-avail';
       btn.appendChild(tag);
     }
-    if (!ok && !cool) {
+    if (!ok && !cool && !blocked) {
       tag.className = 'badge model-avail muted';
       tag.textContent = '无号可用';
       tag.title = '当前号池没有启用账号';
       return;
     }
     tag.className = 'badge model-avail ' + (ok === 0 ? 'bad' : (cool ? 'warn' : 'on'));
-    tag.textContent = '可用 ' + ok + (cool ? ' · 冷却 ' + cool : '');
-    tag.title = '可用 ' + ok + ' 个号' + (cool ? '，' + cool + ' 个号仍在冷却（账号级或该模型级）' : '');
+    tag.textContent = '可用 ' + ok + (cool ? ' · 冷却 ' + cool : '') + (blocked ? ' · 额度不足 ' + blocked : '');
+    tag.title = '当前快照：可用 ' + ok + ' 个号' + (cool ? '，' + cool + ' 个号仍在冷却（账号级或该模型级）' : '') + (blocked ? '，' + blocked + ' 个号额度耗尽或低于积分下限' : '') + '；不保证实时可用或支持该模型';
   });
 }
 
@@ -3460,6 +3464,7 @@ async function refreshQuotaFloor(){
   const v = (data && data.quotaFloor != null) ? Number(data.quotaFloor) : 0;
   if ($('quotaFloor')) $('quotaFloor').value = String(v);
   quotaFloorSaved = v;
+  paintModelAvailability();
   $('btnQuotaFloorSave').disabled = false;
   paintQuotaFloorState(v);
   return v;
@@ -3490,6 +3495,7 @@ if ($('btnQuotaFloorSave')) $('btnQuotaFloorSave').onclick = function(){
       const saved = (data && data.quotaFloor != null) ? Number(data.quotaFloor) : v;
       if ($('quotaFloor')) $('quotaFloor').value = String(saved);
       quotaFloorSaved = saved;
+      paintModelAvailability();
       $('quotaFloorState').dataset.state = 'saved';
       paintQuotaFloorState(saved);
       showToast(saved > 0 ? ('已保存：积分下限 ' + saved) : '已保存：积分下限已关闭');
