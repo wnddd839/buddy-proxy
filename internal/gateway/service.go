@@ -1125,6 +1125,13 @@ func (s *Service) RefreshPoolUsage(ctx context.Context, site string) []PoolUsage
 				return
 			}
 			state := billing.QuotaStateFromUsage(usage, time.Now())
+			// 「刷新状态」= 以刚取到的余额为准重置**账号级**冷却，再重新落 quota 状态。
+			// 顺序不能反：先落 quota 会把旧冷却当成已有的更晚截止时刻保留下来。
+			// 模型级 ModelCooldowns 不在此处处理 —— 它是真实 429 的证据，只按到期
+			// 时间或真实请求结果解除。
+			if _, clearErr := s.Pool.ClearCooldowns(account.ID); clearErr != nil {
+				s.Log.Debug("admin cooldown clear failed", "accountId", account.ID, "error", clearErr.Error())
+			}
 			if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
 				s.Log.Debug("admin quota apply failed", "accountId", account.ID, "error", applyErr.Error())
 			}

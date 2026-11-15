@@ -968,6 +968,49 @@ func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited b
 	return updated, nil
 }
 
+// ClearCooldowns 清空账号级冷却标记：CooldownUntil/CooldownSource。
+//
+// 语义是「以刚拉到的余额为准重置账号级冷却」：额度耗尽写的 quota 冷却在余额
+// 恢复后必须能解开，否则号会一直锁到 resetAt。
+//
+// ⚠️ 不动 ModelCooldowns：模型冷却记的是「上游对这个模型限流到什么时候」，
+// 是真实 429 的证据，不能被一次余额刷新抹掉。要解除只能等它到期，或按真实
+// 请求重新测得可用。
+func (p *Pool) ClearCooldowns(accountID string) (Account, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return Account{}, fmt.Errorf("%w: empty id", ErrAccountNotFound)
+	}
+	p.mu.Lock()
+	if err := p.ensureLoadedLocked(); err != nil {
+		p.mu.Unlock()
+		return Account{}, err
+	}
+	found := false
+	var updated Account
+	for i := range p.mem.Accounts {
+		if p.mem.Accounts[i].ID != accountID {
+			continue
+		}
+		account := &p.mem.Accounts[i]
+		// 停用的号不参与轮换，保持原状：下次启用时还能看到它曾被上游限流的证据。
+		if account.Enabled {
+			account.CooldownUntil = 0
+			account.CooldownSource = ""
+		}
+		updated = *account
+		found = true
+		break
+	}
+	if !found {
+		p.mu.Unlock()
+		return Account{}, fmt.Errorf("%w: %s", ErrAccountNotFound, accountID)
+	}
+	p.markDirtyLocked()
+	p.mu.Unlock()
+	return updated, nil
+}
+
 func (p *Pool) Upsert(account Account) (Account, Store, error) {
 	if !HasCredentials(account) {
 		return Account{}, Store{}, ErrNoCredentials
