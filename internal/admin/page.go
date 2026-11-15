@@ -608,7 +608,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="eyebrow">Gateway Console · Overview</div>
           <h1>账号、模型与网关状态</h1>
           <p class="lede">监控 OAuth 登录、账号池状态与请求健康度。</p>
-        </div><button class="primary" id="btnRefresh" type="button">刷新状态</button></div>
+        </div><button class="primary" id="btnRefresh" type="button" title="重新拉取每个号的余额；有恢复证据时解除额度冷却，真实限流保持不变">刷新状态</button></div>
         <div class="metrics">
           <div class="metric"><div class="k">登录态</div><div class="v sm" id="mLogin">未登录</div></div>
           <div class="metric"><div class="k">Credits 余额</div><div class="v sm" id="mCredits">—</div></div>
@@ -1494,6 +1494,7 @@ function renderAccounts(summary, activeSite) {
   box.querySelectorAll('.package-expiry').forEach(function(d){ d.open = expanded.has(d.closest('.account').getAttribute('data-account-id')); });
   box.querySelectorAll('button[data-act]').forEach(function(btn){ btn.addEventListener('click', onAccountAction); });
   renderAttention(summary, activeSite);
+  paintModelAvailability();
 }
 
 // formatNextCheckin 把「下次签到时刻」格式化成 HH:MM（今天）或「明天 HH:MM」。
@@ -1647,10 +1648,54 @@ function renderModels(data){
     const mult = (typeof m === 'object' && m && m.creditMultiplier != null) ? m.creditMultiplier : null;
     const badge = credits ? (' · ' + (free ? '免费' : credits.replace(/\s*credits$/i,''))) : '';
     const tip = [id, credits ? ('倍率 ' + credits) : '', (m && m.description) ? m.description : ''].filter(Boolean).join(' | ');
-    return '<button type="button" class="chip btnish" data-copy="' + escapeHtml(id) + '" title="' + escapeHtml(tip || '点击复制') + '">' + escapeHtml(baseLabel + badge) + (free ? ' <span class="badge on">免费</span>' : (mult!=null && credits ? ' <span class="badge site">' + escapeHtml(String(mult)+'x') + '</span>' : '')) + siteTag + '</button>';
+    const sitesAttr = (m && Array.isArray(m.sites)) ? m.sites.join(',') : '';
+    return '<button type="button" class="chip btnish" data-copy="' + escapeHtml(id) + '" data-sites="' + escapeHtml(sitesAttr) + '" title="' + escapeHtml(tip || '点击复制') + '">' + escapeHtml(baseLabel + badge) + (free ? ' <span class="badge on">免费</span>' : (mult!=null && credits ? ' <span class="badge site">' + escapeHtml(String(mult)+'x') + '</span>' : '')) + siteTag + '</button>';
   }).join('');
   chips.querySelectorAll('[data-copy]').forEach(function(btn){
     btn.addEventListener('click', function(){ copyText(btn.getAttribute('data-copy'), '模型', btn); });
+  });
+  paintModelAvailability();
+}
+
+// 模型列表只列模型元数据，看不出「这个模型现在还有几个号能用」。
+// 模型级冷却只在账号卡片里显示，导致「模型明明在列表里、请求却 429」。
+// 这里按当前账号池把可选中数直接画在 chip 上：可用 N / 冷却 M。
+function paintModelAvailability(){
+  const chips = $('modelChips');
+  if (!chips) return;
+  const now = Date.now();
+  chips.querySelectorAll('[data-copy]').forEach(function(btn){
+    const id = btn.getAttribute('data-copy');
+    const sites = String(btn.getAttribute('data-sites') || '').split(',').filter(Boolean);
+    let ok = 0, cool = 0, blocked = 0;
+    (lastAccounts || []).forEach(function(a){
+      if (!a.enabled || !a.hasCredentials) return;
+      // 只在某站上架的模型，不把另一区的号算成可用。
+      if (sites.length && sites.indexOf(normalizeSite(a.site)) < 0) return;
+      const until = (a.modelCooldowns || {})[id] || 0;
+      const accountCool = (a.cooldownUntil || 0) > now;
+      if (until > now || accountCool) { cool++; return; }
+      const fresh = a.quotaCheckedAt > 0 && now - a.quotaCheckedAt <= 6*3600000;
+      const quotaBlocked = !a.quotaUnlimited && a.quotaRemaining != null && Number(a.quotaRemaining) <= 0 && a.quotaResetAt > now && (!a.quotaCheckedAt || fresh);
+      const belowFloor = !a.quotaUnlimited && a.quotaRemaining != null && fresh && quotaFloorSaved > 0 && Number(a.quotaRemaining) < quotaFloorSaved;
+      if (quotaBlocked || belowFloor) blocked++;
+      else ok++;
+    });
+    let tag = btn.querySelector('.model-avail');
+    if (!tag) {
+      tag = document.createElement('span');
+      tag.className = 'badge model-avail';
+      btn.appendChild(tag);
+    }
+    if (!ok && !cool && !blocked) {
+      tag.className = 'badge model-avail muted';
+      tag.textContent = '无号可用';
+      tag.title = '当前号池没有启用账号';
+      return;
+    }
+    tag.className = 'badge model-avail ' + (ok === 0 ? 'bad' : (cool ? 'warn' : 'on'));
+    tag.textContent = '可用 ' + ok + (cool ? ' · 冷却 ' + cool : '') + (blocked ? ' · 额度不足 ' + blocked : '');
+    tag.title = '当前快照：可用 ' + ok + ' 个号' + (cool ? '，' + cool + ' 个号仍在冷却（账号级或该模型级）' : '') + (blocked ? '，' + blocked + ' 个号额度耗尽或低于积分下限' : '') + '；不保证实时可用或支持该模型';
   });
 }
 
@@ -3228,12 +3273,12 @@ async function loadCheckinLog(){
   const nameById = {};
   (lastAccounts || []).forEach(function(a){ nameById[a.id] = a.label || a.id; });
   // 按时间倒序：最新的在最上面
-  const sorted = rows.slice().sort(function(x, y){ return (y.at || 0) - (x.at || 0); });
+  const sorted = rows.slice().sort(function(x, y){ return (y.ranAt || y.at || 0) - (x.ranAt || x.at || 0); });
   if (!sorted.length) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty" style="border:none">最近 48 小时还没有签到记录。</td></tr>';
   } else {
     tbody.innerHTML = sorted.map(function(e){
-      const at = new Date(Number(e.at || 0));
+      const at = new Date(Number(e.ranAt || e.at || 0));
       const time = isNaN(at.getTime()) ? '—' :
         (at.getMonth() + 1) + '/' + at.getDate() + ' ' +
         String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0');
@@ -3423,6 +3468,7 @@ async function refreshQuotaFloor(){
   const v = (data && data.quotaFloor != null) ? Number(data.quotaFloor) : 0;
   if ($('quotaFloor')) $('quotaFloor').value = String(v);
   quotaFloorSaved = v;
+  paintModelAvailability();
   $('btnQuotaFloorSave').disabled = false;
   paintQuotaFloorState(v);
   return v;
@@ -3453,6 +3499,7 @@ if ($('btnQuotaFloorSave')) $('btnQuotaFloorSave').onclick = function(){
       const saved = (data && data.quotaFloor != null) ? Number(data.quotaFloor) : v;
       if ($('quotaFloor')) $('quotaFloor').value = String(saved);
       quotaFloorSaved = saved;
+      paintModelAvailability();
       $('quotaFloorState').dataset.state = 'saved';
       paintQuotaFloorState(saved);
       showToast(saved > 0 ? ('已保存：积分下限 ' + saved) : '已保存：积分下限已关闭');

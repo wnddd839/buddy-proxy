@@ -11,15 +11,6 @@ import (
 	"time"
 )
 
-// FailureDumpDir 返回失败请求转储目录；空字符串表示关闭。
-//
-// 生产默认关闭：请求体含完整对话内容，只在排查「上游 4xx 但看不出原因」时
-// 短暂开启（例如 11129 invalid function call parameters —— 日志里的
-// DescribeUpstreamBody 只记 preview 前 200 字，看不到 tool_calls.arguments 原文）。
-func FailureDumpDir() string {
-	return strings.TrimSpace(os.Getenv("CODEBUDDY_PROXY_DUMP_FAILURES"))
-}
-
 var failureDumpMu sync.Mutex
 
 const (

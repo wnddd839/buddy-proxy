@@ -44,14 +44,16 @@ type APIKeyBinding struct {
 }
 
 type Config struct {
-	Host                string
-	Port                int
-	APIKey              string
-	APIKeys             []APIKeyBinding
-	AdminPassword       string
-	RequireAPIKey       bool
-	PublicBaseURL       string
-	AccountsPath        string
+	Host          string
+	Port          int
+	APIKey        string
+	APIKeys       []APIKeyBinding
+	AdminPassword string
+	RequireAPIKey bool
+	PublicBaseURL string
+	AccountsPath  string
+	// FailureDumpDir is an opt-in directory for sensitive upstream request dumps.
+	FailureDumpDir      string
 	UsagePath           string
 	BaseURL             string
 	Site                string
@@ -105,6 +107,7 @@ func Load() Config {
 		APIKeys:                    ParseAPIKeys(firstEnv("CODEBUDDY_PROXY_API_KEYS")),
 		AdminPassword:              firstEnv("CODEBUDDY_PROXY_ADMIN_PASSWORD", "CURSOR_DIRECT_ADMIN_PASSWORD", "CURSOR_GATEWAY_ADMIN_PASSWORD"),
 		PublicBaseURL:              strings.TrimRight(firstEnv("CODEBUDDY_PROXY_PUBLIC_BASE_URL", "CURSOR_DIRECT_PUBLIC_BASE_URL"), "/"),
+		FailureDumpDir:             firstEnv("CODEBUDDY_PROXY_DUMP_FAILURES"),
 		AccountsPath:               expandHome(envOr("CODEBUDDY_PROXY_ACCOUNTS_PATH", "CURSOR_DIRECT_CODEBUDDY_ACCOUNTS_PATH", defaultAccountsPath())),
 		Site:                       strings.ToLower(firstEnv("CODEBUDDY_SITE", "CURSOR_DIRECT_CODEBUDDY_SITE")),
 		Product:                    strings.ToLower(firstEnv("CODEBUDDY_PRODUCT")),

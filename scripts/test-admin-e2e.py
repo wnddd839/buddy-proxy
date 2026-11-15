@@ -140,7 +140,23 @@ def run(binary, output):
                     page.locator('[data-rf="target"]').fill("upstream")
                     page.locator("#btnRouteSave").click()
                     expect(page.locator("#routeSaveState")).to_have_text("路由规则已保存并生效")
-                    assert page.request.get(base + "/direct-admin/api/model-routes").json()["rules"][0]["target"] == "upstream"
+                    saved_route = page.request.get(base + "/direct-admin/api/model-routes").json()["rules"][0]
+                    assert saved_route["target"] == "upstream" and saved_route["mode"] == "onExhausted"
+                    page.locator('[data-rf="mode"]').select_option("always")
+                    page.locator("#btnRouteSave").click()
+                    expect(page.locator("#routeSaveState")).to_have_text("路由规则已保存并生效")
+                    assert page.request.get(base + "/direct-admin/api/model-routes").json()["rules"][0]["mode"] == "always"
+                    # Real UI rendering from an isolated status snapshot: balance is not availability.
+                    now = int(time.time() * 1000)
+                    accounts[0].update({"quotaRemaining": 3, "quotaCheckedAt": now})
+                    accounts[1]["modelCooldowns"] = {"test-model": now + 600000}
+                    page.evaluate("refreshStatus()")
+                    page.evaluate("renderModels([{id:'test-model',sites:['domestic','global']}])")
+                    badge = page.locator('#modelChips [data-copy="test-model"] .model-avail')
+                    expect(badge).to_have_text("可用 0 · 冷却 1 · 额度不足 1")
+                    accounts[0]["quotaRemaining"] = 50
+                    page.evaluate("refreshStatus()")
+                    expect(badge).to_have_text("可用 1 · 冷却 1")
                     for anchor, panel in [("#codebuddy", "tab-pool"), ("#client-config", "tab-client"), ("#usage", "tab-usage")]:
                         page.goto(base + "/direct-admin/" + anchor)
                         expect(page.locator("#" + panel)).to_be_visible()
