@@ -612,7 +612,8 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			// 同区已经没有可换的号了：本次失败才算「源站点用尽」，
 			// 这时才允许 mode=onExhausted 的路由改写到另一个站点。
 			// （请求一进来就换区会把本来能用的源站点号池绕过去。）
-			if s.advanceDeferredRoute(&opts) {
+			opts.ExcludeIDs = next
+			if s.advanceRouteFallback(&opts) || s.advanceDeferredRoute(&opts) {
 				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
 				if pinKey != "" {
 					s.Pins.Forget(pinKey)
