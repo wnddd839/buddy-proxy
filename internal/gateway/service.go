@@ -26,6 +26,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 	"github.com/wnddd839/codebuddy-proxy/internal/sessionpin"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
+	"github.com/wnddd839/codebuddy-proxy/internal/systemprompt"
 	"github.com/wnddd839/codebuddy-proxy/internal/usagejournal"
 	"github.com/wnddd839/codebuddy-proxy/internal/version"
 	"github.com/wnddd839/codebuddy-proxy/internal/watch"
@@ -134,6 +135,10 @@ type Service struct {
 	// Conversations 让钉住的会话在账号不变时复用上游 X-Conversation-ID。
 	Conversations *sessionpin.ConversationTable
 	Journal       *usagejournal.Journal
+	// SystemPromptJournal 是 system 提示词事件的实时环形缓冲（内存 500 条）。
+	SystemPromptJournal *systemprompt.Journal
+	// SystemPromptStore 是按天 jsonl 事件存储（保留 7 天）。
+	SystemPromptStore *systemprompt.Store
 	// Watch 是进程内波动监测器，nil 表示未启用（见 internal/watch）。
 	Watch *watch.Monitor
 	// Concurrency 是进程内按账号并发观测（无落盘）。
@@ -141,6 +146,9 @@ type Service struct {
 
 	probeMu    sync.Mutex
 	probeCache map[string]provider.Reachability
+
+	// systemPrunedAt 是上次清理按天事件文件的时间（毫秒），惰性清理用。
+	systemPrunedAt atomic.Int64
 }
 
 type modelsCacheEntry struct {
@@ -174,6 +182,9 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 		// 与账号钉相同 TTL（45 分钟空闲）；账号切换后 ID 会轮换。
 		Conversations: sessionpin.NewConversationTable(0),
 		Journal:       journal,
+		// system 事件：内存环形缓冲 + 按天 jsonl（与 proxy-accounts.json 同目录）。
+		SystemPromptJournal: systemprompt.NewJournal(0),
+		SystemPromptStore:   openSystemPromptStore(cfg.AccountsPath, logger),
 	}
 	if cfg.Watch.Enabled {
 		svc.Watch = watch.New(cfg.Watch, logger, nil)
@@ -259,7 +270,10 @@ func (s *Service) SetAPIKey(key string) config.Config {
 // 用结构体而不是 4 个独立 setter：这些开关总是一起读、一起写。
 type BehaviorSwitches struct {
 	CheckinAllowDirectFallback bool
-	QuotaFloorCredits          float64
+	// SystemPromptMode 是 system 提示词策略：auto / keep / fold。
+	// 传空值时保留当前值（管理台只改别的开关时不会意外重置）。
+	SystemPromptMode  string
+	QuotaFloorCredits float64
 	// 签到失败重试：间隔 0 = 不重试。
 	CheckinRetryInterval time.Duration
 	CheckinRetryMax      int
@@ -272,6 +286,10 @@ func (s *Service) SetBehaviorSwitches(next BehaviorSwitches) config.Config {
 		c.QuotaFloorCredits = next.QuotaFloorCredits
 		c.CheckinRetryInterval = next.CheckinRetryInterval
 		c.CheckinRetryMax = next.CheckinRetryMax
+		// 空值表示「本次不涉及」，保留当前模式。
+		if strings.TrimSpace(next.SystemPromptMode) != "" {
+			c.SystemPromptMode = config.NormalizeSystemPromptMode(next.SystemPromptMode)
+		}
 	})
 	// 积分阈值直接作用于选号，热更新立即生效。
 	if s.Pool != nil {
@@ -355,6 +373,15 @@ type CompleteOptions struct {
 	// RoutedFrom 记录路由改写前的原始模型名（未命中路由时为空）。
 	RoutedFrom     string
 	routeFallbacks []modelroute.Rule // Remaining rules from the original source/model snapshot.
+	// RequestID 是本次请求的代理 ID，用来把 system 事件与用量明细对上。
+	RequestID string
+	// systemMode 是请求首次进入 CompleteFromPool 时快照的 system 模式，
+	// 沿递归重试原样传递（opts 按值传递），调用方不要设置。
+	systemMode string
+	// FoldedRetry 表示已经因 11128 降级过一次；置位后强制 fold，防止无限重试。
+	FoldedRetry bool
+	// SystemOutcome 非空时由 CompleteFromPool 回填实际 system 形态（keep / fold / degraded）。
+	SystemOutcome *SystemPromptOutcome
 	// deferredRoute 是 mode=onExhausted 的整条路由链：先按源站点原模型跑，
 	// 只有判定「源站点用尽」时才推进。用一条少一条，天然不会来回弹跳。
 	deferredRoute []modelroute.Rule
@@ -423,7 +450,29 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		OnThinkingDelta:    opts.OnThinkingDelta,
 		OnEvent:            opts.OnEvent,
 		DeliverToolDeltas:  opts.DeliverToolDeltas,
+		// system 策略：fold 永远折叠；auto/keep 原样透传；已降级过的重试强制折叠。
+		KeepSystem: s.keepSystemFor(opts),
 	}
+}
+
+// keepSystemFor 决定本次上游请求是否原样透传 system。
+// fold 模式永远折叠；auto / keep 模式首试原样；已降级过的重试强制折叠。
+func (s *Service) keepSystemFor(opts CompleteOptions) bool {
+	if opts.FoldedRetry {
+		return false
+	}
+	// 用首次进入时快照的模式，而不是实时值：管理员在请求进行中切换模式，
+	// 不应改变本次请求（含递归重试）实际发出的形态，否则事件归因会前后不一致。
+	mode := opts.systemMode
+	if mode == "" {
+		mode = s.systemPromptMode()
+	}
+	return mode != config.SystemPromptModeFold
+}
+
+// systemPromptMode 返回归一后的当前模式（空值按 auto）。
+func (s *Service) systemPromptMode() string {
+	return config.NormalizeSystemPromptMode(s.Config().SystemPromptMode)
 }
 
 type CompleteResult struct {
@@ -450,6 +499,11 @@ func SessionPinKey(session, site string) string {
 
 func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (CompleteResult, error) {
 	opts.Model = strutil.First(opts.Model, "auto")
+	// 模式只在首次进入时快照一次，沿所有递归重试沿用：管理员在请求进行中
+	// 切换模式不改变本次请求实际发出的形态，事件归因与降级判定都以它为准。
+	if opts.systemMode == "" {
+		opts.systemMode = s.systemPromptMode()
+	}
 	// 模型路由：用户在管理台配置「源站点 + 源模型名 → 目标站点 + 目标模型名」。
 	//
 	// 只在逻辑请求入口匹配一次；递归重试继续使用已选定的目标。
@@ -550,6 +604,13 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if selection.BypassedCooldown {
 		s.Log.Debug("pool select bypassed cooldown (all accounts cooling)", "accountId", account.ID, "cooldownUntil", account.CooldownUntil)
 	}
+	// system 侧快照：只算一次指纹（超长 system 也不重复哈希），并回填给调用方。
+	att := systemAttempt{started: time.Now(), keepForm: s.keepSystemFor(opts), mode: opts.systemMode}
+	att.fp, att.size = systemPromptDigest(opts.Messages)
+	if opts.SystemOutcome != nil {
+		opts.SystemOutcome.Form = formName(att.keepForm)
+		opts.SystemOutcome.Fingerprint = att.fp
+	}
 	chatOpts := s.chatOptionsFromAccount(account, opts)
 	// 同会话复用上游会话 ID；仅在有账号钉（pinKey 非空）时注入，与钉号生命周期一致。
 	if pinKey != "" {
@@ -572,7 +633,27 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		// 已经发给客户端的正文或工具不能撤回，任何错误都不得再换号或刷新后重放。
 		if result.Turn.Delivered {
 			_ = s.Pool.MarkResult(selection, false, err.Error(), 0)
+			s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 			return CompleteResult{Result: result, Account: accounts.SummarizeAccount(account), AccountID: account.ID}, err
+		}
+		// system 原样优先（auto 模式）：上游以 11128 拒收时，把 system
+		// 折叠进 <client_instructions> 用**同一账号**重试一次。折叠后不再命中竞品
+		// CLI 指纹扫描；每个请求最多降级一次（FoldedRetry 防死循环）。
+		// 这是内容策略拒收，不是账号问题：不罚号、不换号。
+		// keep 模式不降级 —— 用户显式要求「永远原样」，被拦截就如实报错。
+		if att.keepForm && att.mode == config.SystemPromptModeAuto &&
+			!opts.FoldedRetry && isChannelBlocked(err) {
+			s.recordSystemPromptAttempt(opts, account, site, att, err, true)
+			if opts.SystemOutcome != nil {
+				opts.SystemOutcome.Degraded = true
+			}
+			s.Log.Warn("system prompt blocked upstream (11128); retrying folded",
+				"accountId", account.ID, "site", site, "model", opts.Model,
+				"fingerprint", att.fp, "systemLen", att.size)
+			opts.FoldedRetry = true
+			opts.RetryDepth++
+			opts.AccountID = account.ID
+			return s.CompleteFromPool(ctx, opts)
 		}
 		selection.ModelRateLimited = billing.IsModelRateLimitError(err)
 		// 传输层失败（建连 / 首内容前断流）⇒ 用**同一账号**重连一次。
@@ -642,13 +723,22 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				return s.CompleteFromPool(ctx, opts)
 			}
 		}
-		_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+		// 11128 / unapproved channel 是内容策略拒收（system 里的竞品 CLI 指纹），
+		// 不是账号问题。auto 分支已明确「不罚号」；keep 模式不降级时也一样，
+		// 否则排障模式反而会把账号打进 failureCooldown 的 5 分钟冷却，污染号池。
+		cooldown := time.Duration(0)
+		if !isChannelBlocked(err) {
+			cooldown = s.resolveFailureCooldown(ctx, account, err)
+		}
+		_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
+		s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 		return CompleteResult{}, err
 	}
 	_ = s.Pool.MarkResult(selection, true, "", 0)
 	if pinKey != "" {
 		s.Pins.Remember(pinKey, account.ID)
 	}
+	s.recordSystemPromptAttempt(opts, account, site, att, nil, false)
 	return CompleteResult{
 		Result:    result,
 		Account:   accounts.SummarizeAccount(account),
@@ -1529,6 +1619,8 @@ func (s *Service) Status() map[string]any {
 		"upstream":    upstream,
 		"watch":       s.WatchStatus(),
 		"concurrency": s.Concurrency.Summary(),
+		// system 提示词策略：auto / keep / fold（管理台 06 面板显示的就是它）。
+		"systemPromptMode": s.systemPromptMode(),
 		"config": map[string]any{
 			"host":                host,
 			"port":                port,

@@ -43,6 +43,13 @@ type Entry struct {
 	Credit           *float64 `json:"credit,omitempty"`
 
 	DurationMs int64 `json:"durationMs"`
+
+	// SystemForm 是本次请求的 system 形态（keep / fold）；空 = 旧数据或未观测。
+	SystemForm string `json:"systemForm,omitempty"`
+	// SystemFp 是 system 的 SHA-256 前 8 位指纹。绝不存原文。
+	SystemFp string `json:"systemFp,omitempty"`
+	// SystemDegraded 表示本次请求因 11128 从 keep 降级为 fold。
+	SystemDegraded bool `json:"systemDegraded,omitempty"`
 }
 
 // Summary rolls up token / credit totals for a time window.

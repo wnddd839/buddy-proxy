@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.09-v0.7.4"
+const UIRevision = "2026.11.15-v0.7.4"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -379,6 +379,19 @@ pre{
 .usage-filters{display:flex;flex-wrap:wrap;gap:16px 24px;margin:16px 0 0;align-items:end}
 .usage-filters label{display:flex;flex-direction:column;gap:6px;font-size:var(--fs-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40)}
 .usage-filters select{width:220px;min-width:0;font-size:var(--fs-sm);text-transform:none;letter-spacing:0}
+/* 06 System Prompt：右侧的「只看问题 / 日期」小控件 */
+.sp-check{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40)}
+.sp-check select{min-width:0;font-size:var(--fs-sm);text-transform:none;letter-spacing:0}
+.sp-check input[type="checkbox"]{margin:0}
+/* 三档模式说明：对象、改写前后示例、逐档取舍 */
+#spModeHint{max-width:92ch;line-height:1.7}
+#spModeHint p{margin:10px 0 0}
+#spModeHint ul{margin:8px 0 0;padding-left:22px}
+#spModeHint li{margin:6px 0}
+#spModeHint pre{max-height:none;background:var(--fg-04);border:1px solid var(--fg-10);border-radius:4px;margin:10px 0 0;padding:12px 14px}
+/* 06 System Prompt：降级重放两条事件的视觉关联（独立 class，不改全局 .badge/.metrics/.log-table） */
+.log-table tr.sp-replay-row td{border-left:2px solid var(--fg-20)}
+.log-table tr.sp-replay-row td:first-child{border-left:3px solid var(--fg-40)}
 .usage-models{margin-top:16px;overflow:auto;border:1px solid var(--fg-10)}
 .usage-models table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
 .usage-models th,.usage-models td{padding:8px 12px;border-bottom:1px solid var(--fg-10);text-align:left}
@@ -593,8 +606,11 @@ button:disabled{opacity:.4;cursor:not-allowed}
     <button type="button" class="tab-link" data-tab="tab-models">
       <span class="tab-idx">05 /</span> 模型与路由
     </button>
+    <button type="button" class="tab-link" data-tab="tab-system-prompt">
+      <span class="tab-idx">06 /</span> System Prompt
+    </button>
     <button type="button" class="tab-link" data-tab="tab-usage">
-      <span class="tab-idx">06 /</span> 用量与明细
+      <span class="tab-idx">07 /</span> 用量与明细
     </button>
   </nav>
 
@@ -608,8 +624,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="eyebrow">Gateway Console · Overview</div>
           <h1>账号、模型与网关状态</h1>
           <p class="lede">监控 OAuth 登录、账号池状态与请求健康度。</p>
-        </div><button class="primary" id="btnRefresh" type="button" title="重新拉取每个号的余额；有恢复证据时解除额度冷却，真实限流保持不变">刷新状态</button></div>
-        <div class="metrics">
+        </div><button class="primary" id="btnRefresh" type="button" title="重新拉取每个号的余额；有恢复证据时解除额度冷却，真实限流保持不变">刷新状态</button></div>        <div class="metrics">
           <div class="metric"><div class="k">登录态</div><div class="v sm" id="mLogin">未登录</div></div>
           <div class="metric"><div class="k">Credits 余额</div><div class="v sm" id="mCredits">—</div></div>
           <div class="metric"><div class="k">启用账号</div><div class="v" id="mEnabled">0</div></div>
@@ -1058,7 +1073,139 @@ button:disabled{opacity:.4;cursor:not-allowed}
   </div>
 
   <!-- ========================================================
-       TAB 05: 用量与明细
+       TAB 06: System Prompt（开发者面板）
+       ======================================================== -->
+  <div class="tab-panel" id="tab-system-prompt">
+    <section class="panel">
+      <div class="panel-inner">
+        <div class="eyebrow">System Prompt · Developer Panel</div>
+        <h1>system 提示词处理</h1>
+        <p class="lede">
+          三档模式热切换，并实时看每次请求的 system 形态。事件只记 SHA-256 前 8 位指纹与字节数，
+          <strong>不保存 system / user 原文</strong>。历史按天写入 <code>proxy-systemprompt-YYYYMMDD.jsonl</code>，保留 7 天。
+        </p>
+
+        <div class="section-head" style="margin-top:20px;border:none;padding:0">
+          <div class="seg" id="spModeSeg" role="group" aria-label="system 提示词处理模式">
+            <button type="button" data-mode="auto" class="active">auto · 先直传，被拒再改写</button>
+            <button type="button" data-mode="keep">keep · 直传 system</button>
+            <button type="button" data-mode="fold">fold · 改写 system</button>
+          </div>
+          <div class="actions">
+            <label class="sp-check" title="含传输失败、被拦截、降级、其它错误，不是只看失败"><input type="checkbox" id="spOnlyProblems"/> 只看问题</label>
+            <span class="sp-check" style="text-transform:none;letter-spacing:0" title="含传输失败、被拦截、降级、其它错误">含传输失败、被拦截、降级、其它错误</span>
+            <button class="ghost" id="btnRefreshSp" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="checkin-hint" id="spModeHint">
+          <p>客户端（Claude Code / opencode 等）发来的请求里，有一条 <code>system</code> 消息，写的是「你是谁、按什么规矩回答」。本开关只决定<strong>网关转发给上游时，这一条消息怎么带过去</strong> —— 跟客户端自己看到什么无关，请求体里的工具定义、空消息、图片等所有消息三档都会照常规整。</p>
+          <p>以 <code>system: "You are Claude Code..."</code> 为例，转给上游时：</p>
+          <pre>直传（keep / auto 首次）
+  [ { role: system, content: "You are Claude Code..." },
+    { role: user,   content: "帮我写个函数" } ]
+
+改写（fold / auto 被拒后重试）
+  [ { role: system, content: "You are a helpful coding assistant." },
+    { role: user,   content: "&lt;client_instructions&gt;\nYou are Claude Code...\n&lt;/client_instructions&gt;\n\n帮我写个函数" } ]</pre>
+          <p>「直传」system 优先级最高，但上游会拒收某个特定的 Claude Code 整句人设；「改写」把人设降级成对话里的建议，换来绝不撞拦截。</p>
+          <ul>
+            <li><strong>auto（默认）</strong>：先直传；万一被上游拒收（错误码 11128），自动改成「改写」再发一次，请求不会失败。日常用这个。</li>
+            <li><strong>keep</strong>：只直传，绝不改写；上游拒收就直接报错，不重试。想严格照 system 执行，或想看真实失败原因时用。</li>
+            <li><strong>fold</strong>：每次都改写，从不直传。批量/自动化、或不在意 system 优先级时用。</li>
+          </ul>
+          <p>技术名 <code>auto / keep / fold</code> 用于 API 与日志；面板「形态」列里的 <code>keep</code>=直传、<code>fold</code>=改写，与此对应。</p>
+          <p><strong>auto 降级会产生两条事件</strong>（被拦截的 <code>keep</code> 失败 + 折叠重放成功的 <code>fold</code>），用同一请求 ID 关联、属于同一次请求，别当成两个请求；面板会用左侧浅色边框把这两行串起来，形态列标 <code>(被拦截)</code> / <code>(降级重放)</code>。</p>
+        </div>
+
+        <p class="checkin-hint" style="margin:16px 0 0">指标口径：优先按今天落盘事件统计（重启不清零）；若后端返回 <code>statsScope="memory"</code> 则为进程内近 24h（重启会清零）。当前口径：<strong id="spStatsScope">加载中…</strong></p>
+        <div class="metrics">
+          <div class="metric"><div class="k">近 24h 事件</div><div class="v" id="spTotal">0</div></div>
+          <div class="metric"><div class="k">keep</div><div class="v" id="spKeep">0</div></div>
+          <div class="metric"><div class="k">fold</div><div class="v" id="spFold">0</div></div>
+          <div class="metric" title="degraded:true 的事件数，即被 11128 拦截的失败尝试次数"><div class="k">降级/被拦截次数</div><div class="v" id="spDegraded">0</div></div>
+          <div class="metric"><div class="k">被拦截</div><div class="v" id="spBlocked">0</div></div>
+          <div class="metric"><div class="k">失败</div><div class="v" id="spFailed">0</div></div>
+          <div class="metric"><div class="k">降级重放成功</div><div class="v" id="spRecovered">—</div></div>
+        </div>
+
+        <div class="section-head">
+          <div>
+            <h2>实时事件流</h2>
+            <p>内存保留最近 500 条，首屏回 200 条；每 5 秒自动刷新，页面切到后台时暂停。</p>
+          </div>
+        </div>
+        <div class="log-table-wrap">
+          <div class="log-table-window">
+            <table class="log-table" aria-label="system 提示词实时事件">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>请求 ID</th>
+                  <th>模式</th>
+                  <th title="keep=直传 system；fold=改写 system；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
+                  <th>指纹</th>
+                  <th>system 字节</th>
+                  <th>账号</th>
+                  <th>模型</th>
+                  <th>耗时</th>
+                  <th>结果</th>
+                </tr>
+              </thead>
+              <tbody id="spRealtimeRows">
+                <tr><td colspan="10" class="empty" style="border:none">加载中…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <div>
+            <h2>历史回溯</h2>
+            <p>按天读取已落盘的事件。日期列表来自磁盘上现存的文件。</p>
+          </div>
+          <div class="actions">
+            <label class="sp-check">日期 <select id="spDateSelect" aria-label="选择日期"></select></label>
+            <button type="button" class="ghost" id="btnSpPrev" disabled>上一页</button>
+            <button type="button" class="ghost" id="btnSpNext" disabled>下一页</button>
+          </div>
+        </div>
+        <div class="log-table-wrap">
+          <div class="log-table-window">
+            <table class="log-table" aria-label="system 提示词历史事件">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>请求 ID</th>
+                  <th>模式</th>
+                  <th title="keep=直传 system；fold=改写 system；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
+                  <th>指纹</th>
+                  <th>system 字节</th>
+                  <th>账号</th>
+                  <th>模型</th>
+                  <th>耗时</th>
+                  <th>结果</th>
+                </tr>
+              </thead>
+              <tbody id="spHistoryRows">
+                <tr><td colspan="10" class="empty" style="border:none">选择日期后加载</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="log-pager">
+            <span id="spPagerMeta">—</span>
+          </div>
+        </div>
+
+        <p class="checkin-hint" id="spPrivacyHint">
+          隐私自检：<code>sudo grep -c "You are Claude Code" /opt/buddy-proxy/proxy-systemprompt-*.jsonl</code> 应恒为
+          <code>0</code>。事件里的指纹无法反推原文，只用于判断「同一个 system 出现了几次」。
+        </p>
+      </div>
+    </section>
+  </div>
+
+  <!-- ========================================================
+       TAB 07: 用量与明细
        ======================================================== -->
   <div class="tab-panel" id="tab-usage">
     <section class="panel">
@@ -1117,6 +1264,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th>上游 Request</th>
                   <th>会话</th>
                   <th>模型</th>
+                  <th>System</th>
                   <th>Token 总量</th>
                   <th>缓存命中</th>
                   <th>Credit</th>
@@ -1126,7 +1274,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                 </tr>
               </thead>
               <tbody id="usageRows">
-                <tr><td colspan="11" class="empty" style="border:none">加载中…</td></tr>
+                <tr><td colspan="12" class="empty" style="border:none">加载中…</td></tr>
               </tbody>
             </table>
           </div>
@@ -1204,7 +1352,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
 const $ = (id) => document.getElementById(id);
 
 /* Six chapters, with legacy anchors retained for saved links and OAuth callbacks. */
-const chapterHashes = {'tab-overview':'#overview','tab-pool':'#accounts','tab-checkin':'#checkin','tab-client':'#client-config','tab-models':'#models','tab-usage':'#usage'};
+const chapterHashes = {'tab-overview':'#overview','tab-pool':'#accounts','tab-checkin':'#checkin','tab-client':'#client-config','tab-models':'#models','tab-system-prompt':'#system-prompt','tab-usage':'#usage'};
 function switchTab(tabId, updateHash=true){
   if (!chapterHashes[tabId]) tabId = 'tab-overview';
   document.querySelectorAll('.tab-link').forEach(function(b){
@@ -1236,12 +1384,14 @@ function openChapterHash(){
   if (hash === '#tab-checkin') tab = 'tab-checkin';
   switchTab(tab || 'tab-overview', false);
   if (tab === 'tab-usage') refreshUsage().catch(function(e){ showToast(e.message,'error'); });
+  if (tab === 'tab-system-prompt') refreshSystemPrompt().then(function(){ return refreshSpHistory(); }).catch(function(e){ showToast(e.message,'error'); });
   if (hash === '#codebuddy' || hash === '#quota-floor') requestAnimationFrame(function(){ $(hash.slice(1)).scrollIntoView(); });
 }
 document.querySelectorAll('.tab-link').forEach(function(btn){
   btn.addEventListener('click', function(){
     switchTab(btn.getAttribute('data-tab'));
     if (btn.getAttribute('data-tab') === 'tab-usage') refreshUsage().catch(function(e){ showToast(e.message,'error'); });
+    if (btn.getAttribute('data-tab') === 'tab-system-prompt') refreshSystemPrompt().then(function(){ return refreshSpHistory(); }).catch(function(e){ showToast(e.message,'error'); });
   });
   btn.addEventListener('keydown',function(e){
     const tabs = Array.from(document.querySelectorAll('.tab-link'));
@@ -1669,8 +1819,7 @@ function paintModelAvailability(){
     const sites = String(btn.getAttribute('data-sites') || '').split(',').filter(Boolean);
     let ok = 0, cool = 0, blocked = 0;
     (lastAccounts || []).forEach(function(a){
-      if (!a.enabled || !a.hasCredentials) return;
-      // 只在某站上架的模型，不把另一区的号算成可用。
+      if (!a.enabled || !a.hasCredentials) return;      // 只在某站上架的模型，不把另一区的号算成可用。
       if (sites.length && sites.indexOf(normalizeSite(a.site)) < 0) return;
       const until = (a.modelCooldowns || {})[id] || 0;
       const accountCool = (a.cooldownUntil || 0) > now;
@@ -1678,8 +1827,7 @@ function paintModelAvailability(){
       const fresh = a.quotaCheckedAt > 0 && now - a.quotaCheckedAt <= 6*3600000;
       const quotaBlocked = !a.quotaUnlimited && a.quotaRemaining != null && Number(a.quotaRemaining) <= 0 && a.quotaResetAt > now && (!a.quotaCheckedAt || fresh);
       const belowFloor = !a.quotaUnlimited && a.quotaRemaining != null && fresh && quotaFloorSaved > 0 && Number(a.quotaRemaining) < quotaFloorSaved;
-      if (quotaBlocked || belowFloor) blocked++;
-      else ok++;
+      if (quotaBlocked || belowFloor) blocked++;      else ok++;
     });
     let tag = btn.querySelector('.model-avail');
     if (!tag) {
@@ -1687,16 +1835,14 @@ function paintModelAvailability(){
       tag.className = 'badge model-avail';
       btn.appendChild(tag);
     }
-    if (!ok && !cool && !blocked) {
-      tag.className = 'badge model-avail muted';
+    if (!ok && !cool && !blocked) {      tag.className = 'badge model-avail muted';
       tag.textContent = '无号可用';
       tag.title = '当前号池没有启用账号';
       return;
     }
     tag.className = 'badge model-avail ' + (ok === 0 ? 'bad' : (cool ? 'warn' : 'on'));
     tag.textContent = '可用 ' + ok + (cool ? ' · 冷却 ' + cool : '') + (blocked ? ' · 额度不足 ' + blocked : '');
-    tag.title = '当前快照：可用 ' + ok + ' 个号' + (cool ? '，' + cool + ' 个号仍在冷却（账号级或该模型级）' : '') + (blocked ? '，' + blocked + ' 个号额度耗尽或低于积分下限' : '') + '；不保证实时可用或支持该模型';
-  });
+    tag.title = '当前快照：可用 ' + ok + ' 个号' + (cool ? '，' + cool + ' 个号仍在冷却（账号级或该模型级）' : '') + (blocked ? '，' + blocked + ' 个号额度耗尽或低于积分下限' : '') + '；不保证实时可用或支持该模型';  });
 }
 
 function fillTestModelSelect(list){
@@ -1775,6 +1921,16 @@ function rowHitRate(row){
   if (p <= 0) return -1;
   return (row.cachedTokens || 0) / p * 100;
 }
+// systemCell 渲染 07 用量明细的 System 列。
+// 旧条目没有 systemForm（omitempty），显示 — 而不是假装 fold。
+function systemCell(row){
+  const form = row.systemForm || '';
+  if (!form) return '<span style="color:var(--fg-40)">—</span>';
+  const label = row.systemDegraded ? (form + '(降级)') : form;
+  const cls = row.systemDegraded ? 'warn' : (form === 'keep' ? 'on' : 'muted');
+  const title = row.systemFp ? (' title="指纹 ' + escapeHtml(row.systemFp) + '"') : '';
+  return '<span class="badge ' + cls + '"' + title + '>' + escapeHtml(label) + '</span>';
+}
 function paintUsageChart(series, summary){
   const host = $('usageChart');
   if (!host) return;
@@ -1843,7 +1999,7 @@ function paintUsage(data){
   const tbody = $('usageRows');
   if (!tbody) return;
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="11" style="color:var(--fg-40);padding:24px;text-align:center">暂无记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" style="color:var(--fg-40);padding:24px;text-align:center">暂无记录</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(function(row){
@@ -1863,6 +2019,7 @@ function paintUsage(data){
       '<td class="mono">' + (upReq ? '<button type="button" class="idbtn" data-copy="' + escapeHtml(upReq) + '">' + escapeHtml(shortId(upReq)) + '</button>' : '—') + '</td>' +
       '<td>' + session + '</td>' +
       '<td class="mono">' + escapeHtml(row.model || '—') + '</td>' +
+      '<td class="mono">' + systemCell(row) + '</td>' +
       '<td class="mono">' + String(totalTok) + '</td>' +
       '<td class="mono">' + escapeHtml(hit) + '</td>' +
       '<td class="mono">' + escapeHtml(credit) + '</td>' +
@@ -1891,6 +2048,174 @@ function paintUsagePager(data){
   if (prev) prev.disabled = usagePage <= 1;
   if (next) next.disabled = usagePage >= pages || total === 0;
 }
+/* ============================================================
+   06 System Prompt — 开发者面板
+   三档模式热切换 + 实时事件流 + 按天历史。
+   事件只有指纹与字节数，绝不发明文。
+   ============================================================ */
+let spMode = 'auto';
+let spHistory = {date:'', page:1, size:100, total:0, hasMore:false};
+
+function spResultLabel(e){
+  // 先判定失败：auto 降级会产生两条事件 —— 被拦截的那次是
+  // {degraded:true, status:400, errorCode:'11128', form:'keep'}（失败），
+  // 折叠后重放成功的是 {degraded:false, status:200, form:'fold'}。
+  // 任何失败事件都不得显示「降级成功」。
+  if (e.errorCode === '11128') return '<span class="badge bad" title="已自动折叠重放">被拦截 · 11128</span>';
+  if (e.status === 0) return '<span class="badge off" title="传输层失败：建连或首内容前断流">传输失败</span>';
+  if (e.status >= 400) return '<span class="badge off">失败 · ' + escapeHtml(String(e.status)) + '</span>';
+  if (e.errorCode) return '<span class="badge off">' + escapeHtml(e.errorCode) + '</span>';
+  // 「降级成功」只能由后端 recovered:true 判定：它专指 11128 被拦截后的重放成功。
+  // fold 模式下每一次正常请求都是 form=fold/status=200/mode=fold，绝不能误标。
+  // 追加 mode==='auto' 保险：后端字段缺失时 fold 模式也不会误报。
+  if (e.recovered === true && e.mode === 'auto' && e.status >= 200 && e.status < 400) {
+    return '<span class="badge warn" title="11128 被拦截后自动折叠重试成功">降级成功</span>';
+  }
+  return '<span class="badge on">OK</span>';
+}
+function spRowsHtml(rows, emptyText){
+  if (!rows || !rows.length){
+    return '<tr><td colspan="10" style="color:var(--fg-40);padding:24px;text-align:center">' + escapeHtml(emptyText) + '</td></tr>';
+  }
+  return rows.map(function(e){
+    const id = e.requestId || '';
+    const fp = e.fingerprint ? escapeHtml(e.fingerprint) : '<span style="color:var(--fg-40)">—</span>';
+    const len = e.systemLen ? String(e.systemLen) : '—';
+    const dur = (e.durationMs != null) ? (e.durationMs + 'ms') : '—';
+    const formBadge = (e.form === 'keep') ? 'on' : 'muted';
+    // 一次 11128 降级 = 两条事件（同一 requestId）：被拦截(keep) + 重放成功(fold)。
+    // 用形态徽标括号说明 + 行 class 把两行在视觉上串起来，避免被当成两个独立请求。
+    let formText = e.form || '—';
+    if (e.recovered === true) formText = 'fold(降级重放)';
+    else if (e.degraded === true) formText = 'keep(被拦截)';
+    const replay = (e.recovered === true || e.degraded === true) ? ' class="sp-replay-row"' : '';
+    const resultTitle = (e.recovered === true)
+      ? '<span title="与上方同 requestId 的被拦截事件是同一次请求">' + spResultLabel(e) + '</span>'
+      : spResultLabel(e);
+    return '<tr' + replay + '>' +
+      '<td class="mono">' + escapeHtml(formatTime(e.at)) + '</td>' +
+      '<td class="mono">' + (id ? '<button type="button" class="idbtn" data-copy="' + escapeHtml(id) + '">' + escapeHtml(shortId(id)) + '</button>' : '—') + '</td>' +
+      '<td class="mono">' + escapeHtml(e.mode || '—') + '</td>' +
+      '<td><span class="badge ' + formBadge + '">' + escapeHtml(formText) + '</span></td>' +
+      '<td class="mono">' + fp + '</td>' +
+      '<td class="mono">' + len + '</td>' +
+      '<td>' + escapeHtml(e.accountId ? shortId(e.accountId) : '—') + '</td>' +
+      '<td class="mono">' + escapeHtml(e.model || '—') + '</td>' +
+      '<td class="mono">' + dur + '</td>' +
+      '<td>' + resultTitle + '</td>' +
+      '</tr>';
+  }).join('');
+}
+function paintSpMode(){
+  const seg = $('spModeSeg');
+  if (seg) seg.querySelectorAll('button[data-mode]').forEach(function(b){
+    b.classList.toggle('active', b.getAttribute('data-mode') === spMode);
+  });
+}
+function fillSpDates(dates){
+  const sel = $('spDateSelect');
+  if (!sel) return;
+  const keep = spHistory.date || ((dates && dates.length) ? dates[dates.length - 1] : '');
+  const list = (dates || []).slice();
+  if (keep && list.indexOf(keep) < 0) list.push(keep);
+  if (!list.length){
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    // 后端 eventDate 用 time.Local；本地日期兜底不能用 toISOString()（UTC）。
+    list.push(String(now.getFullYear()) + mm + dd);
+  }
+  list.sort();
+  sel.innerHTML = list.map(function(d){
+    const pretty = d.length === 8 ? (d.slice(0,4) + '-' + d.slice(4,6) + '-' + d.slice(6,8)) : d;
+    return '<option value="' + escapeHtml(d) + '"' + (d === keep ? ' selected' : '') + '>' + escapeHtml(pretty) + '</option>';
+  }).join('');
+}
+async function refreshSystemPrompt(){
+  const data = await api('/direct-admin/api/system-prompt');
+  spMode = data.mode || 'auto';
+  paintSpMode();
+  const stats = data.stats || {};
+  $('spTotal').textContent = String(stats.total || 0);
+  $('spKeep').textContent = String(stats.keep || 0);
+  $('spFold').textContent = String(stats.fold || 0);
+  $('spDegraded').textContent = String(stats.degraded || 0);
+  $('spBlocked').textContent = String(stats.blocked || 0);
+  $('spFailed').textContent = String(stats.failed || 0);
+  // 后端暂未返回 recovered 时显示「—」而不是 0，避免误导成「0 次成功」。
+  $('spRecovered').textContent = (stats.recovered == null) ? '—' : String(stats.recovered);
+  const scope = $('spStatsScope');
+  if (scope) scope.textContent = (data.statsScope === 'memory')
+    ? '进程内近 24h（重启会清零）'
+    : (data.statsScope ? ('按 ' + data.statsScope + ' 落盘事件统计，重启不清零') : '按今天落盘事件统计（重启不清零）');
+  const tbody = $('spRealtimeRows');
+  if (tbody) tbody.innerHTML = spRowsHtml(data.recent || [], '暂无事件（只有带 system 的请求才会记录）');
+  if (!spHistory.date) spHistory.date = (data.dates && data.dates.length) ? data.dates[data.dates.length - 1] : '';
+  fillSpDates(data.dates || []);
+  return data;
+}
+async function refreshSpHistory(){
+  const sel = $('spDateSelect');
+  if (sel && sel.value) spHistory.date = sel.value;
+  if (!spHistory.date) return;
+  let url = '/direct-admin/api/system-prompt/events?date=' + encodeURIComponent(spHistory.date) +
+    '&page=' + spHistory.page + '&size=' + spHistory.size;
+  if ($('spOnlyProblems') && $('spOnlyProblems').checked) url += '&onlyProblems=1';
+  const data = await api(url);
+  spHistory.total = data.total || 0;
+  spHistory.hasMore = !!data.hasMore;
+  const tbody = $('spHistoryRows');
+  if (tbody) tbody.innerHTML = spRowsHtml(data.events || [], '这一天没有事件');
+  const meta = $('spPagerMeta');
+  if (meta){
+    const from = spHistory.total === 0 ? 0 : ((spHistory.page - 1) * spHistory.size + 1);
+    const to = Math.min(spHistory.page * spHistory.size, spHistory.total);
+    meta.textContent = spHistory.total + ' 条 · ' + from + '–' + to + ' · 第 ' + spHistory.page + ' 页 · ' + (data.date || spHistory.date);
+  }
+  if ($('btnSpPrev')) $('btnSpPrev').disabled = spHistory.page <= 1;
+  if ($('btnSpNext')) $('btnSpNext').disabled = !spHistory.hasMore;
+  return data;
+}
+async function spSwitchMode(mode){
+  if (mode === spMode) return;
+  const data = await api('/direct-admin/api/system-prompt', {method:'POST', body: JSON.stringify({mode: mode})});
+  spMode = data.mode || mode;
+  paintSpMode();
+  showToast('system 模式已切换：' + spMode);
+  await refreshSystemPrompt();
+}
+function spTick(){
+  // 页面切到后台就不再轮询：省手机流量，也避免无意义的请求淹没真实流量。
+  if (document.visibilityState === 'hidden') return;
+  const panel = $('tab-system-prompt');
+  if (!panel || !panel.classList.contains('active')) return;
+  refreshSystemPrompt().catch(function(){});
+  refreshSpHistory().catch(function(){});
+}
+document.querySelectorAll('#spModeSeg button[data-mode]').forEach(function(b){
+  b.addEventListener('click', function(){
+    spSwitchMode(b.getAttribute('data-mode')).catch(function(e){ showToast(e.message,'error'); });
+  });
+});
+if ($('btnRefreshSp')) $('btnRefreshSp').addEventListener('click', function(){
+  refreshSystemPrompt().then(function(){ return refreshSpHistory(); }).catch(function(e){ showToast(e.message,'error'); });
+});
+if ($('spOnlyProblems')) $('spOnlyProblems').addEventListener('change', function(){
+  spHistory.page = 1;
+  refreshSpHistory().catch(function(e){ showToast(e.message,'error'); });
+});
+if ($('spDateSelect')) $('spDateSelect').addEventListener('change', function(){
+  spHistory.page = 1;
+  refreshSpHistory().catch(function(e){ showToast(e.message,'error'); });
+});
+if ($('btnSpPrev')) $('btnSpPrev').addEventListener('click', function(){
+  if (spHistory.page > 1){ spHistory.page--; refreshSpHistory().catch(function(e){ showToast(e.message,'error'); }); }
+});
+if ($('btnSpNext')) $('btnSpNext').addEventListener('click', function(){
+  if (spHistory.hasMore){ spHistory.page++; refreshSpHistory().catch(function(e){ showToast(e.message,'error'); }); }
+});
+setInterval(spTick, 5000);
+
 async function refreshUsage(){
   const offset = (usagePage - 1) * usagePageSize;
   let url = '/direct-admin/api/usage?range=' + encodeURIComponent(usageRange) +

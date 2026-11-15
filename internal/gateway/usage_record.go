@@ -28,6 +28,12 @@ type ChatRecordInput struct {
 	Trace              provider.RequestTrace
 	Account            accounts.Summary
 	AccountID          string
+
+	// SystemForm / SystemFp / SystemDegraded 记录本次请求实际使用的 system 形态。
+	// SystemFp 只是 SHA-256 前 8 位，绝不存 system 原文。
+	SystemForm     string
+	SystemFp       string
+	SystemDegraded bool
 }
 
 // RecordChat appends a usage journal row (persisted via usage journal flush).
@@ -72,6 +78,9 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		CachedTokens:                  int64(input.Usage.CachedTokens()),
 		Credit:                        input.Usage.Credit,
 		DurationMs:                    duration,
+		SystemForm:                    input.SystemForm,
+		SystemFp:                      input.SystemFp,
+		SystemDegraded:                input.SystemDegraded,
 	})
 }
 

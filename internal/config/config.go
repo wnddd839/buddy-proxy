@@ -26,14 +26,26 @@ const (
 	DefaultOAuthSessionTTL     = 15 * time.Minute
 	DefaultHTTPTimeout         = 120 * time.Second
 	DefaultServerIdleTimeout   = 120 * time.Second
-	DefaultMaxBodyMB           = 64
+	// StallTimeout 是上游流「连续无字节」看门狗：首字节前用它，命中后切到
+	// StallTimeoutAfterFirstByte。两者都远大于正常思考间隔，避免长静默被误杀。
+	// 默认值从 3 分钟提到 10 分钟（用户实测有 5~6 分钟的长思考回合）。
+	DefaultStallTimeout               = 10 * time.Minute
+	DefaultStallTimeoutAfterFirstByte = 10 * time.Minute
+	DefaultMaxBodyMB                  = 64
 	// 签到失败重试：10 分钟后重试一次。签到失败多是上游瞬时抖动，
 	// 试太多次意义有限；间隔太短则可能撞上同一波故障。
 	DefaultCheckinRetryInterval = 10 * time.Minute
 	DefaultCheckinRetryMax      = 1
-	DefaultIdleConnTimeout      = 90 * time.Second
-	DefaultMaxIdleConns         = 100
-	DefaultMaxIdleConnsPerHost  = 20
+
+	// SystemPromptMode* 控制 system 提示词的处理策略。
+	// auto = 原样优先，命中 11128 时自动降级 fold；keep = 永远原样；fold = 永远折叠。
+	SystemPromptModeAuto = "auto"
+	SystemPromptModeKeep = "keep"
+	SystemPromptModeFold = "fold"
+
+	DefaultIdleConnTimeout     = 90 * time.Second
+	DefaultMaxIdleConns        = 100
+	DefaultMaxIdleConnsPerHost = 20
 )
 
 // APIKeyBinding 将网关 Key 绑定到区域或具体账号；账号绑定的区域由账号推导。
@@ -70,15 +82,20 @@ type Config struct {
 	// 为空则沿用默认客户端（国内站路径不变）。
 	// 存在的理由：www.codebuddy.ai 从中国大陆直连会被 TLS 握手超时拦掉，
 	// 而 OAuth 的 auth/state 与 auth/token 两个调用都走这个客户端。
-	OAuthProxy          string
-	HTTPTimeout         time.Duration
-	ServerIdleTimeout   time.Duration
-	ShutdownGrace       time.Duration
-	MaxBodyMB           int
-	MaxIdleConns        int
-	MaxIdleConnsPerHost int
-	IdleConnTimeout     time.Duration
-	DefaultModels       []string
+	OAuthProxy  string
+	HTTPTimeout time.Duration
+	// StallTimeout 首字节前的「连续无字节」阈值；0 表示关闭看门狗（仅测试用）。
+	StallTimeout time.Duration
+	// StallTimeoutAfterFirstByte 收到任意 SSE 增量后的阈值（含 thinking/心跳）。
+	// 真正的「上游假活」几乎都发生在首字节之前，之后放宽以免掐断长思考。
+	StallTimeoutAfterFirstByte time.Duration
+	ServerIdleTimeout          time.Duration
+	ShutdownGrace              time.Duration
+	MaxBodyMB                  int
+	MaxIdleConns               int
+	MaxIdleConnsPerHost        int
+	IdleConnTimeout            time.Duration
+	DefaultModels              []string
 
 	// Watch 是进程内波动监测配置（见 internal/watch）。
 	Watch watch.Config
@@ -91,6 +108,8 @@ type Config struct {
 	CheckinRetryInterval time.Duration
 	// CheckinRetryMax 是当天最多重试几次（不含首次尝试，默认 1）。
 	CheckinRetryMax int
+	// SystemPromptMode 是 system 提示词处理策略，取值 auto / keep / fold。
+	SystemPromptMode string
 	// QuotaFloorCredits 是账号积分低于该值时不再参与选号（0 = 不启用）。
 	// 数据源是缓存的 billing credits（QuotaRemaining），与配额耗尽同一口径。
 	QuotaFloorCredits float64
@@ -121,6 +140,8 @@ func Load() Config {
 		OAuthSessionTTL:            DefaultOAuthSessionTTL,
 		OAuthProxy:                 strings.TrimSpace(firstEnv("CODEBUDDY_PROXY_OAUTH_PROXY")),
 		HTTPTimeout:                DefaultHTTPTimeout,
+		StallTimeout:               envDurationPositive("CODEBUDDY_PROXY_STALL_TIMEOUT_MS", DefaultStallTimeout),
+		StallTimeoutAfterFirstByte: envDurationPositive("CODEBUDDY_PROXY_STALL_AFTER_FIRST_BYTE_MS", DefaultStallTimeoutAfterFirstByte),
 		ServerIdleTimeout:          envDuration("CODEBUDDY_PROXY_SERVER_IDLE_TIMEOUT_MS", "", DefaultServerIdleTimeout),
 		ShutdownGrace:              envDuration("CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS", "", DefaultShutdownGrace),
 		MaxBodyMB:                  envInt("CODEBUDDY_PROXY_MAX_BODY_MB", "", DefaultMaxBodyMB),
@@ -134,6 +155,7 @@ func Load() Config {
 		CheckinRetryInterval:       envDuration("CODEBUDDY_PROXY_CHECKIN_RETRY_INTERVAL_MS", "", DefaultCheckinRetryInterval),
 		CheckinRetryMax:            envInt("CODEBUDDY_PROXY_CHECKIN_RETRY_MAX", "", DefaultCheckinRetryMax),
 		QuotaFloorCredits:          envFloat("CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS", 0),
+		SystemPromptMode:           NormalizeSystemPromptMode(firstEnv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE")),
 	}
 
 	// 管理台密码为空则开放管理页（本地友好）。
@@ -275,6 +297,20 @@ func envDuration(primary, fallback string, def time.Duration) time.Duration {
 	return time.Duration(n) * time.Millisecond
 }
 
+// envDurationPositive 读毫秒配置，只在严格为正时采用；空 / 非法 / 非正都回落默认。
+// 用于看门狗阈值：0 会关闭看门狗，绝不能由误配置悄悄产生。
+func envDurationPositive(primary string, def time.Duration) time.Duration {
+	raw := firstEnv(primary)
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return time.Duration(n) * time.Millisecond
+}
+
 func (c Config) Addr() string {
 	return c.Host + ":" + strconv.Itoa(c.Port)
 }
@@ -381,6 +417,30 @@ func OptionalSite(value string) string {
 		return ""
 	}
 	return NormalizeSite(value)
+}
+
+// NormalizeSystemPromptMode 把任意输入归一为三位合法模式之一。
+// 未知值回落 auto（默认行为：原样优先，命中 11128 才降级）。
+func NormalizeSystemPromptMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case SystemPromptModeKeep, "preserve", "passthrough", "1", "true":
+		return SystemPromptModeKeep
+	case SystemPromptModeFold, "0", "false":
+		return SystemPromptModeFold
+	default:
+		return SystemPromptModeAuto
+	}
+}
+
+// IsValidSystemPromptMode 判断是否为精确的合法模式值（不做归一）。
+// 管理台写入前用它拒绝垃圾输入，避免把拼写错误静默成 auto。
+func IsValidSystemPromptMode(value string) bool {
+	switch value {
+	case SystemPromptModeAuto, SystemPromptModeKeep, SystemPromptModeFold:
+		return true
+	default:
+		return false
+	}
 }
 
 // SiteModelPrefix 是模型 ID 上的区域标签（cn / global），供按请求路由。

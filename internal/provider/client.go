@@ -28,9 +28,13 @@ type Client struct {
 	FailureDumpDir string
 	// Log 上游失败排障日志；为空时回退 slog.Default()。网关 New 时注入进程 logger。
 	Log *slog.Logger
-	// StallTimeout 上游流停滞看门狗：连续这么久收不到字节就主动断开。
-	// 零值关闭（&Client{} 测试保持旧行为），生产由 NewClient 赋值。
+	// StallTimeout 上游流停滞看门狗（首字节前）：连续这么久收不到字节就主动断开。
+	// 零值关闭（&Client{} 测试保持旧行为），生产由 NewClient 从 config 赋值。
 	StallTimeout time.Duration
+	// StallTimeoutAfterFirstByte 是收到任意 SSE 增量（含 thinking / 心跳）后的阈值。
+	// 真正的「上游假活」几乎都发生在首字节之前；之后放宽，避免掐断长思考回合。
+	// 零值时沿用 StallTimeout。
+	StallTimeoutAfterFirstByte time.Duration
 
 	// base 是直连用的 Transport，各出口按需 Clone（连接池互不干扰）。
 	base    *http.Transport
@@ -111,11 +115,12 @@ func NewClient(cfg config.Config) *Client {
 			Timeout:   0,
 			Transport: transport,
 		},
-		FailureDumpDir: cfg.FailureDumpDir,
-		base:           transport,
-		IDEVersion:     strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
-		Log:            slog.Default(),
-		StallTimeout:   defaultStallTimeout,
+		FailureDumpDir:             cfg.FailureDumpDir,
+		base:                       transport,
+		IDEVersion:                 strutil.First(cfg.IDEVersion, config.DefaultIDEVersion),
+		Log:                        slog.Default(),
+		StallTimeout:               cfg.StallTimeout,
+		StallTimeoutAfterFirstByte: cfg.StallTimeoutAfterFirstByte,
 	}
 }
 
@@ -155,6 +160,8 @@ type ChatOptions struct {
 	DeliverToolDeltas bool
 	// Proxy 是该请求使用的出口（账号级绑定）。空 = 直连。
 	Proxy string
+	// KeepSystem 为 true 时原样透传客户端 system（auto / keep 模式）。
+	KeepSystem bool
 }
 
 type Event struct {
@@ -724,6 +731,19 @@ func NormalizeMessageRole(role string) string {
 const canonicalUpstreamSystem = "You are a helpful coding assistant."
 
 func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
+	return EnsureUpstreamMessagesWith(messages, false)
+}
+
+// EnsureUpstreamMessagesWith 规整客户端消息。
+//
+// keepSystem=false（默认，fold 模式）：把客户端 system/developer 折叠进第一条
+// user 的 <client_instructions>，首条换成 canonicalUpstreamSystem。这是历史行为，
+// 用于绕开上游 11128（竞品 CLI 指纹扫描）。
+//
+// keepSystem=true（auto/keep 模式）：system 保持原 role 与原位置、内容不动，
+// 但仍然执行空消息丢弃 / mergeConsecutiveToolAssistants / PromoteToolImages /
+// NormalizeToolOutput —— 少做任何一步都会换来上游 11148 或图片丢失。
+func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool) []map[string]any {
 	var (
 		instructions []string
 		rest         []map[string]any
@@ -752,6 +772,12 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 			continue
 		}
 		if role == "system" {
+			if keepSystem {
+				if text := strings.TrimSpace(fmt.Sprint(item["content"])); text != "" && text != "<nil>" {
+					rest = append(rest, item)
+				}
+				continue
+			}
 			if text := strings.TrimSpace(fmt.Sprint(item["content"])); text != "" && text != "<nil>" {
 				instructions = append(instructions, text)
 			}
@@ -760,7 +786,7 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 		rest = append(rest, item)
 	}
 	rest = PromoteToolImages(mergeConsecutiveToolAssistants(rest))
-	if len(instructions) == 0 {
+	if keepSystem || len(instructions) == 0 {
 		return rest
 	}
 	out := make([]map[string]any, 0, len(rest)+2)
@@ -870,7 +896,7 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	}
 	// CodeBuddy protocol_direct 拒绝非流式 chat（11101）。始终上游流式；
 	// 需要 JSON 的调用方仍通过 readSSE 聚合成 Turn。
-	messages := EnsureUpstreamMessages(opts.Messages)
+	messages := EnsureUpstreamMessagesWith(opts.Messages, opts.KeepSystem)
 	// global 要求首条必须是 system；显式 domestic 保持既有 payload 不变。
 	// 空 site 按 global 处理（config.NormalizeSite("") 默认归 global）。
 	if config.NormalizeSite(opts.Site) == "global" && len(messages) > 0 &&
@@ -1166,7 +1192,7 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 	acc := newAccumulator()
 	fixer := newATXFixer()
 	var guard *stallGuard
-	if g := newStallGuard(body, c.StallTimeout); g != nil {
+	if g := newStallGuard(body, c.StallTimeout, c.StallTimeoutAfterFirstByte); g != nil {
 		guard = g
 		defer g.timer.Stop()
 		body = g
@@ -1262,6 +1288,11 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 	for {
 		line, err := reader.ReadString('\n')
 		bytesRead += int64(len(line))
+		if len(line) > 0 && guard != nil {
+			// 任意字节都算「上游活着」，含 thinking 增量、心跳注释、空行。
+			// 首字节之后切到宽松阈值，长思考静默不再被 3 分钟看门狗误杀。
+			guard.noteFirstByte()
+		}
 		if len(line) > 0 {
 			trimmed := strings.TrimRight(line, "\r\n")
 			if trimmed == "" {
@@ -2080,31 +2111,42 @@ func truthy(value any) bool {
 	}
 }
 
-// defaultStallTimeout 是上游流停滞看门狗的固定值：大于正常思考间隔，远小于
-// TCP 超时。与 quotaRefreshTimeout / maxResetReplays 一样是内部常量，不新增 env。
-const defaultStallTimeout = 3 * time.Minute
-
 // stallGuard 包装上游响应体：每次读到字节就把定时器往后推，超时则关闭 body，
 // 让阻塞中的 Read 立刻返回错误，把「上游假活」从无限挂起收敛成可判定的失败。
 type stallGuard struct {
 	r       io.Reader
 	closer  io.Closer
 	timeout time.Duration
-	timer   *time.Timer
-	fired   atomic.Bool
+	// afterFirstByte 是收到首字节后切换到的宽松阈值；<=0 表示沿用 timeout。
+	afterFirstByte time.Duration
+	timer          *time.Timer
+	fired          atomic.Bool
+	widened        atomic.Bool
 }
 
-func newStallGuard(body io.Reader, timeout time.Duration) *stallGuard {
+// newStallGuard 用「连续无字节」判定上游假活：每次读到字节都把定时器往后推，
+// 不是总时长上限。timeout 用于首字节前；afterFirstByte 用于首字节后（0=沿用）。
+func newStallGuard(body io.Reader, timeout, afterFirstByte time.Duration) *stallGuard {
 	closer, ok := body.(io.Closer)
 	if timeout <= 0 || !ok {
 		return nil
 	}
-	g := &stallGuard{r: body, closer: closer, timeout: timeout}
+	g := &stallGuard{r: body, closer: closer, timeout: timeout, afterFirstByte: afterFirstByte}
 	g.timer = time.AfterFunc(timeout, func() {
 		g.fired.Store(true)
 		_ = g.closer.Close()
 	})
 	return g
+}
+
+// noteFirstByte 在 readSSE 收到任意字节（含 thinking / 心跳 / 注释帧）后调用，
+// 把阈值放宽到 afterFirstByte 并重启定时器。只生效一次。
+func (g *stallGuard) noteFirstByte() {
+	if g == nil || g.afterFirstByte <= 0 || !g.widened.CompareAndSwap(false, true) {
+		return
+	}
+	g.timeout = g.afterFirstByte
+	g.timer.Reset(g.timeout)
 }
 
 func (g *stallGuard) Read(p []byte) (int, error) {

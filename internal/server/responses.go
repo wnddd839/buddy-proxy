@@ -94,9 +94,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request, keySite
 		MaxCompletionTokens: req.MaxTokens(),
 		ReasoningEffort:     req.ReasoningEffort(),
 		SessionKey:          sessionKey,
-		SessionLabel:        sessionpin.SessionLabel(messages),
-		Site:                site,
-		SiteExplicit:        siteExplicit,
+		RequestID:           proxyRequestID,
+		// system 形态由 CompleteFromPool 回填，供 07 用量明细交叉对照。
+		SystemOutcome: &gateway.SystemPromptOutcome{},
+		SessionLabel:  sessionpin.SessionLabel(messages),
+		Site:          site,
+		SiteExplicit:  siteExplicit,
 	}
 
 	responseID := "resp_" + strutil.RandomHex(12)
