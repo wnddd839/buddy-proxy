@@ -778,7 +778,11 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool) []ma
 				}
 				continue
 			}
-			if text := strings.TrimSpace(fmt.Sprint(item["content"])); text != "" && text != "<nil>" {
+			// 指纹口径对齐 gateway.systemPromptDigest：用**原始** message content
+			// 经 SystemDigestText 得到文本，而不是 normalizeContent 后的 item content
+			// 再 fmt.Sprint。结构化 system 在两种口径下文本表示不同，会让同一份输入
+			// 在 keep / fold 两条事件里指纹 / SystemLen 分叉（见 SystemDigestText 注释）。
+			if text := strings.TrimSpace(SystemDigestText(message["content"])); text != "" && text != "<nil>" {
 				instructions = append(instructions, text)
 			}
 			continue

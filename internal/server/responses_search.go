@@ -28,9 +28,17 @@ func (s *Server) prepareBuiltinSearch(
 	roundOpts.OnDelta = nil
 	roundOpts.OnThinkingDelta = nil
 	roundOpts.OnEvent = nil
+	// 每轮用独立的 SystemOutcome：CompleteFromPool 每轮都会覆写 Form/Fingerprint，
+	// 而 Degraded 只置 true 不清零；两轮共享一个指针会把「最后一轮形态 + 期间
+	// 是否降级过」混成一个 06 面板里根本不存在的组合值。调用方的 07 用量明细
+	// 由 completeWithRequestedSearch 把本函数返回的最终形态写回共享指针，
+	// 成功 / 失败路径都能拿到合理值。
+	if opts.SystemOutcome != nil {
+		roundOpts.SystemOutcome = &gateway.SystemPromptOutcome{}
+	}
 	first, err := s.Svc.CompleteFromPool(ctx, roundOpts)
 	if err != nil {
-		return opts, nil, err
+		return roundOpts, nil, err
 	}
 	searchCalls := onlyWebSearchCalls(first.Turn.ToolUses)
 	if len(searchCalls) == 0 {
@@ -75,9 +83,13 @@ func (s *Server) prepareBuiltinSearch(
 		// 首轮已执行 required 的内置工具，末轮不再强制调用客户端工具。
 		roundOpts.ToolChoice = "auto"
 	}
+	// 第二轮用全新 outcome，不带入第一轮的 Degraded / Form。
+	if opts.SystemOutcome != nil {
+		roundOpts.SystemOutcome = &gateway.SystemPromptOutcome{}
+	}
 	final, err := s.Svc.CompleteFromPool(ctx, roundOpts)
 	if err != nil {
-		return opts, nil, err
+		return roundOpts, nil, err
 	}
 	final.Turn.Usage = sumSearchUsage(first.Turn.Usage, final.Turn.Usage)
 	final.Bytes += first.Bytes
@@ -224,11 +236,11 @@ func (s *Server) handleResponsesWithSearch(
 	roundOpts, result, err := s.prepareBuiltinSearch(ctx, opts, opts.Site)
 	if err != nil {
 		if openai.IsClientCanceled(err) {
-			s.recordChatJournal(started, proxyRequestID, opts, providerModel.PublicModel, req.Stream, true, "", provider.Usage{}, nil)
+			s.recordChatJournal(started, proxyRequestID, roundOpts, providerModel.PublicModel, req.Stream, true, "", provider.Usage{}, nil)
 			finish(true, 0, 0, 0, 0, "", provider.Usage{})
 			return
 		}
-		s.recordChatJournal(started, proxyRequestID, opts, providerModel.PublicModel, req.Stream, false, err.Error(), provider.Usage{}, nil)
+		s.recordChatJournal(started, proxyRequestID, roundOpts, providerModel.PublicModel, req.Stream, false, err.Error(), provider.Usage{}, nil)
 		finish(false, 0, 0, 0, 0, err.Error(), provider.Usage{})
 		typ, _ := openai.ClassifyUpstream(err)
 		s.writeResponsesError(w, http.StatusBadGateway, typ, err.Error())
