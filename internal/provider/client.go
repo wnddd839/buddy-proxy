@@ -898,7 +898,16 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 		body["max_completion_tokens"] = opts.MaxCompletionTokens
 	}
 	if opts.Tools != nil {
-		body["tools"] = opts.Tools
+		// 客户端可能送来「裸属性字典」形状的 parameters（顶层直接是属性名、
+		// required:true 写在属性里）。这种定义上游会以 400 code 11129
+		// 「invalid function call parameters」拒收——实测 automation_task_create
+		// 只要带上就让整轮请求失败，与对话内容无关。合法 schema 原样透传。
+		if tools, changed := SanitizeToolSchemas(asSlice(opts.Tools)); len(changed) > 0 {
+			logSanitizedToolSchemas(c.Log, changed)
+			body["tools"] = tools
+		} else {
+			body["tools"] = opts.Tools
+		}
 	}
 	if choice := NormalizeToolChoice(opts.ToolChoice); choice != nil {
 		body["tool_choice"] = choice
@@ -974,7 +983,7 @@ func (c *Client) logUpstreamFailure(upstreamMsg string, status int, body map[str
 	if c != nil && c.Log != nil {
 		logger = c.Log
 	}
-	logger.Warn("codebuddy upstream failure",
+	fields := []any{
 		"status", status,
 		"upstreamMessage", strutil.Truncate(upstreamMsg, 300),
 		"region", region,
@@ -983,7 +992,20 @@ func (c *Client) logUpstreamFailure(upstreamMsg string, status int, body map[str
 		"domain", domain,
 		"model", model,
 		"request", DescribeUpstreamBody(body),
-	)
+	}
+	// 上游 4xx 常常只回一句「invalid function call parameters」，而日志里的
+	// 请求指纹只有 preview 前 200 字，看不到 tool_calls.arguments 原文。
+	// 需要排障时设 CODEBUDDY_PROXY_DUMP_FAILURES=<目录> 落一份完整请求体。
+	if status >= 400 {
+		if dir := FailureDumpDir(); dir != "" {
+			if path, dumpErr := dumpUpstreamFailure(dir, status, body, upstreamMsg); dumpErr != nil {
+				fields = append(fields, "dumpError", dumpErr.Error())
+			} else if path != "" {
+				fields = append(fields, "dump", path)
+			}
+		}
+	}
+	logger.Warn("codebuddy upstream failure", fields...)
 }
 
 // DescribeUpstreamBody 返回归一化上游请求体的脱敏指纹。
