@@ -101,7 +101,7 @@ func TestStructuredSystemFoldMatchesGatewayDigest(t *testing.T) {
 	}
 
 	// keep 路径：system 内容保留在 out[0]，文本表示不应被改动
-	keep := EnsureUpstreamMessagesWith(msgs, true)
+	keep := EnsureUpstreamMessagesWith(msgs, true, nil, nil)
 	if len(keep) == 0 || asTestString(keep[0]["role"]) != "system" {
 		t.Fatalf("keep 首条应为 system，实际 %#v", keep)
 	}
@@ -114,7 +114,7 @@ func TestStructuredSystemFoldMatchesGatewayDigest(t *testing.T) {
 	}
 
 	// fold 路径：system 折进 user 的 <client_instructions>
-	fold := EnsureUpstreamMessagesWith(msgs, false)
+	fold := EnsureUpstreamMessagesWith(msgs, false, nil, nil)
 	if len(fold) == 0 || asTestString(fold[0]["content"]) != canonicalUpstreamSystem {
 		t.Fatalf("fold 首条应为 canonical system，实际 %#v", fold)
 	}
@@ -175,7 +175,7 @@ func TestFoldStringSystemUnchanged(t *testing.T) {
 		{"role": "system", "content": "You are opencode."},
 		{"role": "user", "content": "hi"},
 	}
-	out := EnsureUpstreamMessagesWith(msgs, false)
+	out := EnsureUpstreamMessagesWith(msgs, false, nil, nil)
 	inner := extractClientInstructions(t, out)
 	if inner != "You are opencode." {
 		t.Fatalf("string system 折叠回归: inner=%q out=%#v", inner, out)
