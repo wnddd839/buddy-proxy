@@ -23,15 +23,36 @@ import (
 //   deepseek-harness: x-deepseek-harness-session-id / x-dsh-auth-token
 //   claude-code   : x-app: cli + anthropic-version（无会话头）
 
-func TestKeyUsesDeepSeekHarnessSessionHeader(t *testing.T) {
+// TestKeyUsesDeepSeekHarnessCompositeKey 校验 dsh 用 user+session 复合键。
+//
+// 注意：这里刻意不用「只有 session-id」的用例 —— dsh 的 session-id 是
+// 进程内自增序号（session-1、session-2…），重启后归零会重复，
+// 单独作键会让不同会话撞车。详见 harness_key_test.go 的说明。
+func TestKeyUsesDeepSeekHarnessCompositeKey(t *testing.T) {
 	h := http.Header{}
-	h.Set("X-Deepseek-Harness-Session-Id", "sess-dsh-001")
+	h.Set("X-Deepseek-Harness-User-Id", "user-uuid-abc")
+	h.Set("X-Deepseek-Harness-Session-Id", "session-1")
 	key, source := sessionpin.Key(h, "", nil)
-	if key != "hdr:sess-dsh-001" {
-		t.Fatalf("应使用 dsh 会话头，得到 %q", key)
+	want := "dsh:user-uuid-abc\x1esession-1"
+	if key != want {
+		t.Fatalf("应使用 dsh 复合键，得到 %q want %q", key, want)
 	}
 	if source != sessionpin.KeySourceHeader {
 		t.Fatalf("来源应为 header，得到 %q", source)
+	}
+}
+
+// TestKeyDeepSeekHarnessSessionOnlyNotUsedAsKey 防回归：只有 session-id 时
+// 必须回落内容哈希，不得直接拿 session-1 当键。
+func TestKeyDeepSeekHarnessSessionOnlyNotUsedAsKey(t *testing.T) {
+	h := http.Header{}
+	h.Set("X-Deepseek-Harness-Session-Id", "sess-dsh-001")
+	key, source := sessionpin.Key(h, "", nil)
+	if key == "hdr:sess-dsh-001" || key == "dsh:sess-dsh-001" {
+		t.Fatalf("不得单独用 session-id 作键，得到 %q", key)
+	}
+	if source != sessionpin.KeySourceNone {
+		t.Fatalf("无可用信号时来源应为 none，得到 %q", source)
 	}
 }
 

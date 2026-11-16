@@ -48,19 +48,67 @@ const (
 
 // sessionHeaders 是客户端显式会话头的候选列表，按优先级排序。
 //
-// 各 agent 的专属头（源码实证）：
-//   - opencode        : X-Opencode-Session（值形如 ses_<64hex>）
-//   - deepseek-harness: X-Deepseek-Harness-Session-Id
-//
 // 通用约定头（X-Session-Id / X-Conversation-Id / Conversation-Id / Session-Id）
 // 排在最前：它们是客户端有意指定的显式值，语义最强。
+//
+// opencode 的 X-Opencode-Session 值是 ses_<64hex>，全局唯一且稳定，
+// 单独即可作为会话键。
 var sessionHeaders = []string{
 	"X-Session-Id",
 	"X-Opencode-Session",
-	"X-Deepseek-Harness-Session-Id",
 	"X-Conversation-Id",
 	"Conversation-Id",
 	"Session-Id",
+}
+
+// harnessSessionHeader 是 DeepSeek Harness 的会话头，**不能单独使用**。
+//
+// 源码实证（dsh-session/lib/index.js:1554）：
+//
+//	sessionId = brandString(`session-${++this.counter}`)
+//	SessionStore.counter = 0   // 实例字段
+//
+// 即 sessionId 是「进程内自增序号」，形如 session-1 / session-2，
+// **进程重启后从 0 重新计数**。若单独拿它当会话键，会出现：
+//   - dsh 重启后 session-1 再次出现，撞上旧会话的键 → 不同会话抢同一账号钉
+//   - 两个并行的 dsh 实例（各自的 counter 都从 1 开始）也会互撞
+//
+// 因此必须与 harnessUserHeader 组合成复合键。
+const harnessSessionHeader = "X-Deepseek-Harness-Session-Id"
+
+// harnessUserHeader 是 DeepSeek Harness 的匿名用户 ID，**持久化且稳定**。
+//
+// 源码实证（dsh-anonymous-user-id/lib/index.js:50）：
+//
+//	getOrCreateAnonymousUserId() 读/写 $DSH_HOME/.anonymous-user-id
+//
+// 首次生成 UUID 后落盘，之后每次启动读同一个值（实测本机为
+// f93bd21f-f8f9-4291-8a00-12819b97cb23）。它标识「这台机器上的这个
+// dsh 安装」，正好补上 sessionId 缺失的跨重启唯一性。
+const harnessUserHeader = "X-Deepseek-Harness-User-Id"
+
+// harnessKey 把 dsh 的 user-id 与 session-id 组合成稳定且唯一的会话键。
+//
+// 四种组合：
+//   - 两者都有：`<user>\x1e<session>` —— 最精确（跨重启、跨实例都不撞）
+//   - 只有 user：`<user>`               —— 稳定但不区分并发会话
+//   - 只有 session：不使用（返回空），因为它跨重启会重复，宁可回落内容哈希
+//   - 都没有：返回空
+//
+// 「只有 session 时不用」是刻意的：错误的键比没有键更糟 —— 没有键会
+// 回落到 system+首条 user 的内容哈希（稳定），而错误的键会让两个不同
+// 会话共用同一账号钉与上游 ConversationID，导致上下文串味。
+func harnessKey(header http.Header) string {
+	user := strings.TrimSpace(header.Get(harnessUserHeader))
+	session := strings.TrimSpace(header.Get(harnessSessionHeader))
+	switch {
+	case user != "" && session != "":
+		return "dsh:" + user + "\x1e" + session
+	case user != "":
+		return "dsh:" + user
+	default:
+		return ""
+	}
 }
 
 // Key 从客户端头或对话前缀得到稳定 session id，并返回其来源。
@@ -81,6 +129,10 @@ func Key(header http.Header, promptCacheKey string, messages []map[string]any) (
 			if v := strings.TrimSpace(header.Get(name)); v != "" {
 				return "hdr:" + v, KeySourceHeader
 			}
+		}
+		// dsh 需要 user+session 复合键（session 单独用会跨重启重复）。
+		if v := harnessKey(header); v != "" {
+			return v, KeySourceHeader
 		}
 	}
 	if v := strings.TrimSpace(promptCacheKey); v != "" {

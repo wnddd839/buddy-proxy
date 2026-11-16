@@ -42,6 +42,18 @@ func TestClientHintDeepSeekHarness(t *testing.T) {
 			"官方 UA",
 			http.Header{"User-Agent": []string{"deepseek-harness/0.1.7-alpha.1 (+https://github.com/deepseek-ai/deepseek-harness)"}},
 		},
+		{
+			"压缩标记头",
+			http.Header{"X-Deepseek-Harness-Compact": []string{"1"}},
+		},
+		{
+			"上游请求 ID 头",
+			http.Header{"X-Deepseek-Request-Id": []string{"req-abc"}},
+		},
+		{
+			"UA 带前导 product 段",
+			http.Header{"User-Agent": []string{"node deepseek-harness/0.1.7 (+https://x)"}},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

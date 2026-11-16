@@ -56,10 +56,24 @@ func ClientHint(h http.Header) string {
 	}
 
 	// ① 专属头优先。注意 dsh 的判定必须早于任何 anthropic-* 判定。
-	if h.Get("X-Deepseek-Harness-Session-Id") != "" ||
-		h.Get("X-Dsh-Auth-Token") != "" ||
-		h.Get("X-Deepseek-Harness-User-Id") != "" {
-		return ClientDeepSeekHarness
+	//
+	// dsh 的五个已知出站头（源码实证 dsh-llm-deepseek/lib/index.js:1937-1941）：
+	//   x-deepseek-harness-user-id      持久化 UUID（每台机器固定）
+	//   x-deepseek-harness-session-id   进程内自增（session-1、session-2…）
+	//   x-deepseek-harness-compact      压缩请求标记（值 "1"）
+	//   x-dsh-auth-token                账号令牌
+	//   x-deepseek-request-id           上游请求 ID
+	// 任一出现即可认定 —— 这些名字带 deepseek/dsh 前缀，其他客户端不会发。
+	for _, name := range []string{
+		"X-Deepseek-Harness-User-Id",
+		"X-Deepseek-Harness-Session-Id",
+		"X-Deepseek-Harness-Compact",
+		"X-Dsh-Auth-Token",
+		"X-Deepseek-Request-Id",
+	} {
+		if h.Get(name) != "" {
+			return ClientDeepSeekHarness
+		}
 	}
 	if h.Get("X-Opencode-Client") != "" || h.Get("X-Opencode-Session") != "" {
 		return ClientOpencode
@@ -68,7 +82,8 @@ func ClientHint(h http.Header) string {
 	// ② 专属 UA 前缀。
 	ua := strings.ToLower(strings.TrimSpace(h.Get("User-Agent")))
 	switch {
-	case strings.HasPrefix(ua, "deepseek-harness/"):
+	case strings.HasPrefix(ua, "deepseek-harness/"),
+		strings.Contains(ua, "deepseek-harness/"): // UA 可能带前导 product 段
 		return ClientDeepSeekHarness
 	case strings.HasPrefix(ua, "opencode/"):
 		return ClientOpencode
