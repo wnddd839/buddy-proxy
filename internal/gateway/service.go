@@ -375,6 +375,16 @@ type CompleteOptions struct {
 	routeFallbacks []modelroute.Rule // Remaining rules from the original source/model snapshot.
 	// RequestID 是本次请求的代理 ID，用来把 system 事件与用量明细对上。
 	RequestID string
+	// SessionKeySource 是 SessionKey 的来源（header/cachekey/content/none），
+	// 只用于事件观测：面板据此判断客户端有没有发会话头。
+	SessionKeySource string
+	// ClientHint 是从请求头推断的客户端类型（claude-code/opencode/...）。
+	// 只用于事件观测，绝不参与剥离决策 —— 见 sessionpin.ClientHint 的说明。
+	ClientHint string
+	// stripReport 收集本次请求的剥离结果，由 provider 回填。
+	// 在 CompleteFromPool 入口惰性分配，递归重试时复用同一指针，
+	// 保证最外层能读到最终形态。
+	stripReport *provider.StripReport
 	// systemMode 是请求首次进入 CompleteFromPool 时快照的 system 模式，
 	// 沿递归重试原样传递（opts 按值传递），调用方不要设置。
 	systemMode string
@@ -450,9 +460,27 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		OnThinkingDelta:    opts.OnThinkingDelta,
 		OnEvent:            opts.OnEvent,
 		DeliverToolDeltas:  opts.DeliverToolDeltas,
-		// system 策略：fold 永远折叠；auto/keep 原样透传；已降级过的重试强制折叠。
+		// system 策略：fold 永远折叠；auto/keep/strip 原样透传；已降级过的重试强制折叠。
 		KeepSystem: s.keepSystemFor(opts),
 	}
+}
+
+// applyStripConfig 给上游请求挂上「身份句剥离」配置。
+//
+// 只有 strip 档才启用：auto/keep/fold 的 system 形态必须与改动前完全一致。
+// 剥离规则按**账号所在站点**取（与 chatOptionsFromAccount 的 site 同源），
+// 因为黑名单本身按站点分流（DeepSeek 身份句只在 domestic 拦）。
+//
+// 剥离在 provider 层执行，晚于 sessionpin.Key —— 会话键始终用原始 system 计算。
+func applyStripConfig(chatOpts *provider.ChatOptions, mode, site string, report *provider.StripReport) {
+	if mode != config.SystemPromptModeStrip {
+		return
+	}
+	chatOpts.Strip = &provider.StripConfig{
+		Enabled: true,
+		Rules:   provider.RulesForSite(site),
+	}
+	chatOpts.StripReport = report
 }
 
 // keepSystemFor 决定本次上游请求是否原样透传 system。
@@ -499,6 +527,11 @@ func SessionPinKey(session, site string) string {
 
 func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (CompleteResult, error) {
 	opts.Model = strutil.First(opts.Model, "auto")
+	// 剥离结果收集器：在入口分配一次，递归重试按值传递 opts 时复用同一指针，
+	// 保证最外层（调用方）能读到本次请求的最终剥离形态。
+	if opts.stripReport == nil {
+		opts.stripReport = &provider.StripReport{}
+	}
 	// 模式只在首次进入时快照一次，沿所有递归重试沿用：管理员在请求进行中
 	// 切换模式不改变本次请求实际发出的形态，事件归因与降级判定都以它为准。
 	if opts.systemMode == "" {
@@ -545,7 +578,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		return CompleteResult{}, fmt.Errorf("%w（max=%d）", errRetryDepthExceeded, defaultMaxAccountRetries)
 	}
 	if opts.SessionKey == "" {
-		opts.SessionKey = sessionpin.Key(nil, "", opts.Messages)
+		opts.SessionKey, opts.SessionKeySource = sessionpin.Key(nil, "", opts.Messages)
 	}
 	site := s.requestSite(opts)
 	pinKey := SessionPinKey(opts.SessionKey, site)
@@ -612,6 +645,9 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		opts.SystemOutcome.Fingerprint = att.fp
 	}
 	chatOpts := s.chatOptionsFromAccount(account, opts)
+	// strip 档：挂上身份句剥离配置（auto/keep/fold 不启用）。
+	// site 用本次实际选中的账号所在站点，与黑名单的站点分流口径一致。
+	applyStripConfig(&chatOpts, att.mode, chatOpts.Site, opts.stripReport)
 	// 同会话复用上游会话 ID；仅在有账号钉（pinKey 非空）时注入，与钉号生命周期一致。
 	if pinKey != "" {
 		chatOpts.ConversationID = s.Conversations.ID(pinKey+"\x1e"+chatOpts.Product, account.ID)
@@ -624,6 +660,16 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		s.recordRateLimit(account, err)
 	}
 	endFlight(err == nil)
+	// 回填剥离结果：必须早于任何 recordSystemPromptAttempt 调用，
+	// 否则事件里的 stripped / strippedBytes 永远是零值。
+	if opts.stripReport != nil {
+		att.stripped = opts.stripReport.Stripped
+		att.strippedBytes = opts.stripReport.Bytes
+		if opts.SystemOutcome != nil {
+			opts.SystemOutcome.Stripped = opts.stripReport.Stripped
+			opts.SystemOutcome.StrippedBytes = opts.stripReport.Bytes
+		}
+	}
 	if err != nil {
 		// 客户端主动断开 SSE/HTTP，不算账号或上游故障。
 		if errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {

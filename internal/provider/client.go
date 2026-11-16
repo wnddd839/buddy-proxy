@@ -160,8 +160,14 @@ type ChatOptions struct {
 	DeliverToolDeltas bool
 	// Proxy 是该请求使用的出口（账号级绑定）。空 = 直连。
 	Proxy string
-	// KeepSystem 为 true 时原样透传客户端 system（auto / keep 模式）。
+	// KeepSystem 为 true 时原样透传客户端 system（auto / keep / strip 模式）。
 	KeepSystem bool
+	// Strip 非 nil 且 Enabled 时，对 system 做上游 11128 身份句剥离。
+	// 只在 KeepSystem=true 时生效；fold 模式本就改写 system，无需剥离。
+	Strip *StripConfig
+	// StripReport 是剥离结果的回填指针（可为 nil）。成功/失败路径都会写入，
+	// 供网关记事件与面板展示「已剥离」。
+	StripReport *StripReport
 }
 
 type Event struct {
@@ -731,7 +737,7 @@ func NormalizeMessageRole(role string) string {
 const canonicalUpstreamSystem = "You are a helpful coding assistant."
 
 func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
-	return EnsureUpstreamMessagesWith(messages, false)
+	return EnsureUpstreamMessagesWith(messages, false, nil, nil)
 }
 
 // EnsureUpstreamMessagesWith 规整客户端消息。
@@ -740,10 +746,15 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 // user 的 <client_instructions>，首条换成 canonicalUpstreamSystem。这是历史行为，
 // 用于绕开上游 11128（竞品 CLI 指纹扫描）。
 //
-// keepSystem=true（auto/keep 模式）：system 保持原 role 与原位置、内容不动，
+// keepSystem=true（auto/keep/strip 模式）：system 保持原 role 与原位置，
 // 但仍然执行空消息丢弃 / mergeConsecutiveToolAssistants / PromoteToolImages /
 // NormalizeToolOutput —— 少做任何一步都会换来上游 11148 或图片丢失。
-func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool) []map[string]any {
+//
+// strip 非 nil 且 Enabled 时，对 system 内容做「身份句剥离」（见 identity_strip.go）。
+// 只影响 system，不动 user/assistant/tool。剥离发生在 trim 判空**之后**：
+// 剥空的 system 仍会作为空 content 消息保留，不会被这里丢弃 —— 实测上游
+// 接受空 system，且保留它可避免 global 站补 canonical 的兜底注入。
+func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, strip *StripConfig, report *StripReport) []map[string]any {
 	var (
 		instructions []string
 		rest         []map[string]any
@@ -774,6 +785,10 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool) []ma
 		if role == "system" {
 			if keepSystem {
 				if text := strings.TrimSpace(fmt.Sprint(item["content"])); text != "" && text != "<nil>" {
+					// 剥离放在判空之后：保证剥空的 system 仍被保留。
+					if stripped, changed := stripContent(item["content"], strip, report); changed {
+						item["content"] = stripped
+					}
 					rest = append(rest, item)
 				}
 				continue
@@ -900,7 +915,7 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	}
 	// CodeBuddy protocol_direct 拒绝非流式 chat（11101）。始终上游流式；
 	// 需要 JSON 的调用方仍通过 readSSE 聚合成 Turn。
-	messages := EnsureUpstreamMessagesWith(opts.Messages, opts.KeepSystem)
+	messages := EnsureUpstreamMessagesWith(opts.Messages, opts.KeepSystem, opts.Strip, opts.StripReport)
 	// global 要求首条必须是 system；显式 domestic 保持既有 payload 不变。
 	// 空 site 按 global 处理（config.NormalizeSite("") 默认归 global）。
 	if config.NormalizeSite(opts.Site) == "global" && len(messages) > 0 &&

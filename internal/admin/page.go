@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.15-v0.7.5-system-prompt"
+const UIRevision = "2026.11.16-v0.7.5-system-prompt-strip"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -1090,6 +1090,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
             <button type="button" data-mode="auto" class="active">auto · 先直传，被拒再改写</button>
             <button type="button" data-mode="keep">keep · 直传 system</button>
             <button type="button" data-mode="fold">fold · 改写 system</button>
+            <button type="button" data-mode="strip">strip · 删掉身份句，其余直传</button>
           </div>
           <div class="actions">
             <label class="sp-check" title="含传输失败、被拦截、降级、其它错误，不是只看失败"><input type="checkbox" id="spOnlyProblems"/> 只看问题</label>
@@ -1112,8 +1113,10 @@ button:disabled{opacity:.4;cursor:not-allowed}
             <li><strong>auto（默认）</strong>：先直传；万一被上游拒收（错误码 11128），自动改成「改写」再发一次，请求不会失败。日常用这个。</li>
             <li><strong>keep</strong>：只直传，绝不改写；上游拒收就直接报错，不重试。想严格照 system 执行，或想看真实失败原因时用。</li>
             <li><strong>fold</strong>：每次都改写，从不直传。批量/自动化、或不在意 system 优先级时用。</li>
+            <li><strong>strip</strong>：直传 system，但<strong>只删掉开头那一句</strong>会被上游拒收的身份句，其余（AGENTS.md、工具说明、规则）一个字不改。想保住 system 的高优先级、又不想被 11128 拦住时用。</li>
           </ul>
-          <p>技术名 <code>auto / keep / fold</code> 用于 API 与日志；面板「形态」列里的 <code>keep</code>=直传、<code>fold</code>=改写，与此对应。</p>
+          <p><strong>strip 删什么</strong>：上游只拦两条精确整句 —— <code>You are Claude Code, Anthropic's official CLI for Claude.</code>（两个区都拦）和 <code>You are an AI agent powered by DeepSeek Harness.</code>（仅国内区拦）。判定口径是「删掉空格类字符并转小写后，以该句开头」，所以大小写、连续空格、NBSP/全角空格等变体都会命中。删完若 system 变空，这条消息仍保留（上游接受空 system），不会凭空多出网关自己写的人设。</p>
+          <p>技术名 <code>auto / keep / fold / strip</code> 用于 API 与日志；面板「形态」列里的 <code>keep</code>=直传、<code>fold</code>=改写、<code>keep(已剥离)</code>=strip 档删过身份句，与此对应。</p>
           <p><strong>auto 降级会产生两条事件</strong>（被拦截的 <code>keep</code> 失败 + 折叠重放成功的 <code>fold</code>），用同一请求 ID 关联、属于同一次请求，别当成两个请求；面板会用左侧浅色边框把这两行串起来，形态列标 <code>(被拦截)</code> / <code>(降级重放)</code>。</p>
         </div>
 
@@ -1142,7 +1145,8 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th>时间</th>
                   <th>请求 ID</th>
                   <th>模式</th>
-                  <th title="keep=直传 system；fold=改写 system；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
+                  <th title="keep=直传 system；fold=改写 system；keep(已剥离)=strip 档删过身份句；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
+                  <th title="从请求头推断的客户端类型；「会话」列显示它有没有发会话头（header=有，content=靠内容哈希）">客户端</th>
                   <th>指纹</th>
                   <th>system 字节</th>
                   <th>账号</th>
@@ -1152,7 +1156,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                 </tr>
               </thead>
               <tbody id="spRealtimeRows">
-                <tr><td colspan="10" class="empty" style="border:none">加载中…</td></tr>
+                <tr><td colspan="11" class="empty" style="border:none">加载中…</td></tr>
               </tbody>
             </table>
           </div>
@@ -1187,7 +1191,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                 </tr>
               </thead>
               <tbody id="spHistoryRows">
-                <tr><td colspan="10" class="empty" style="border:none">选择日期后加载</td></tr>
+                <tr><td colspan="11" class="empty" style="border:none">选择日期后加载</td></tr>
               </tbody>
             </table>
           </div>
@@ -2075,7 +2079,7 @@ function spResultLabel(e){
 }
 function spRowsHtml(rows, emptyText){
   if (!rows || !rows.length){
-    return '<tr><td colspan="10" style="color:var(--fg-40);padding:24px;text-align:center">' + escapeHtml(emptyText) + '</td></tr>';
+    return '<tr><td colspan="11" style="color:var(--fg-40);padding:24px;text-align:center">' + escapeHtml(emptyText) + '</td></tr>';
   }
   return rows.map(function(e){
     const id = e.requestId || '';
@@ -2086,8 +2090,17 @@ function spRowsHtml(rows, emptyText){
     // 一次 11128 降级 = 两条事件（同一 requestId）：被拦截(keep) + 重放成功(fold)。
     // 用形态徽标括号说明 + 行 class 把两行在视觉上串起来，避免被当成两个独立请求。
     let formText = e.form || '—';
+    // 优先级：降级重放 > 被拦截 > 已剥离（strip 档）> 原形态。
+    // stripped 与 degraded 互斥：前者是「定向删一句」，后者是「整条降级」。
     if (e.recovered === true) formText = 'fold(降级重放)';
     else if (e.degraded === true) formText = 'keep(被拦截)';
+    else if (e.stripped === true) formText = 'keep(已剥离)';
+    // 客户端列：显示识别结果；带会话来源提示，方便判断账号亲和是否走头。
+    const clientText = e.clientHint ? escapeHtml(e.clientHint) : '<span style="color:var(--fg-40)">—</span>';
+    const sessTitle = e.sessionSource
+      ? '会话键来源：' + e.sessionSource + (e.sessionSource === 'content' ? '（靠 system+首条 user 哈希，客户端没发会话头）' : '（客户端显式提供）')
+      : '无会话信号';
+    const clientCell = '<span title="' + escapeHtml(sessTitle) + '">' + clientText + '</span>';
     const replay = (e.recovered === true || e.degraded === true) ? ' class="sp-replay-row"' : '';
     const resultTitle = (e.recovered === true)
       ? '<span title="与上方同 requestId 的被拦截事件是同一次请求">' + spResultLabel(e) + '</span>'
@@ -2097,6 +2110,7 @@ function spRowsHtml(rows, emptyText){
       '<td class="mono">' + (id ? '<button type="button" class="idbtn" data-copy="' + escapeHtml(id) + '">' + escapeHtml(shortId(id)) + '</button>' : '—') + '</td>' +
       '<td class="mono">' + escapeHtml(e.mode || '—') + '</td>' +
       '<td><span class="badge ' + formBadge + '">' + escapeHtml(formText) + '</span></td>' +
+      '<td class="mono">' + clientCell + '</td>' +
       '<td class="mono">' + fp + '</td>' +
       '<td class="mono">' + len + '</td>' +
       '<td>' + escapeHtml(e.accountId ? shortId(e.accountId) : '—') + '</td>' +

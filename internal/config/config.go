@@ -38,10 +38,14 @@ const (
 	DefaultCheckinRetryMax      = 1
 
 	// SystemPromptMode* 控制 system 提示词的处理策略。
-	// auto = 原样优先，命中 11128 时自动降级 fold；keep = 永远原样；fold = 永远折叠。
-	SystemPromptModeAuto = "auto"
-	SystemPromptModeKeep = "keep"
-	SystemPromptModeFold = "fold"
+	// auto  = 原样优先，命中 11128 时自动降级 fold
+	// keep  = 永远原样，被拦如实报错
+	// fold  = 永远折叠进 <client_instructions>
+	// strip = 原样，但先删掉上游会拒收的身份句（见 provider.identity_strip.go）
+	SystemPromptModeAuto  = "auto"
+	SystemPromptModeKeep  = "keep"
+	SystemPromptModeFold  = "fold"
+	SystemPromptModeStrip = "strip"
 
 	DefaultIdleConnTimeout     = 90 * time.Second
 	DefaultMaxIdleConns        = 100
@@ -108,7 +112,7 @@ type Config struct {
 	CheckinRetryInterval time.Duration
 	// CheckinRetryMax 是当天最多重试几次（不含首次尝试，默认 1）。
 	CheckinRetryMax int
-	// SystemPromptMode 是 system 提示词处理策略，取值 auto / keep / fold。
+	// SystemPromptMode 是 system 提示词处理策略，取值 auto / keep / fold / strip。
 	SystemPromptMode string
 	// QuotaFloorCredits 是账号积分低于该值时不再参与选号（0 = 不启用）。
 	// 数据源是缓存的 billing credits（QuotaRemaining），与配额耗尽同一口径。
@@ -427,6 +431,8 @@ func NormalizeSystemPromptMode(raw string) string {
 		return SystemPromptModeKeep
 	case SystemPromptModeFold, "0", "false":
 		return SystemPromptModeFold
+	case SystemPromptModeStrip:
+		return SystemPromptModeStrip
 	default:
 		return SystemPromptModeAuto
 	}
@@ -436,7 +442,7 @@ func NormalizeSystemPromptMode(raw string) string {
 // 管理台写入前用它拒绝垃圾输入，避免把拼写错误静默成 auto。
 func IsValidSystemPromptMode(value string) bool {
 	switch value {
-	case SystemPromptModeAuto, SystemPromptModeKeep, SystemPromptModeFold:
+	case SystemPromptModeAuto, SystemPromptModeKeep, SystemPromptModeFold, SystemPromptModeStrip:
 		return true
 	default:
 		return false
