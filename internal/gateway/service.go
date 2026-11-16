@@ -571,7 +571,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		}
 		// 已经发给客户端的正文或工具不能撤回，任何错误都不得再换号或刷新后重放。
 		if result.Turn.Delivered {
-			_ = s.Pool.MarkResult(selection, false, err.Error(), 0)
+			_ = s.Pool.MarkResult(selection, false, err.Error(), 0, 0)
 			return CompleteResult{Result: result, Account: accounts.SummarizeAccount(account), AccountID: account.ID}, err
 		}
 		selection.ModelRateLimited = billing.IsModelRateLimitError(err)
@@ -598,7 +598,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		if !opts.FixedAccount && isQuotaExhausted(err) {
 			next := append(append([]string{}, opts.ExcludeIDs...), account.ID)
 			if id, ok := s.nextSelectableAccount(site, opts.Model, next); ok {
-				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err), 0)
 				if pinKey != "" {
 					s.Pins.Forget(pinKey)
 				}
@@ -614,7 +614,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			// （请求一进来就换区会把本来能用的源站点号池绕过去。）
 			opts.ExcludeIDs = next
 			if s.advanceRouteFallback(&opts) || s.advanceDeferredRoute(&opts) {
-				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err), 0)
 				if pinKey != "" {
 					s.Pins.Forget(pinKey)
 				}
@@ -642,10 +642,10 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				return s.CompleteFromPool(ctx, opts)
 			}
 		}
-		_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+		_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err), 0)
 		return CompleteResult{}, err
 	}
-	_ = s.Pool.MarkResult(selection, true, "", 0)
+	_ = s.Pool.MarkResult(selection, true, "", 0, creditOf(result.Turn.Usage))
 	if pinKey != "" {
 		s.Pins.Remember(pinKey, account.ID)
 	}
@@ -654,6 +654,22 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		Account:   accounts.SummarizeAccount(account),
 		AccountID: account.ID,
 	}, nil
+}
+
+// creditOf 取出上游本次实际扣费，缺失时返回 0（= 不扣减）。
+//
+// Usage.Credit 是 *float64：上游没返回这个字段时为 nil，此时**不估算** ——
+// 猜一个值会让下限判断误伤可用账号，而少扣一次只是让保护晚一拍。
+// 实测 22.9% 的请求 credit 为 0（免费额度/套餐内），与「字段缺失」表现一致，
+// 两者都不扣减是安全的。
+func creditOf(usage provider.Usage) float64 {
+	if usage.Credit == nil {
+		return 0
+	}
+	if *usage.Credit <= 0 {
+		return 0
+	}
+	return *usage.Credit
 }
 
 // recordRateLimit 只把确认的限流写入观测器，且必须在 endFlight 之前调用。

@@ -74,7 +74,7 @@ func TestUpstreamCooldownSurvivesQuotaRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(selection, false, "429 too many requests", 2*time.Minute); err != nil {
+	if err := pool.MarkResult(selection, false, "429 too many requests", 2*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UnixMilli()
@@ -118,10 +118,10 @@ func TestMarkResultSuccessClearsCooldownSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(selection, false, "429", time.Minute); err != nil {
+	if err := pool.MarkResult(selection, false, "429", time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(selection, true, "", 0); err != nil {
+	if err := pool.MarkResult(selection, true, "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	store, err := pool.Read()

@@ -148,6 +148,14 @@ type Account struct {
 	QuotaUnlimited bool     `json:"quotaUnlimited,omitempty"`
 	QuotaResetAt   int64    `json:"quotaResetAt,omitempty"`
 	QuotaCheckedAt int64    `json:"quotaCheckedAt,omitempty"`
+	// QuotaSpentSinceCheck 是「上次向上游核实之后，本地累计记账的消耗」。
+	// 用途有两个：
+	//   1. 对账：与「服务端余额的变化量」比对，偏差大说明漏记/重复记（如套餐扣减）
+	//   2. 观测：面板显示「本地认为花了多少」与「服务端掉了多少」
+	//
+	// QuotaRemaining 已在每次成功的 MarkResult 里按 credit 扣减，
+	// 所以这个字段是**冗余的记账凭证**，不参与选号判断。
+	QuotaSpentSinceCheck float64 `json:"quotaSpentSinceCheck,omitempty"`
 
 	ModelCooldowns map[string]int64 `json:"modelCooldowns,omitempty"`
 }
@@ -660,6 +668,25 @@ func UsableForModel(account Account, nowMillis int64, model string, floor float6
 	return unavailableUntil(account, nowMillis, model) <= nowMillis
 }
 
+// deductQuotaLocked 按上游实际扣费扣减余额并累计记账。
+//
+// 调用方必须已持有 p.mu 且已确认 ok==true。
+//
+// 三种情况跳过扣减（都不猜）：
+//   - credit <= 0：免费额度/套餐内请求，或上游没返回扣费字段
+//   - QuotaUnlimited：不限量账号没有余额概念
+//   - QuotaRemaining == nil：从未核实过余额，凭空造一个值只会误导下限判断
+//
+// 允许扣成负数：宁可多算，不可少算。负数会让下限立刻拦住该账号，
+// 而「保守地不扣」会让账号继续被打穿。
+func (p *Pool) deductQuotaLocked(account *Account, credit float64) {
+	if account == nil || credit <= 0 || account.QuotaUnlimited || account.QuotaRemaining == nil {
+		return
+	}
+	*account.QuotaRemaining -= credit
+	account.QuotaSpentSinceCheck += credit
+}
+
 func clearQuotaCache(account *Account) {
 	account.QuotaRemaining = nil
 	account.QuotaUnlimited = false
@@ -850,7 +877,19 @@ func InCooldown(account Account, nowMillis int64) bool {
 	return account.CooldownUntil > 0 && account.CooldownUntil > nowMillis
 }
 
-func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown time.Duration) error {
+// MarkResult 记一次请求结果。
+//
+// credit 是上游本次实际扣费（Usage.Credit）。>0 时立即从 QuotaRemaining 扣减，
+// 让积分下限（QuotaBelowFloor）在**每次请求后**就生效，而不是等下一次
+// 轮询刷新（quotaCacheMaxAge 默认 6 小时，期间账号可能被打穿）。
+//
+// 为什么必须这样：2026-11-16 实测账号 70b8cc3ac591cef7 连续 70 次请求
+// 全部成功、累计扣费 21.90 直到 rem=0，全程没有被下限 20 拦住 ——
+// 因为余额只在 6 小时一次的轮询里更新。
+//
+// credit<=0 时不做任何扣减（22.9% 的请求扣费为 0，属免费/套餐内额度；
+// 失败请求也不能扣）。无法判断时不猜 —— 猜错会误伤可用账号。
+func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown time.Duration, credit float64) error {
 	if selection.Source != "pool" || selection.Account.ID == "" {
 		return nil
 	}
@@ -872,6 +911,10 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 			p.mem.Accounts[i].CooldownSource = ""
 			p.mem.Accounts[i].ModelCooldowns = maps.Clone(p.mem.Accounts[i].ModelCooldowns)
 			delete(p.mem.Accounts[i].ModelCooldowns, selection.Model)
+			// 本地记账：按上游实际扣费立即扣减余额。
+			// 刻意不改 QuotaCheckedAt —— 本地扣减不代表「已向上游核实」，
+			// 改了会让 QuotaBelowFloor 的缓存时效判断失效。
+			p.deductQuotaLocked(&p.mem.Accounts[i], credit)
 			// 全冷却降级打成功，说明「耗尽」快照已经过期；正常成功不能清额度，否则 PreferQuota 立刻失效。
 			if selection.BypassedCooldown {
 				clearQuotaCache(&p.mem.Accounts[i])
@@ -947,6 +990,10 @@ func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited b
 		account.QuotaUnlimited = unlimited
 		account.QuotaResetAt = resetAt
 		account.QuotaCheckedAt = checkedAt
+		// 对账即以服务端为准：本地累计归零重新开始。
+		// 在此之前 QuotaSpentSinceCheck 记录的是「上次核实以来本地认为花了多少」，
+		// 与本次服务端余额的差值可用来发现漏记（例如套餐扣减不经 credit 字段）。
+		account.QuotaSpentSinceCheck = 0
 		switch {
 		case exhausted && resetAt > now && resetAt > account.CooldownUntil:
 			account.CooldownUntil = resetAt

@@ -369,7 +369,7 @@ func TestCompleteFromPoolSkipsCoolingPinnedAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Pool.MarkResult(selection, false, "429 too many requests", time.Hour); err != nil {
+	if err := svc.Pool.MarkResult(selection, false, "429 too many requests", time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	result, err := svc.CompleteFromPool(t.Context(), CompleteOptions{
@@ -928,7 +928,7 @@ func TestPoolSelectSkipsUntil6004Reset(t *testing.T) {
 	if cooldown <= 0 || cooldown > time.Second+500*time.Millisecond {
 		t.Fatalf("expected short parsed cooldown, got %s", cooldown)
 	}
-	if err := pool.MarkResult(sel, false, msg, cooldown); err != nil {
+	if err := pool.MarkResult(sel, false, msg, cooldown, 0); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 8; i++ {
