@@ -19,11 +19,23 @@ const storeDateLayout = "20060102"
 // Store 按天把事件追加到 jsonl 文件。
 // dir 为空时退化为纯内存 store（测试与未配置场景）。
 type Store struct {
-	mu        sync.Mutex
-	dir       string
-	retention time.Duration
-	mem       []Event
-	memDates  map[string]struct{}
+	mu          sync.Mutex
+	fileMu      sync.RWMutex
+	dir         string
+	retention   time.Duration
+	mem         []Event
+	memDates    map[string]struct{}
+	writeFailed bool
+}
+
+// IsPersistent 报告当前 Store 是否处于健康的磁盘落盘模式。
+func (s *Store) IsPersistent() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dir != "" && !s.writeFailed
 }
 
 // OpenStore 打开（或创建）dir 下的按天事件存储。
@@ -80,13 +92,16 @@ func (s *Store) Append(e Event) error {
 
 	f, err := os.OpenFile(s.pathFor(date), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
+		s.writeFailed = true
 		return fmt.Errorf("systemprompt: 打开事件文件失败: %w", err)
 	}
 	defer f.Close()
 	// 一次 Write 一整行：O_APPEND 下单次写是原子的，避免高并发行交错。
 	if _, err := f.Write(line); err != nil {
+		s.writeFailed = true
 		return fmt.Errorf("systemprompt: 写入事件失败: %w", err)
 	}
+	s.writeFailed = false
 	return nil
 }
 
@@ -162,7 +177,10 @@ func (s *Store) Read(date string, offset, limit int) ([]Event, int, error) {
 			}
 		}
 	} else {
-		events, err := readFileEvents(path)
+		s.fileMu.RLock()
+		raw, readErr := os.ReadFile(path)
+		s.fileMu.RUnlock()
+		events, err := parseFileEvents(raw, readErr)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -217,7 +235,10 @@ func (s *Store) StatsForDate(date string) (Stats, error) {
 			}
 		}
 	} else {
-		events, err := readFileEvents(path)
+		s.fileMu.RLock()
+		raw, readErr := os.ReadFile(path)
+		s.fileMu.RUnlock()
+		events, err := parseFileEvents(raw, readErr)
 		if err != nil {
 			return Stats{}, err
 		}
@@ -226,8 +247,7 @@ func (s *Store) StatsForDate(date string) (Stats, error) {
 	return statsFrom(all, 0), nil
 }
 
-func readFileEvents(path string) ([]Event, error) {
-	raw, err := os.ReadFile(path)
+func parseFileEvents(raw []byte, err error) ([]Event, error) {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -276,6 +296,7 @@ func (s *Store) Prune(now time.Time) error {
 	}
 
 	cutoff := now.Add(-s.retention)
+	var firstErr error
 	for _, date := range s.datesLocked() {
 		day, err := time.ParseInLocation(storeDateLayout, date, time.Local)
 		if err != nil {
@@ -285,11 +306,14 @@ func (s *Store) Prune(now time.Time) error {
 		if day.Add(24 * time.Hour).After(cutoff) {
 			continue
 		}
-		if err := os.Remove(s.pathFor(date)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("systemprompt: 删除过期事件文件 %s 失败: %w", date, err)
+		s.fileMu.Lock()
+		rmErr := os.Remove(s.pathFor(date))
+		s.fileMu.Unlock()
+		if rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) && firstErr == nil {
+			firstErr = fmt.Errorf("systemprompt: 删除过期事件文件 %s 失败: %w", date, rmErr)
 		}
 	}
-	return nil
+	return firstErr
 }
 
 func (s *Store) datesLocked() []string {

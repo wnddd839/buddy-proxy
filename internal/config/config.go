@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/subtle"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -305,7 +306,7 @@ func envDurationPositive(primary string, def time.Duration) time.Duration {
 		return def
 	}
 	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || n <= 0 {
+	if err != nil || n <= 0 || n > math.MaxInt64/int64(time.Millisecond) {
 		return def
 	}
 	return time.Duration(n) * time.Millisecond
