@@ -750,10 +750,12 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 // 但仍然执行空消息丢弃 / mergeConsecutiveToolAssistants / PromoteToolImages /
 // NormalizeToolOutput —— 少做任何一步都会换来上游 11148 或图片丢失。
 //
-// strip 非 nil 且 Enabled 时，对 system 内容做「身份句剥离」（见 identity_strip.go）。
-// 只影响 system，不动 user/assistant/tool。剥离发生在 trim 判空**之后**：
-// 剥空的 system 仍会作为空 content 消息保留，不会被这里丢弃 —— 实测上游
-// 接受空 system，且保留它可避免 global 站补 canonical 的兜底注入。
+// strip 非 nil 且 Enabled 时，对 system 与 assistant 的文本做指纹剥离
+// （见 identity_strip.go）：开头身份句 + 任意位置段落指纹。
+// 只影响 system/assistant，不动 user/assistant 的工具调用/tool 输出。
+// 剥离发生在 trim 判空**之后**：剥空的 system 仍会作为空 content 消息保留，
+// 不会被这里丢弃 —— 实测上游接受空 system，且保留它可避免 global 站补
+// canonical 的兜底注入。
 func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, strip *StripConfig, report *StripReport) []map[string]any {
 	var (
 		instructions []string
@@ -777,6 +779,15 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, stri
 			item["content"] = NormalizeToolOutput(message["content"])
 		} else {
 			item["content"] = normalizeContent(message["content"])
+		}
+		// assistant 正文也是上游 11128 的扫描面：2026-11-17 实弹确认，
+		// assistant 里出现 @ 段指纹（子串）或开头身份句（前缀）都会被拦，
+		// 而折叠 system 救不了它（折叠后仍然 400）。只有显式启用剥离的
+		// 档位（auto / strip）会挂 Strip；keep / fold 不挂，保持原样。
+		if role == "assistant" && strip != nil && strip.Enabled {
+			if stripped, changed := stripContent(item["content"], strip, report); changed {
+				item["content"] = stripped
+			}
 		}
 		hasToolCalls := len(asAnySlice(item["tool_calls"])) > 0
 		if messageContentEmpty(item["content"]) && !hasToolCalls && item["tool_call_id"] == nil {

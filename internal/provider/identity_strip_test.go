@@ -235,3 +235,79 @@ func TestStripBlockedIdentityBoundedLinearAndSpacedDot(t *testing.T) {
 		t.Fatalf("重复身份句线性剥离失败: hit=%v got=%q", hit, out)
 	}
 }
+
+// ── 任意位置指纹（contains）────────────────────────────────────
+//
+// 2026-11-17 实弹：dsh 的 file-reference 段出现在 system 的任意位置都拦，
+// 且 assistant 正文同样会被扫；这类规则是「归一化后子串」而不是「前缀」。
+
+const (
+	testDSHFileRefRule    = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root"
+	testDSHFileRefSegment = testDSHFileRefRule + "; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces."
+)
+
+func TestContainsForSite(t *testing.T) {
+	if len(ContainsForSite("domestic")) == 0 {
+		t.Fatalf("domestic 必须有 contains 规则")
+	}
+	// global 目前不拦 dsh 段；未知站点按 global 处理。
+	if got := ContainsForSite("global"); len(got) != 0 {
+		t.Fatalf("global 不应有 contains 规则，得到 %v", got)
+	}
+	if got := ContainsForSite("nonexistent"); len(got) != 0 {
+		t.Fatalf("未知站点应回落 global（空），得到 %v", got)
+	}
+}
+
+func TestStripBlockedContainsDSHFileReference(t *testing.T) {
+	contains := ContainsForSite("domestic")
+	cases := []struct {
+		name    string
+		input   string
+		wantHit bool
+	}{
+		{"整段", testDSHFileRefSegment, true},
+		{"只有规则句", testDSHFileRefRule, true},
+		{"前面加字", "PREFIX " + testDSHFileRefSegment, true},
+		{"前后贴字", "AAA" + testDSHFileRefSegment + "ZZZ", true},
+		{"夹在长文中间", "alpha.\n\n" + testDSHFileRefSegment + "\n\nomega.", true},
+		{"全大写", strings.ToUpper(testDSHFileRefRule), true},
+		{"双空格", strings.ReplaceAll(testDSHFileRefRule, " ", "  "), true},
+		{"出现两次", testDSHFileRefRule + "\n\n" + testDSHFileRefRule, true},
+
+		{"删掉 @", strings.ReplaceAll(testDSHFileRefSegment, "@", ""), false},
+		{"root 改 roox", strings.Replace(testDSHFileRefSegment, "workspace root", "workspace roox", 1), false},
+		{"中性文本", "alpha beta gamma delta", false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, removed, hit := stripBlockedContains(c.input, contains)
+			if hit != c.wantHit {
+				t.Fatalf("hit=%v want %v (输入 %q, 结果 %q)", hit, c.wantHit, c.input, got)
+			}
+			if !hit {
+				if got != c.input {
+					t.Fatalf("未命中时不得改动内容：got %q want %q", got, c.input)
+				}
+				if removed != 0 {
+					t.Fatalf("未命中时 removed 应为 0，得到 %d", removed)
+				}
+				return
+			}
+			if removed != len(c.input)-len(got) {
+				t.Fatalf("removed=%d 与实际差值 %d 不一致", removed, len(c.input)-len(got))
+			}
+			// 归一化后不得再残留规则串（循环删除必须彻底）。
+			norm, _ := scanNormalize(got)
+			if strings.Contains(norm, contains[0]) {
+				t.Fatalf("剥离后仍残留规则串: %q", got)
+			}
+			// 幂等：剥过的不再命中。
+			again, removed2, hit2 := stripBlockedContains(got, contains)
+			if hit2 || removed2 != 0 || again != got {
+				t.Fatalf("幂等性破坏: %q -> %q", got, again)
+			}
+		})
+	}
+}

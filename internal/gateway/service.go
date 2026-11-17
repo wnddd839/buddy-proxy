@@ -471,20 +471,29 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 	}
 }
 
-// applyStripConfig 给上游请求挂上「身份句剥离」配置。
+// applyStripConfig 给上游请求挂上「指纹剥离」配置。
 //
-// 只有 strip 档才启用：auto/keep/fold 的 system 形态必须与改动前完全一致。
+// auto 与 strip 档都启用：
+//   - auto：首试前就删掉已知指纹，避免每次请求都先吃一个 400/11128
+//     （上游按拒收次数累计账号风险，不能靠「失败再重试」兜底）；
+//     若仍被未知的新指纹拒收，auto 的折叠重试继续兜底。
+//   - strip：规则与 auto 相同。保留该档只为兼容已有配置 ——
+//     历史上它是唯一做剥离的档位，现在 auto 也剥了，两档实际等价
+//     （都保留 11128 折叠兜底，见 CompleteFromPool 的降级分支）。
+//   - keep / fold：不启用，保持与改动前完全一致的形态。
+//
 // 剥离规则按**账号所在站点**取（与 chatOptionsFromAccount 的 site 同源），
 // 因为黑名单本身按站点分流（DeepSeek 身份句只在 domestic 拦）。
 //
 // 剥离在 provider 层执行，晚于 sessionpin.Key —— 会话键始终用原始 system 计算。
 func applyStripConfig(chatOpts *provider.ChatOptions, mode, site string, report *provider.StripReport) {
-	if mode != config.SystemPromptModeStrip {
+	if mode != config.SystemPromptModeStrip && mode != config.SystemPromptModeAuto {
 		return
 	}
 	chatOpts.Strip = &provider.StripConfig{
-		Enabled: true,
-		Rules:   provider.RulesForSite(site),
+		Enabled:  true,
+		Rules:    provider.RulesForSite(site),
+		Contains: provider.ContainsForSite(site),
 	}
 	chatOpts.StripReport = report
 }
@@ -647,7 +656,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		opts.SystemOutcome.Fingerprint = att.fp
 	}
 	chatOpts := s.chatOptionsFromAccount(account, opts)
-	// strip 档：挂上身份句剥离配置（auto/keep/fold 不启用）。
+	// auto/strip 档：挂上指纹剥离配置（keep/fold 不启用）。
 	// site 用本次实际选中的账号所在站点，与黑名单的站点分流口径一致。
 	// 每次尝试使用局部 stripReport，避免跨递归重试累加或跨区重试残留假阳性。
 	var stripReport provider.StripReport

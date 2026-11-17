@@ -37,7 +37,7 @@ func TestKeepModeChannelBlockDoesNotCoolDownAccount(t *testing.T) {
 	_, err = svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto",
 		Messages: []map[string]any{
-			{"role": "system", "content": claudeCodeMarker},
+			{"role": "system", "content": unknownFingerprintMarker},
 			{"role": "user", "content": "hi"},
 		},
 	})
@@ -95,7 +95,7 @@ func TestAutoModeChannelBlockDoesNotCoolDownAccount(t *testing.T) {
 	_, err = svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto",
 		Messages: []map[string]any{
-			{"role": "system", "content": claudeCodeMarker},
+			{"role": "system", "content": unknownFingerprintMarker},
 			{"role": "user", "content": "hi"},
 		},
 	})

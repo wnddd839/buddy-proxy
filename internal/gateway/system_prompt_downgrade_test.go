@@ -104,19 +104,29 @@ func TestRecordSystemPromptEventNeverStoresPlaintext(t *testing.T) {
 	}
 }
 
-// claudeCodeMarker 是上游 11128（竞品 CLI 指纹）扫描命中的精确整句。
+// claudeCodeMarker 是上游 11128 黑名单里**已被网关收录**的精确整句。
+// auto/strip 档会在首试前就把它删掉，所以它只适合用来锁「首试就是干净的」。
 const claudeCodeMarker = "You are Claude Code, Anthropic's official CLI for Claude."
 
+// unknownFingerprintMarker 模拟「上游黑名单新增、网关还没收录」的指纹串。
+//
+// 降级链用例必须用它当触发串：v0.7.6 起 auto 档首试前就会剥掉已知指纹，
+// 若仍拿 claudeCodeMarker 当触发串，首试 body 里根本没有它，mock 不会回
+// 11128 —— 测到的就不是降级而是普通成功。用未知串才能继续覆盖
+// 「首试被拒 -> 折叠重放 -> 成功」这条兜底路径。
+const unknownFingerprintMarker = "UPSTREAM-BLOCKED-FINGERPRINT-9F3A2C"
+
 // blockOnceTransport 按**请求体内容**决定是否拦截：只要存在 role==system 且
-// content 含 claudeCodeMarker 的消息就回 11128，否则回正常 SSE。
-// 折叠后该句被挪进 user 的 <client_instructions>、system 换成 canonical，
-// 于是不再命中扫描 —— 降级用例由此真正锁住「折叠是让它通过的原因」，
-// 而不只是「发生了一次重试」。neverBlock=true 时永不拦截。
+// content 含 marker（零值 = unknownFingerprintMarker）的消息就回 11128，
+// 否则回正常 SSE。折叠后该句被挪进 user 的 <client_instructions>、system
+// 换成 canonical，于是不再命中扫描 —— 降级用例由此真正锁住「折叠是让它
+// 通过的原因」，而不只是「发生了一次重试」。neverBlock=true 时永不拦截。
 // onChat 在每次 chat 请求时触发，用于构造「请求进行中切换模式」的场景。
 type blockOnceTransport struct {
 	mu         sync.Mutex
 	bodies     []string
 	neverBlock bool
+	marker     string
 	onChat     func()
 }
 
@@ -143,8 +153,8 @@ func messageContentText(content any) string {
 	}
 }
 
-// carriesClaudeSystem 判定请求体里是否有带竞品 CLI 指纹整句的 system 消息。
-func carriesClaudeSystem(body []byte) bool {
+// carriesSystemMarker 判定请求体里是否有带指定指纹串的 system 消息。
+func carriesSystemMarker(body []byte, marker string) bool {
 	var payload struct {
 		Messages []map[string]any `json:"messages"`
 	}
@@ -153,7 +163,7 @@ func carriesClaudeSystem(body []byte) bool {
 	}
 	for _, m := range payload.Messages {
 		role, _ := m["role"].(string)
-		if role == "system" && strings.Contains(messageContentText(m["content"]), claudeCodeMarker) {
+		if role == "system" && strings.Contains(messageContentText(m["content"]), marker) {
 			return true
 		}
 	}
@@ -184,12 +194,16 @@ func (t *blockOnceTransport) RoundTrip(req *http.Request) (*http.Response, error
 	t.mu.Lock()
 	neverBlock := t.neverBlock
 	onChat := t.onChat
+	marker := t.marker
 	t.bodies = append(t.bodies, string(raw))
 	t.mu.Unlock()
 	if onChat != nil {
 		onChat()
 	}
-	if !neverBlock && carriesClaudeSystem(raw) {
+	if marker == "" {
+		marker = unknownFingerprintMarker
+	}
+	if !neverBlock && carriesSystemMarker(raw, marker) {
 		header.Set("Content-Type", "application/json")
 		return &http.Response{
 			StatusCode: http.StatusBadRequest, Status: "Bad Request", Header: header,
@@ -229,7 +243,7 @@ func TestAutoModeDowngradesOn11128(t *testing.T) {
 	transport := &blockOnceTransport{}
 	svc.Provider.HTTP = &http.Client{Transport: transport}
 
-	const clientSystem = claudeCodeMarker
+	const clientSystem = unknownFingerprintMarker
 	outcome := &SystemPromptOutcome{}
 	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto",
@@ -247,12 +261,12 @@ func TestAutoModeDowngradesOn11128(t *testing.T) {
 	if len(bodies) != 2 {
 		t.Fatalf("应打 2 次上游（keep 失败 + fold 重试），实际 %d", len(bodies))
 	}
-	// 真正锁住因果：第一次原样带竞品 CLI 指纹 system（正是 mock 拦它的原因），
+	// 真正锁住因果：第一次原样带未知指纹 system（正是 mock 拦它的原因），
 	// 折叠后不再有带该句的 system 消息（mock 据此放行），重试才成功。
-	if !carriesClaudeSystem([]byte(bodies[0])) {
+	if !carriesSystemMarker([]byte(bodies[0]), unknownFingerprintMarker) {
 		t.Fatalf("第一次应原样带含指纹整句的 system，实际 body=%s", bodies[0])
 	}
-	if carriesClaudeSystem([]byte(bodies[1])) {
+	if carriesSystemMarker([]byte(bodies[1]), unknownFingerprintMarker) {
 		t.Fatalf("折叠后不应再有带指纹整句的 system，实际 body=%s", bodies[1])
 	}
 	folded := chatBodyMessages(t, bodies[1])
@@ -289,6 +303,57 @@ func TestAutoModeDowngradesOn11128(t *testing.T) {
 	}
 }
 
+// TestAutoModeStripsKnownFingerprintBeforeFirstAttempt 锁住 v0.7.6 的核心约束：
+// 已知指纹必须在**首试前**删掉，不能靠「先吃 400 再折叠」兜底。
+//
+// 上游按被 11128 拒收的次数累计账号风险分，每个请求都先失败一次不可接受。
+// 这里用已收录的 claudeCodeMarker 作 system：transport 默认只拦未知串，
+// 因此若实现退回「先直传再重试」，首试会被真实上游拒（而 mock 不拦），
+// 断言「只打 1 次 + body 里没有该串 + 无 client_instructions」就会失败。
+func TestAutoModeStripsKnownFingerprintBeforeFirstAttempt(t *testing.T) {
+	transport := &blockOnceTransport{}
+	svc := newModeSnapshotTestService(t, config.SystemPromptModeAuto, transport)
+
+	outcome := &SystemPromptOutcome{}
+	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model: "auto",
+		Messages: []map[string]any{
+			{"role": "system", "content": claudeCodeMarker},
+			{"role": "user", "content": "hi"},
+		},
+		SystemOutcome: outcome,
+	})
+	if err != nil {
+		t.Fatalf("剥离后应首试成功，实际 %v", err)
+	}
+	bodies := transport.snapshotBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("首试就应干净，不得重试；实际打 %d 次", len(bodies))
+	}
+	if strings.Contains(bodies[0], "Claude Code") {
+		t.Fatalf("已知指纹未被剥离: %s", bodies[0])
+	}
+	if strings.Contains(bodies[0], "client_instructions") {
+		t.Fatalf("不应走折叠（出现它就说明首试被拒过）: %s", bodies[0])
+	}
+	if outcome.Degraded || outcome.Form != "keep" {
+		t.Fatalf("outcome 应为 keep 且未降级，实际 %+v", outcome)
+	}
+	if !outcome.Stripped {
+		t.Fatalf("outcome 应记录 Stripped=true，实际 %+v", outcome)
+	}
+	events := svc.SystemPromptJournal.Recent(10)
+	if len(events) != 1 {
+		t.Fatalf("应只记 1 条事件（没有失败重试），实际 %d：%+v", len(events), events)
+	}
+	if events[0].Degraded || events[0].Status != http.StatusOK {
+		t.Fatalf("事件应为 200 且未降级，实际 %+v", events[0])
+	}
+	if !events[0].Stripped {
+		t.Fatalf("事件应带 Stripped 标记，实际 %+v", events[0])
+	}
+}
+
 func TestKeepModeDoesNotRetryOn11128(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(config.Config{
@@ -310,7 +375,7 @@ func TestKeepModeDoesNotRetryOn11128(t *testing.T) {
 	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto",
 		Messages: []map[string]any{
-			{"role": "system", "content": "You are Claude Code, Anthropic's official CLI for Claude."},
+			{"role": "system", "content": unknownFingerprintMarker},
 			{"role": "user", "content": "hi"},
 		},
 	})
@@ -397,7 +462,7 @@ func TestSystemPromptEventModeIsSnapshot(t *testing.T) {
 	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto",
 		Messages: []map[string]any{
-			{"role": "system", "content": claudeCodeMarker},
+			{"role": "system", "content": unknownFingerprintMarker},
 			{"role": "user", "content": "hi"},
 		},
 	})
@@ -429,7 +494,7 @@ func TestSystemPromptDowngradeEventsShareSnapshotMode(t *testing.T) {
 	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto",
 		Messages: []map[string]any{
-			{"role": "system", "content": claudeCodeMarker},
+			{"role": "system", "content": unknownFingerprintMarker},
 			{"role": "user", "content": "hi"},
 		},
 	})
@@ -460,7 +525,7 @@ func TestSystemPromptDowngradeUsesSnapshotMode(t *testing.T) {
 	_, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
 		Model: "auto",
 		Messages: []map[string]any{
-			{"role": "system", "content": claudeCodeMarker},
+			{"role": "system", "content": unknownFingerprintMarker},
 			{"role": "user", "content": "hi"},
 		},
 		SystemOutcome: outcome,

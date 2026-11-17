@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.17-v0.7.6"
+const UIRevision = "2026.11.17-v0.7.7-pre-strip"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -1091,7 +1091,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
             <button type="button" data-mode="auto" class="active">auto · 先直传，被拒再改写</button>
             <button type="button" data-mode="keep">keep · 直传 system</button>
             <button type="button" data-mode="fold">fold · 改写 system</button>
-            <button type="button" data-mode="strip">strip · 删掉身份句，其余直传</button>
+            <button type="button" data-mode="strip">strip · 删已知指纹，其余直传</button>
           </div>
           <div class="actions">
             <label class="sp-check" title="含传输失败、被拦截、降级、其它错误，不是只看失败"><input type="checkbox" id="spOnlyProblems"/> 只看问题</label>
@@ -1111,13 +1111,13 @@ button:disabled{opacity:.4;cursor:not-allowed}
     { role: user,   content: "&lt;client_instructions&gt;\nYou are Claude Code...\n&lt;/client_instructions&gt;\n\n帮我写个函数" } ]</pre>
           <p>「直传」system 优先级最高，但上游会拒收某个特定的 Claude Code 整句人设；「改写」把人设降级成对话里的建议，换来绝不撞拦截。</p>
           <ul>
-            <li><strong>auto（默认）</strong>：先直传；万一被上游拒收（错误码 11128），自动改成「改写」再发一次，请求不会失败。日常用这个。</li>
+            <li><strong>auto（默认）</strong>：<strong>首试前</strong>先删掉已知的竞品指纹（开头身份句 + 已知段落），再直传；万一仍被上游拒收（错误码 11128），自动改成「改写」再发一次。日常用这个——首试就是干净的，不会每个请求都先吃一次 400。</li>
             <li><strong>keep</strong>：只直传，绝不改写；上游拒收就直接报错，不重试。想严格照 system 执行，或想看真实失败原因时用。</li>
             <li><strong>fold</strong>：每次都改写，从不直传。批量/自动化、或不在意 system 优先级时用。</li>
-            <li><strong>strip</strong>：直传 system，但<strong>只删掉开头那一句</strong>会被上游拒收的身份句，其余（AGENTS.md、工具说明、规则）一个字不改。想保住 system 的高优先级、又不想被 11128 拦住时用。</li>
+            <li><strong>strip</strong>：与 auto 相同的剥离规则（开头身份句 + 任意位置段落指纹），也保留 11128 折叠兜底。auto 现在同样首试前剥离，两档行为一致；strip 保留用于兼容已有配置。</li>
           </ul>
-          <p><strong>strip 删什么</strong>：上游只拦两条精确整句 —— <code>You are Claude Code, Anthropic's official CLI for Claude.</code>（两个区都拦）和 <code>You are an AI agent powered by DeepSeek Harness.</code>（仅国内区拦）。判定口径是「删掉空格类字符并转小写后，以该句开头」，所以大小写、连续空格、NBSP/全角空格等变体都会命中。删完若 system 变空，这条消息仍保留（上游接受空 system），不会凭空多出网关自己写的人设。</p>
-          <p>技术名 <code>auto / keep / fold / strip</code> 用于 API 与日志；面板「形态」列里的 <code>keep</code>=直传、<code>fold</code>=改写、<code>keep(已剥离)</code>=strip 档删过身份句，与此对应。</p>
+          <p><strong>网关删什么</strong>：上游拦两类指纹，都是「删空格类字符并转小写」后比较 —— ① <strong>开头身份句</strong>：<code>You are Claude Code, Anthropic's official CLI for Claude.</code>（两个区都拦）和 <code>You are an AI agent powered by DeepSeek Harness.</code>（仅国内区拦），只在该条消息<strong>开头</strong>命中；② <strong>任意位置段落指纹</strong>：dsh 的 <code>Tokens prefixed with @ … resolve from the workspace root</code>（仅国内区拦），出现在 system/assistant <strong>任何位置</strong>都拦，按归一化子串匹配。两类都只删除命中的那段文字，不引入任何替换文本；删完若 system 变空，这条消息仍保留（上游接受空 system），不会凭空多出网关自己写的人设。</p>
+          <p>技术名 <code>auto / keep / fold / strip</code> 用于 API 与日志；面板「形态」列里的 <code>keep</code>=直传、<code>fold</code>=改写、<code>keep(已剥离)</code>=auto/strip 档删过已知指纹，与此对应。</p>
           <p><strong>auto 降级会产生两条事件</strong>（被拦截的 <code>keep</code> 失败 + 折叠重放成功的 <code>fold</code>），用同一请求 ID 关联、属于同一次请求，别当成两个请求；面板会用左侧浅色边框把这两行串起来，形态列标 <code>(被拦截)</code> / <code>(降级重放)</code>。</p>
         </div>
 
@@ -1146,7 +1146,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th>时间</th>
                   <th>请求 ID</th>
                   <th>模式</th>
-                  <th title="keep=直传 system；fold=改写 system；keep(已剥离)=strip 档删过身份句；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
+                  <th title="keep=直传 system；fold=改写 system；keep(已剥离)=auto/strip 档删过已知指纹；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
                   <th title="从请求头推断的客户端类型；「会话」列显示它有没有发会话头（header=有，content=靠内容哈希）">客户端</th>
                   <th>指纹</th>
                   <th>system 字节</th>
@@ -1182,7 +1182,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th>时间</th>
                   <th>请求 ID</th>
                   <th>模式</th>
-                  <th title="keep=直传 system；fold=改写 system；keep(已剥离)=strip 档删过身份句；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
+                  <th title="keep=直传 system；fold=改写 system；keep(已剥离)=auto/strip 档删过已知指纹；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
                   <th title="从请求头推断的客户端类型；「会话」列显示它有没有发会话头（header=有，content=靠内容哈希）">客户端</th>
                   <th>指纹</th>
                   <th>system 字节</th>
@@ -2092,7 +2092,7 @@ function spRowsHtml(rows, emptyText){
     // 一次 11128 降级 = 两条事件（同一 requestId）：被拦截(keep) + 重放成功(fold)。
     // 用形态徽标括号说明 + 行 class 把两行在视觉上串起来，避免被当成两个独立请求。
     let formText = e.form || '—';
-    // 优先级：降级重放 > 已剥离但仍被新规则拦截 > 被拦截 > 已剥离（strip 档）> 原形态。
+    // 优先级：降级重放 > 已剥离但仍被新规则拦截 > 被拦截 > 已剥离（auto/strip 档）> 原形态。
     if (e.recovered === true) formText = 'fold(降级重放)';
     else if (e.degraded === true && e.stripped === true) formText = 'keep(已剥离·被拦截)';
     else if (e.degraded === true) formText = 'keep(被拦截)';

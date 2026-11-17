@@ -68,6 +68,27 @@ var blockedIdentityPrefixes = map[string][]string{
 	},
 }
 
+// blockedContainsRules 是「任意位置命中」的指纹黑名单（归一化形态）。
+//
+// 与 blockedIdentityPrefixes 的区别：身份句只在消息**开头**才拦，而这类
+// 段落指纹出现在 system / assistant 的任意位置都会触发 11128。
+// 2026-11-17 实弹反推：归一化串前后贴任意字符仍被拦；删掉其中的 "@" 或把
+// "workspace root" 改成 "workspace roox" 即放行 —— 说明是归一化后的子串匹配。
+//
+// 已知条目来自 dsh（DeepSeek Harness）自带 file-reference 段的开头：
+//
+//	Tokens prefixed with @ are paths the user explicitly referenced.
+//	Relative paths resolve from the workspace root
+//
+// 该段由 @deepseek-ai/dsh-file-reference 的 FILE_REFERENCE_PROMPT 常量提供，
+// 经 dsh-file-reference-local 注册为 system section "context:file-reference"，
+// 每个 dsh web 实例都会带，与第三方插件无关。
+var blockedContainsRules = map[string][]string{
+	"domestic": {
+		"tokensprefixedwith@arepathstheuserexplicitlyreferenced.relativepathsresolvefromtheworkspaceroot",
+	},
+}
+
 // normalizedSpace 判断某个 rune 是否属于「上游归一化时会删除的空格类码位」。
 //
 // 这份集合是实弹枚举出来的（见 TestScanNormalizeRemovesSpaces）：
@@ -163,6 +184,79 @@ func stripBlockedIdentity(s string, rules []string) (string, int, bool) {
 	return s, len(original) - len(s), true
 }
 
+// stripBlockedContains 删除内容中**任意位置**命中的指纹子串。
+//
+// 与 stripBlockedIdentity 的分工：
+//   - 身份句 -> 只在开头命中（HasPrefix），由 stripBlockedIdentity 处理；
+//   - 段落指纹 -> 任意位置命中（Contains），由本函数处理。
+//
+// 循环删除直到不再命中：同一段文字可能出现多次，且删掉一处的拼接结果
+// 可能又凑出一个新的命中（实测 "A. A." 的双句拼接需要逐句剥）。
+//
+// 只删命中的归一化区间，不引入任何替换文本，前后文原样保留。
+//
+// 每轮只删一处、删完重扫，是为了处理「删掉中间一段后，前后文拼出一个新命中」
+// 的情况（前缀剥离的 "A. A." 也是同一类）。轮数上限防病态输入把 CPU 拖死：
+// 正常 system 至多一两处，256 轮远大于真实需求。
+func stripBlockedContains(s string, rules []string) (string, int, bool) {
+	if s == "" || len(rules) == 0 {
+		return s, 0, false
+	}
+	original := s
+	for pass := 0; pass < maxContainsStripPasses; pass++ {
+		norm, offsets := scanNormalize(s)
+		if norm == "" || len(offsets) != len(norm) {
+			break
+		}
+		cut := false
+		for _, rule := range rules {
+			if rule == "" {
+				continue
+			}
+			idx := strings.Index(norm, rule)
+			if idx < 0 {
+				continue
+			}
+			start := offsets[idx]
+			last := offsets[idx+len(rule)-1]
+			_, size := decodeRune(s[last:])
+			end := last + size
+			if start < 0 || end > len(s) || start >= end {
+				continue
+			}
+			s = s[:start] + s[end:]
+			cut = true
+			break
+		}
+		if !cut {
+			break
+		}
+	}
+	if s == original {
+		return original, 0, false
+	}
+	return s, len(original) - len(s), true
+}
+
+// maxContainsStripPasses 限制 contains 剥离的重扫轮数（见 stripBlockedContains）。
+const maxContainsStripPasses = 256
+
+// stripText 依次执行「开头身份句」与「任意位置指纹」两类剥离。
+func stripText(text string, cfg *StripConfig) (string, int, bool) {
+	if cfg == nil || !cfg.Enabled {
+		return text, 0, false
+	}
+	out, removed, hit := stripBlockedIdentity(text, cfg.Rules)
+	if hit {
+		text = out
+	}
+	rest, removed2, hit2 := stripBlockedContains(text, cfg.Contains)
+	if hit2 {
+		text = rest
+	}
+	return text, removed + removed2, hit || hit2
+}
+
 // cutBlockedPrefix 若 s 归一化后以某条规则开头，返回「切掉该句后」的余下内容。
 //
 // 切法：按 offsets 找到该句在原串中的结束 byte 偏移，然后跳过紧跟的
@@ -252,10 +346,21 @@ func RulesForSite(site string) []string {
 	return blockedIdentityPrefixes["global"]
 }
 
+// ContainsForSite 返回该站点「任意位置」指纹的全量黑名单。
+//
+// 与 RulesForSite 同一口径：未知站点回落 global，且绝不 panic。
+// global 目前没有 contains 规则，返回 nil 表示「该站点不做子串剥离」。
+func ContainsForSite(site string) []string {
+	return blockedContainsRules[config.NormalizeSite(site)]
+}
+
 // StripConfig 描述一次请求的剥离配置。
 type StripConfig struct {
 	Enabled bool
-	Rules   []string
+	// Rules 是「消息开头」命中的身份句（归一化形态）。
+	Rules []string
+	// Contains 是「任意位置」命中的指纹段落（归一化形态）。
+	Contains []string
 }
 
 // StripReport 回填一次请求实际发生的剥离情况，供网关记事件。
@@ -283,12 +388,12 @@ func (r *StripReport) add(removed int) {
 // 其他类型（nil / 数字 / 未知结构）一律不碰 —— 保守处理，
 // 宁可漏剥也不破坏客户端结构。
 func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool) {
-	if cfg == nil || !cfg.Enabled || len(cfg.Rules) == 0 {
+	if cfg == nil || !cfg.Enabled || (len(cfg.Rules) == 0 && len(cfg.Contains) == 0) {
 		return content, false
 	}
 	switch v := content.(type) {
 	case string:
-		out, removed, hit := stripBlockedIdentity(v, cfg.Rules)
+		out, removed, hit := stripText(v, cfg)
 		if !hit {
 			return content, false
 		}
@@ -308,7 +413,7 @@ func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool
 			if !ok {
 				continue
 			}
-			out, removed, hit := stripBlockedIdentity(text, cfg.Rules)
+			out, removed, hit := stripText(text, cfg)
 			if !hit {
 				continue
 			}
