@@ -186,3 +186,25 @@ func TestHarnessKeyDistinguishesSameMachineRestartNewTopic(t *testing.T) {
 		t.Fatalf("同机重启同 session-1 但首条 user 不同，必须得到不同会话键：%q", topic1Turn1)
 	}
 }
+
+func TestHarnessKeyStableWhenFirstUserIsImageOnly(t *testing.T) {
+	h := http.Header{}
+	h.Set("X-Deepseek-Harness-User-Id", dshUserA)
+	h.Set("X-Deepseek-Harness-Session-Id", dshSession1)
+
+	imgUser := map[string]any{
+		"role": "user",
+		"content": []any{
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAA"}},
+		},
+	}
+	turn1, _ := sessionpin.Key(h, "", []map[string]any{imgUser})
+	turn2, _ := sessionpin.Key(h, "", []map[string]any{
+		imgUser,
+		{"role": "assistant", "content": "看到了图片"},
+		{"role": "user", "content": "继续分析这张图"},
+	})
+	if turn1 != turn2 {
+		t.Fatalf("纯图片首轮后续追加文本时 dsh 会话键不得漂移：%q != %q", turn1, turn2)
+	}
+}

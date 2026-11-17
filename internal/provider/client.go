@@ -1948,7 +1948,18 @@ func extractErrorMessage(raw []byte, status int) string {
 		return text
 	}
 	if errObj, ok := payload["error"].(map[string]any); ok {
-		return strutil.First(fmt.Sprint(errObj["message"]), fmt.Sprint(errObj["code"]), text)
+		msg := strings.TrimSpace(fmt.Sprint(errObj["message"]))
+		if msg == "<nil>" {
+			msg = ""
+		}
+		code := strings.TrimSpace(fmt.Sprint(errObj["code"]))
+		if code == "<nil>" {
+			code = ""
+		}
+		if msg != "" && code != "" && !strings.Contains(msg, code) {
+			return fmt.Sprintf("%s (code %s)", msg, code)
+		}
+		return strutil.First(msg, code, text)
 	}
 	if msg := strutil.First(fmt.Sprint(payload["message"]), fmt.Sprint(payload["msg"]), fmt.Sprint(payload["error"])); msg != "" && msg != "<nil>" {
 		if code, ok := payload["code"]; ok {
@@ -2147,17 +2158,17 @@ func newStallGuard(body io.Reader, timeout, afterFirstByte time.Duration) *stall
 	}
 	g := &stallGuard{r: body, closer: closer, timeout: timeout, afterFirstByte: afterFirstByte}
 	g.timer = time.AfterFunc(timeout, func() {
-		g.fired.Store(true)
-		_ = g.closer.Close()
+		if g.fired.CompareAndSwap(false, true) {
+			_ = g.closer.Close()
+		}
 	})
 	return g
 }
 
-// Read 每次读到字节（含 thinking / 心跳 / 注释帧）就重置定时器；
-// 首次读到字节时把阈值放宽到 afterFirstByte（仅生效一次）。
 func (g *stallGuard) Read(p []byte) (int, error) {
 	n, err := g.r.Read(p)
-	if n > 0 {
+	if n > 0 && !g.fired.Load() {
+		// 收到任意字节即放宽到 afterFirstByte（仅首字节触发一次），避免首包无换行时仍按窄阈值 Reset。
 		if g.afterFirstByte > 0 && g.widened.CompareAndSwap(false, true) {
 			g.timeout = g.afterFirstByte
 		}

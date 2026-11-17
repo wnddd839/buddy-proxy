@@ -216,8 +216,22 @@ func TestStripBlockedIdentityRulesForSite(t *testing.T) {
 	if len(RulesForSite("")) != len(glob) {
 		t.Fatalf("空站点应回落 global")
 	}
-	// 未知站点也必须返回非空规则，绝不能返回 nil（否则等于关闭剥离）
+	// 未知站点也必须返回非空规则，绝不能返回 nil（否则关闭剥离）
 	if len(RulesForSite("nonexistent")) == 0 {
 		t.Fatalf("未知站点不得返回空规则")
+	}
+}
+
+func TestStripBlockedIdentityBoundedLinearAndSpacedDot(t *testing.T) {
+	rules := RulesForSite("domestic")
+	spaced, _, hit := stripBlockedIdentity("You are an AI agent powered by DeepSeek Harness  .\n\nRules", rules)
+	if !hit || spaced != "Rules" {
+		t.Fatalf("句末空格+句号未干净剥离: hit=%v got=%q", hit, spaced)
+	}
+
+	repeated := strings.Repeat(testDSHSentence+" ", 20000) + "TailRules"
+	out, _, hit := stripBlockedIdentity(repeated, rules)
+	if !hit || out != "TailRules" {
+		t.Fatalf("重复身份句线性剥离失败: hit=%v got=%q", hit, out)
 	}
 }

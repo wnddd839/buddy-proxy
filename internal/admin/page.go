@@ -555,6 +555,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
   .checkin-rule>label:first-child{flex-basis:100%}
   .test-model-label{flex-wrap:wrap;white-space:normal}
   .log-table-wrap,.usage-models{max-width:100%;overflow-x:auto}
+  .seg{flex-wrap:wrap;max-width:100%}
   .modal{padding:12px}.modal-card{padding:20px 16px}
 }
 
@@ -1122,7 +1123,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
 
         <p class="checkin-hint" style="margin:16px 0 0">指标口径：优先按今天落盘事件统计（重启不清零）；若后端返回 <code>statsScope="memory"</code> 则为进程内近 24h（重启会清零）。当前口径：<strong id="spStatsScope">加载中…</strong></p>
         <div class="metrics">
-          <div class="metric"><div class="k" id="spTotalLabel">近 24h 事件</div><div class="v" id="spTotal">0</div></div>
+          <div class="metric"><div class="k" id="spTotalLabel">今日事件</div><div class="v" id="spTotal">0</div></div>
           <div class="metric"><div class="k">keep</div><div class="v" id="spKeep">0</div></div>
           <div class="metric"><div class="k">fold</div><div class="v" id="spFold">0</div></div>
           <div class="metric" title="degraded:true 的事件数，即被 11128 拦截的失败尝试次数"><div class="k">降级/被拦截次数</div><div class="v" id="spDegraded">0</div></div>
@@ -1181,7 +1182,8 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th>时间</th>
                   <th>请求 ID</th>
                   <th>模式</th>
-                  <th title="keep=直传 system；fold=改写 system；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
+                  <th title="keep=直传 system；fold=改写 system；keep(已剥离)=strip 档删过身份句；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
+                  <th title="从请求头推断的客户端类型；「会话」列显示它有没有发会话头（header=有，content=靠内容哈希）">客户端</th>
                   <th>指纹</th>
                   <th>system 字节</th>
                   <th>账号</th>
@@ -2090,9 +2092,9 @@ function spRowsHtml(rows, emptyText){
     // 一次 11128 降级 = 两条事件（同一 requestId）：被拦截(keep) + 重放成功(fold)。
     // 用形态徽标括号说明 + 行 class 把两行在视觉上串起来，避免被当成两个独立请求。
     let formText = e.form || '—';
-    // 优先级：降级重放 > 被拦截 > 已剥离（strip 档）> 原形态。
-    // stripped 与 degraded 互斥：前者是「定向删一句」，后者是「整条降级」。
+    // 优先级：降级重放 > 已剥离但仍被新规则拦截 > 被拦截 > 已剥离（strip 档）> 原形态。
     if (e.recovered === true) formText = 'fold(降级重放)';
+    else if (e.degraded === true && e.stripped === true) formText = 'keep(已剥离·被拦截)';
     else if (e.degraded === true) formText = 'keep(被拦截)';
     else if (e.stripped === true) formText = 'keep(已剥离)';
     // 客户端列：显示识别结果；带会话来源提示，方便判断账号亲和是否走头。

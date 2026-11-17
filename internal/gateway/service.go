@@ -298,6 +298,14 @@ func (s *Service) SetBehaviorSwitches(next BehaviorSwitches) config.Config {
 	return cfg
 }
 
+// SetSystemPromptMode 仅原子更新运行中的 system 提示词策略，不覆写并发修改的其他行为开关。
+func (s *Service) SetSystemPromptMode(mode string) config.Config {
+	normalized := config.NormalizeSystemPromptMode(mode)
+	return s.updateConfig(func(c *config.Config) {
+		c.SystemPromptMode = normalized
+	})
+}
+
 func (s *Service) SetAPIKeys(keys []config.APIKeyBinding) config.Config {
 	copied := append([]config.APIKeyBinding(nil), keys...)
 	return s.updateConfig(func(c *config.Config) {
@@ -385,7 +393,8 @@ type CompleteOptions struct {
 	// 沿递归重试原样传递（opts 按值传递），调用方不要设置。
 	systemMode string
 	// FoldedRetry 表示已经因 11128 降级过一次；置位后强制 fold，防止无限重试。
-	FoldedRetry bool
+	FoldedRetry      bool
+	sameAccountRetry bool
 	// SystemOutcome 非空时由 CompleteFromPool 回填实际 system 形态（keep / fold / degraded）。
 	SystemOutcome *SystemPromptOutcome
 	// deferredRoute 是 mode=onExhausted 的整条路由链：先按源站点原模型跑，
@@ -589,11 +598,12 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		ExcludeIDs:    opts.ExcludeIDs,
 		PreferQuota:   opts.AccountID == "",
 		Model:         opts.Model,
-		CheckCooldown: !opts.FixedAccount,
+		CheckCooldown: !opts.FixedAccount && !opts.sameAccountRetry,
 	})
 	if err != nil {
 		// 软钉号不可用时先清钉；冷却账号仍保留普通池的全冷却兜底资格。
-		if !opts.FixedAccount && opts.AccountID != "" && isPinnedAccountUnusable(err) {
+		// 同号重放（如 11128 降级重放）不走软钉清除换号，严格保持声明的同号约束。
+		if !opts.FixedAccount && !opts.sameAccountRetry && opts.AccountID != "" && isPinnedAccountUnusable(err) {
 			staleID := opts.AccountID
 			if pinKey != "" {
 				s.Pins.Forget(pinKey)
@@ -688,6 +698,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				"accountId", account.ID, "site", site, "model", opts.Model,
 				"fingerprint", att.fp, "systemLen", att.size)
 			opts.FoldedRetry = true
+			opts.sameAccountRetry = true
 			opts.RetryDepth++
 			opts.AccountID = account.ID
 			return s.CompleteFromPool(ctx, opts)
@@ -700,6 +711,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		// 这里只重连、不换号——站内换号重试已经移除，换号只会烧额度并让
 		// 会话亲和失效。只对「首内容前」的失败生效（Delivered 已提前返回）。
 		if isTransportReplayError(err.Error()) && opts.ResetReplays < maxResetReplays {
+			s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 			opts.ResetReplays++
 			opts.RetryDepth++
 			opts.AccountID = account.ID
@@ -717,6 +729,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			next := append(append([]string{}, opts.ExcludeIDs...), account.ID)
 			if id, ok := s.nextSelectableAccount(site, opts.Model, next); ok {
 				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+				s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 				if pinKey != "" {
 					s.Pins.Forget(pinKey)
 				}
@@ -724,15 +737,19 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 					"from", account.ID, "to", id, "site", site, "model", opts.Model, "error", err.Error())
 				opts.ExcludeIDs = next
 				opts.AccountID = id
+				opts.sameAccountRetry = false
 				opts.RetryDepth++
 				return s.CompleteFromPool(ctx, opts)
 			}
 			// 同区已经没有可换的号了：本次失败才算「源站点用尽」，
 			// 这时才允许 mode=onExhausted 的路由改写到另一个站点。
 			// （请求一进来就换区会把本来能用的源站点号池绕过去。）
+			prevOpts := opts
 			opts.ExcludeIDs = next
+			opts.sameAccountRetry = false
 			if s.advanceRouteFallback(&opts) || s.advanceDeferredRoute(&opts) {
 				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+				s.recordSystemPromptAttempt(prevOpts, account, site, att, err, false)
 				if pinKey != "" {
 					s.Pins.Forget(pinKey)
 				}
@@ -744,6 +761,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		// 独立预算（EmptyTurnReplays），避免 429/流重置等无关失败提前把它耗尽。
 		if strings.Contains(strings.ToLower(err.Error()), "empty completed turn") &&
 			opts.EmptyTurnReplays == 0 {
+			s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 			opts.EmptyTurnReplays++
 			opts.RetryDepth++
 			opts.AccountID = account.ID
@@ -753,6 +771,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		}
 		if !opts.RefreshRetry && s.shouldRefreshAfterFailure(err, selection) {
 			if refreshed, refreshErr := s.refreshSelected(ctx, selection, true); refreshErr == nil && refreshed.Account.BearerToken != account.BearerToken {
+				s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 				s.Log.Info("retrying codebuddy request after oauth refresh", "accountId", refreshed.Account.ID)
 				opts.AccountID = refreshed.Account.ID
 				opts.RefreshRetry = true

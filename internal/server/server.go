@@ -54,6 +54,7 @@ type Server struct {
 	// ModelRoutes 是跨区模型路由表（proxy-model-routes.json）。
 	ModelRoutes      *modelroute.File
 	maxJSONBodyBytes int64
+	envMu            sync.Mutex
 }
 
 func New(cfg config.Config, svc *gateway.Service) *Server {
@@ -1725,6 +1726,8 @@ func checkinTimezone() *time.Location { return time.FixedZone("UTC+8", 8*60*60) 
 // 每个开关都是 *bool：nil 表示请求没带这个字段（老前端），此时不动它。
 // 值真正变化时才写 .env 并更新内存配置，避免每次保存都重写文件。
 func (s *Server) saveBehaviorSwitches(allowDirectFallback *bool, retryMin, retryMax *int) error {
+	s.envMu.Lock()
+	defer s.envMu.Unlock()
 	type binding struct {
 		envKey  string
 		value   *bool
@@ -1805,6 +1808,8 @@ func (s *Server) setQuotaFloor(floor float64) (config.Config, error) {
 	if floor < 0 {
 		return config.Config{}, fmt.Errorf("积分下限不能是负数")
 	}
+	s.envMu.Lock()
+	defer s.envMu.Unlock()
 	envPath := config.ResolveEnvFilePath()
 	if err := config.UpsertEnvFile(envPath, map[string]string{
 		"CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS": strconv.FormatFloat(floor, 'f', -1, 64),
@@ -1830,7 +1835,7 @@ func (s *Server) systemPromptOverviewStats() (systemprompt.Stats, string) {
 		return systemprompt.Stats{}, "memory"
 	}
 	date := time.Now().Format("20060102")
-	if store := s.Svc.SystemPromptStore; store != nil {
+	if store := s.Svc.SystemPromptStore; store != nil && store.IsPersistent() {
 		if stats, err := store.StatsForDate(date); err == nil {
 			return stats, "date:" + date
 		}
@@ -1922,6 +1927,8 @@ func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
+	s.envMu.Lock()
+	defer s.envMu.Unlock()
 	envPath := config.ResolveEnvFilePath()
 	if err := config.UpsertEnvFile(envPath, map[string]string{
 		"CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE": mode,
@@ -1930,14 +1937,7 @@ func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	_ = os.Setenv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE", mode)
-	cfg := s.Svc.Config()
-	cfg = s.Svc.SetBehaviorSwitches(gateway.BehaviorSwitches{
-		CheckinAllowDirectFallback: cfg.CheckinAllowDirectFallback,
-		QuotaFloorCredits:          cfg.QuotaFloorCredits,
-		CheckinRetryInterval:       cfg.CheckinRetryInterval,
-		CheckinRetryMax:            cfg.CheckinRetryMax,
-		SystemPromptMode:           mode,
-	})
+	cfg := s.Svc.SetSystemPromptMode(mode)
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": cfg.SystemPromptMode})
 }
 

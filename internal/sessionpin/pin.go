@@ -4,6 +4,7 @@ package sessionpin
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
@@ -87,19 +88,23 @@ const harnessSessionHeader = "X-Deepseek-Harness-Session-Id"
 // dsh 安装」，正好补上 sessionId 缺失的跨重启唯一性。
 const harnessUserHeader = "X-Deepseek-Harness-User-Id"
 
-// firstUserHash 提取首条非空 user 消息文本的短哈希（SHA-256 前 4 字节 8 位 hex）。
-// 只看 user 不看 system，不受 strip 剥离 system 影响；同一会话多轮追加时首条 user 恒定。
+// firstUserHash 固定取第一条 role=="user" 消息的确定性短哈希（SHA-256 前 4 字节 8 位 hex）。
+// 即使首条 user 为纯图片或空白，也绝不跳到后续轮次的 user 消息，保证多轮对话键恒定。
 func firstUserHash(messages []map[string]any) string {
 	for _, msg := range messages {
 		role, _ := msg["role"].(string)
 		if strings.ToLower(strings.TrimSpace(role)) != "user" {
 			continue
 		}
-		text := messageText(msg["content"])
-		if text == "" {
-			continue
+		if text := messageText(msg["content"]); text != "" {
+			sum := sha256.Sum256([]byte(text))
+			return hex.EncodeToString(sum[:4])
 		}
-		sum := sha256.Sum256([]byte(text))
+		raw, err := json.Marshal(msg["content"])
+		if err != nil {
+			raw = nil
+		}
+		sum := sha256.Sum256(append([]byte("raw:"), raw...))
 		return hex.EncodeToString(sum[:4])
 	}
 	return ""

@@ -106,18 +106,25 @@ func normalizedSpace(r rune) bool {
 // 支持 ASCII 黑名单比较；但小写化用 unicode 语义，故对非 ASCII 走
 // rune 解码以正确计算其原串 byte 宽度。
 func scanNormalize(s string) (string, []int) {
-	norm := make([]byte, 0, len(s))
-	offsets := make([]int, 0, len(s))
-	for i := 0; i < len(s); {
+	return scanNormalizeBounded(s, len(s))
+}
+
+// scanNormalizeBounded 只扫描判定前缀所需的最少归一化字节（上限 maxNormBytes），
+// 避免在超长 system 或大量重复身份句上产生 O(N^2) 全文扫描与大块内存分配。
+func scanNormalizeBounded(s string, maxNormBytes int) (string, []int) {
+	if s == "" || maxNormBytes <= 0 {
+		return "", nil
+	}
+	initCap := min(len(s), maxNormBytes+8)
+	norm := make([]byte, 0, initCap)
+	offsets := make([]int, 0, initCap)
+	for i := 0; i < len(s) && len(norm) < maxNormBytes; {
 		r, size := decodeRune(s[i:])
 		if normalizedSpace(r) {
 			i += size
 			continue
 		}
 		lower := toLowerRune(r)
-		// 归一化串里每个输出 byte 都指向原串该 rune 的起始偏移。
-		// 小写化后 byte 数可能与原 rune 不同（例如某些 Unicode 字符），
-		// 但黑名单只含 ASCII，实际比较时不会走到那种分支。
 		for k := 0; k < len(lower); k++ {
 			norm = append(norm, lower[k])
 			offsets = append(offsets, i)
@@ -161,7 +168,16 @@ func stripBlockedIdentity(s string, rules []string) (string, int, bool) {
 // 切法：按 offsets 找到该句在原串中的结束 byte 偏移，然后跳过紧跟的
 // 一个句末标点（. ! ?）与前后空白，余下部分原样返回。
 func cutBlockedPrefix(s string, rules []string) (string, bool) {
-	norm, offsets := scanNormalize(s)
+	maxRuleLen := 0
+	for _, r := range rules {
+		if len(r) > maxRuleLen {
+			maxRuleLen = len(r)
+		}
+	}
+	if maxRuleLen == 0 {
+		return s, false
+	}
+	norm, offsets := scanNormalizeBounded(s, maxRuleLen)
 	if norm == "" || len(offsets) != len(norm) {
 		return s, false
 	}
@@ -174,6 +190,14 @@ func cutBlockedPrefix(s string, rules []string) (string, bool) {
 		// 原串中该字符的结束偏移：取下一个 rune 的起点（或串尾）
 		_, size := decodeRune(s[last:])
 		end := last + size
+		// 跳过句末标点前允许的句内空白（不跨换行，避免误吞下一段首字符）
+		for end < len(s) {
+			r, sz := decodeRune(s[end:])
+			if !normalizedSpace(r) {
+				break
+			}
+			end += sz
+		}
 		// 吃掉紧跟的一个句末标点（实测句末 . ! ? 都不影响命中）
 		if end < len(s) && isSentenceTerminator(s[end]) {
 			end++

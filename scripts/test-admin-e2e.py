@@ -160,6 +160,8 @@ def run(binary, output):
                     expect(badge).to_have_text("可用 1 · 冷却 1")
                     page.locator('[data-tab="tab-system-prompt"]').click()
                     expect(page.locator("#tab-system-prompt")).to_be_visible()
+                    assert page.locator('[aria-label="system 提示词实时事件"] thead th').count() == 11
+                    assert page.locator('[aria-label="system 提示词历史事件"] thead th').count() == 11
                     with page.expect_response(lambda r: r.url.endswith("/direct-admin/api/system-prompt") and r.request.method == "POST"):
                         page.locator('#spModeSeg [data-mode="strip"]').click()
                     expect(page.locator('#spModeSeg [data-mode="strip"]')).to_have_class(re.compile(r"\bactive\b"))
@@ -171,7 +173,6 @@ def run(binary, output):
                         page.locator('#spModeSeg [data-mode="auto"]').click()
                     expect(page.locator('#spModeSeg [data-mode="auto"]')).to_have_class(re.compile(r"\bactive\b"))
                     assert page.request.get(base + "/direct-admin/api/system-prompt").json()["mode"] == "auto"
-
                     for anchor, panel in [("#codebuddy", "tab-pool"), ("#client-config", "tab-client"), ("#system-prompt", "tab-system-prompt"), ("#usage", "tab-usage")]:
                         page.goto(base + "/direct-admin/" + anchor)
                         expect(page.locator("#" + panel)).to_be_visible()

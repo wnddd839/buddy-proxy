@@ -60,12 +60,13 @@ func formName(keep bool) string {
 }
 
 // isChannelBlocked 判定上游是否以 11128（未授权渠道 / 竞品 CLI 指纹）拒收。
+// 使用 upstreamErrorCode 提取业务码，避免把本地代理端口（如 127.0.0.1:11128）误判为上游拦截。
 func isChannelBlocked(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "11128") || strings.Contains(msg, "unapproved channel")
+	raw := err.Error()
+	return upstreamErrorCode(raw) == "11128" || strings.Contains(strings.ToLower(raw), "unapproved channel")
 }
 
 var (
@@ -200,8 +201,11 @@ func (s *Service) maybePruneSystemPromptStore() {
 	if !s.systemPrunedAt.CompareAndSwap(last, now.UnixMilli()) {
 		return
 	}
-	if err := s.SystemPromptStore.Prune(now); err != nil && s.Log != nil {
-		s.Log.Warn("system prompt store prune failed", "error", err.Error())
+	if err := s.SystemPromptStore.Prune(now); err != nil {
+		s.systemPrunedAt.Store(last)
+		if s.Log != nil {
+			s.Log.Warn("system prompt store prune failed", "error", err.Error())
+		}
 	}
 }
 

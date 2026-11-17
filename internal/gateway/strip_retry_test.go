@@ -89,8 +89,8 @@ func TestStripReportDoesNotDoubleOnSameSiteRetry(t *testing.T) {
 			outcome.Stripped, outcome.StrippedBytes, wantBytes)
 	}
 	events := svc.SystemPromptJournal.Recent(10)
-	if len(events) == 0 {
-		t.Fatal("应至少记录 1 条成功事件")
+	if len(events) != 2 {
+		t.Fatalf("传输重试应记录 2 条事件（首试失败 + 重试成功），实际 %d", len(events))
 	}
 	for _, ev := range events {
 		if !ev.Stripped || ev.StrippedBytes != wantBytes {

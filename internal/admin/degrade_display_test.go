@@ -77,6 +77,8 @@ func TestSystemPromptMetricsScopeAndRecovered(t *testing.T) {
 	page := PageHTML()
 	for _, want := range []string{
 		`id="spStatsScope"`,
+		`id="spTotalLabel"`,
+		"今日事件",
 		"降级重放成功",
 		`id="spRecovered"`,
 		"指标口径：优先按今天落盘事件统计（重启不清零）",
@@ -101,6 +103,7 @@ func TestSystemPromptMetricsScopeAndRecovered(t *testing.T) {
 	for _, want := range []string{
 		"data.statsScope",
 		"spStatsScope",
+		"spTotalLabel",
 		"stats.recovered",
 		"spRecovered",
 	} {

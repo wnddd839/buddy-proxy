@@ -686,7 +686,7 @@ Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS
 | `sessionSource` | 会话键来源：`header`（客户端显式会话头）/ `cachekey`（`prompt_cache_key`）/ `content`（system+首条 user 哈希）/ `none` |
 | `stripped` / `strippedBytes` | strip 档是否删掉身份句、删了多少字节 |
 
-`stripped` 与 `degraded` 互斥：前者是「定向删一句」，后者是「整条降级」。
+同一尝试若先删掉已知身份句、剩余内容又命中未知 11128 触发折叠降级时，失败尝试事件可同时带 `stripped:true` 与 `degraded:true`，重放成功的第二条事件为 `form:"fold", recovered:true`。
 
 ### `POST /direct-admin/api/system-prompt`
 
