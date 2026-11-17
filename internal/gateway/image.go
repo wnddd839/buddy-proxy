@@ -66,10 +66,10 @@ func (s *Service) ImageFromPool(ctx context.Context, opts ImageOptions) (ImageRe
 				return s.ImageFromPool(ctx, opts)
 			}
 		}
-		_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+		_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err), 0)
 		return ImageResult{}, err
 	}
-	_ = s.Pool.MarkResult(selection, true, "", 0)
+	_ = s.Pool.MarkResult(selection, true, "", 0, creditOf(result.Usage))
 	return ImageResult{
 		ImageResult: result,
 		Account:     accounts.SummarizeAccount(account),

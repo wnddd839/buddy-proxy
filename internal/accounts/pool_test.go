@@ -57,7 +57,7 @@ func TestPoolRoundTripSelectAndMark(t *testing.T) {
 	if selection.Account.Label != "one" {
 		t.Fatalf("unexpected account: %+v", selection.Account)
 	}
-	if err := pool.MarkResult(selection, true, "", 0); err != nil {
+	if err := pool.MarkResult(selection, true, "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	store, err := pool.Read()
@@ -95,7 +95,7 @@ func TestPoolSelectMarkDoesNotSyncDiskEveryTime(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := pool.MarkResult(sel, true, "", 0); err != nil {
+		if err := pool.MarkResult(sel, true, "", 0, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -143,7 +143,7 @@ func TestPoolConcurrentSelectThroughput(t *testing.T) {
 				if err != nil {
 					continue
 				}
-				_ = pool.MarkResult(sel, true, "", 0)
+				_ = pool.MarkResult(sel, true, "", 0, 0)
 				ops.Add(1)
 			}
 		})
@@ -201,7 +201,7 @@ func TestPoolSelectSkipsCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(sel, false, "429 too many requests", 2*time.Minute); err != nil {
+	if err := pool.MarkResult(sel, false, "429 too many requests", 2*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 8; i++ {
@@ -264,7 +264,7 @@ func TestMarkResultSuccessClearsQuotaBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	sel.BypassedCooldown = true
-	if err := pool.MarkResult(sel, true, "", 0); err != nil {
+	if err := pool.MarkResult(sel, true, "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	store, err := pool.Read()
@@ -302,7 +302,7 @@ func TestMarkResultSuccessPreservesQuotaCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(sel, true, "", 0); err != nil {
+	if err := pool.MarkResult(sel, true, "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	store, err := pool.Read()
@@ -366,14 +366,14 @@ func TestPoolSelectFallbackWhenAllCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(selFast, false, "502 bad gateway", 30*time.Second); err != nil {
+	if err := pool.MarkResult(selFast, false, "502 bad gateway", 30*time.Second, 0); err != nil {
 		t.Fatal(err)
 	}
 	selSlow, err := pool.Select(accounts.SelectOptions{Site: "domestic", AccountID: slow.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(selSlow, false, "502 bad gateway", 2*time.Minute); err != nil {
+	if err := pool.MarkResult(selSlow, false, "502 bad gateway", 2*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	picked, err := pool.Select(accounts.SelectOptions{Site: "domestic"})
@@ -498,7 +498,7 @@ func TestFlushMergesDiskCanaryByID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(sel, true, "", 0); err != nil {
+	if err := pool.MarkResult(sel, true, "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Flush(); err != nil {
@@ -570,7 +570,7 @@ func TestFlushAfterDeleteDoesNotResurrect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(sel, true, "", 0); err != nil {
+	if err := pool.MarkResult(sel, true, "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Flush(); err != nil {
@@ -624,7 +624,7 @@ func TestFlushMergeSkipsDiskAccountWithoutCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(sel, true, "", 0); err != nil {
+	if err := pool.MarkResult(sel, true, "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.Flush(); err != nil {

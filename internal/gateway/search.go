@@ -162,9 +162,12 @@ func (s *Service) withSearchAccount(
 				return s.withSearchAccount(ctx, opts, label, call)
 			}
 		}
-		_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+		_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err), 0)
 		return err
 	}
-	_ = s.Pool.MarkResult(selection, true, "", 0)
+	// 搜索路径的 usage 不在此处暴露（call 只回 error），
+	// 因此这里不记账 —— 少扣一次只是让下限判断晚一拍，不会误伤。
+	// 聊天主链（service.go）才是主要消耗来源，已在那里按真实 credit 记账。
+	_ = s.Pool.MarkResult(selection, true, "", 0, 0)
 	return nil
 }
