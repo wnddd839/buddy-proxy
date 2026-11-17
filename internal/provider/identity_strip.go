@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"maps"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -270,8 +271,8 @@ func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool
 		report.add(removed)
 		return out, true
 	case []any:
-		changed := false
-		for _, part := range v {
+		var outSlice []any
+		for i, part := range v {
 			pm, ok := part.(map[string]any)
 			if !ok {
 				continue
@@ -287,14 +288,18 @@ func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool
 			if !hit {
 				continue
 			}
-			pm["text"] = out
+			if outSlice == nil {
+				outSlice = append([]any(nil), v...)
+			}
+			cloned := maps.Clone(pm)
+			cloned["text"] = out
+			outSlice[i] = cloned
 			report.add(removed)
-			changed = true
 		}
-		if !changed {
+		if outSlice == nil {
 			return content, false
 		}
-		return v, true
+		return outSlice, true
 	default:
 		return content, false
 	}

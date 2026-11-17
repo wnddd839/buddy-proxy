@@ -152,3 +152,37 @@ func TestHarnessKeyClientHintStillRecognizes(t *testing.T) {
 		t.Fatalf("仅 session 头也应识别为 dsh，得到 %q", got)
 	}
 }
+
+// TestHarnessKeyDistinguishesSameMachineRestartNewTopic 校验同机重启回归：
+// 同一台机器（相同 user-id）重启后同样发 session-1，但首条 user 提问不同 → 必须得到不同会话键；
+// 而同一会话多轮追加 assistant/user → 键保持不变（且不受 system 剥离影响）。
+func TestHarnessKeyDistinguishesSameMachineRestartNewTopic(t *testing.T) {
+	h := http.Header{}
+	h.Set("X-Deepseek-Harness-User-Id", dshUserA)
+	h.Set("X-Deepseek-Harness-Session-Id", dshSession1)
+
+	topic1Turn1, src1 := sessionpin.Key(h, "", []map[string]any{
+		{"role": "system", "content": "You are an AI agent powered by DeepSeek Harness."},
+		{"role": "user", "content": "帮我重构登录模块"},
+	})
+	topic1Turn2, _ := sessionpin.Key(h, "", []map[string]any{
+		{"role": "system", "content": ""},
+		{"role": "user", "content": "帮我重构登录模块"},
+		{"role": "assistant", "content": "好的"},
+		{"role": "user", "content": "顺便加上单测"},
+	})
+	topic2Turn1, src2 := sessionpin.Key(h, "", []map[string]any{
+		{"role": "system", "content": "You are an AI agent powered by DeepSeek Harness."},
+		{"role": "user", "content": "解释一下 Go channel 底层原理"},
+	})
+
+	if src1 != sessionpin.KeySourceHeader || src2 != sessionpin.KeySourceHeader {
+		t.Fatalf("来源应为 header，实际 %q / %q", src1, src2)
+	}
+	if topic1Turn1 != topic1Turn2 {
+		t.Fatalf("同一会话多轮追加且 system 变化后键必须稳定：%q != %q", topic1Turn1, topic1Turn2)
+	}
+	if topic1Turn1 == topic2Turn1 {
+		t.Fatalf("同机重启同 session-1 但首条 user 不同，必须得到不同会话键：%q", topic1Turn1)
+	}
+}

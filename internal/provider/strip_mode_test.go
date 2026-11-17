@@ -228,6 +228,43 @@ func TestStripModeDoesNotMutateInput(t *testing.T) {
 	}
 }
 
+// TestStripModeDoesNotMutateStructuredInput 校验多模态结构化 []any（text + image）
+// 场景下绝不原地修改调用方切片或底层 part map。
+func TestStripModeDoesNotMutateStructuredInput(t *testing.T) {
+	originalText := testDSHSentence + "\n\nrules"
+	textPart := map[string]any{"type": "text", "text": originalText}
+	imgPart := map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAA"}}
+	parts := []any{textPart, imgPart}
+	in := []map[string]any{
+		{"role": "system", "content": parts},
+		{"role": "user", "content": "hi"},
+	}
+	cfg := &StripConfig{Enabled: true, Rules: RulesForSite("domestic")}
+	report := &StripReport{}
+	out := EnsureUpstreamMessagesWith(in, true, cfg, report)
+	if !report.Stripped {
+		t.Fatal("结构化 system 应命中剥离")
+	}
+	// 原入参 map 与切片必须原封不动
+	if textPart["text"] != originalText {
+		t.Fatalf("不得原地修改入参 textPart，实际 %q", textPart["text"])
+	}
+	if origSlice, ok := in[0]["content"].([]any); !ok || origSlice[0].(map[string]any)["text"] != originalText {
+		t.Fatalf("不得原地修改入参 []any 切片，实际 %#v", in[0]["content"])
+	}
+	// 返回的副本应已剥离且保留图片 part
+	outParts, ok := out[0]["content"].([]any)
+	if !ok || len(outParts) != 2 {
+		t.Fatalf("返回结构异常：%#v", out[0]["content"])
+	}
+	if outParts[0].(map[string]any)["text"] != "rules" {
+		t.Fatalf("剥离后文本应为 rules，实际 %q", outParts[0].(map[string]any)["text"])
+	}
+	if outParts[1].(map[string]any)["type"] != "image_url" {
+		t.Fatalf("非文本 part 应保留：%#v", outParts[1])
+	}
+}
+
 // TestStripModeReportBytesMatchesActualRemoval 校验报告的字节数与实际差值一致。
 func TestStripModeReportBytesMatchesActualRemoval(t *testing.T) {
 	cases := []string{

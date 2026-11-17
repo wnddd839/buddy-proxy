@@ -1122,7 +1122,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
 
         <p class="checkin-hint" style="margin:16px 0 0">指标口径：优先按今天落盘事件统计（重启不清零）；若后端返回 <code>statsScope="memory"</code> 则为进程内近 24h（重启会清零）。当前口径：<strong id="spStatsScope">加载中…</strong></p>
         <div class="metrics">
-          <div class="metric"><div class="k">近 24h 事件</div><div class="v" id="spTotal">0</div></div>
+          <div class="metric"><div class="k" id="spTotalLabel">近 24h 事件</div><div class="v" id="spTotal">0</div></div>
           <div class="metric"><div class="k">keep</div><div class="v" id="spKeep">0</div></div>
           <div class="metric"><div class="k">fold</div><div class="v" id="spFold">0</div></div>
           <div class="metric" title="degraded:true 的事件数，即被 11128 拦截的失败尝试次数"><div class="k">降级/被拦截次数</div><div class="v" id="spDegraded">0</div></div>
@@ -2071,8 +2071,8 @@ function spResultLabel(e){
   if (e.errorCode) return '<span class="badge off">' + escapeHtml(e.errorCode) + '</span>';
   // 「降级成功」只能由后端 recovered:true 判定：它专指 11128 被拦截后的重放成功。
   // fold 模式下每一次正常请求都是 form=fold/status=200/mode=fold，绝不能误标。
-  // 追加 mode==='auto' 保险：后端字段缺失时 fold 模式也不会误报。
-  if (e.recovered === true && e.mode === 'auto' && e.status >= 200 && e.status < 400) {
+  // 追加 (mode==='auto' || mode==='strip') 保险：后端字段缺失时 fold 模式也不会误报。
+  if (e.recovered === true && (e.mode === 'auto' || e.mode === 'strip') && e.status >= 200 && e.status < 400) {
     return '<span class="badge warn" title="11128 被拦截后自动折叠重试成功">降级成功</span>';
   }
   return '<span class="badge on">OK</span>';
@@ -2158,6 +2158,8 @@ async function refreshSystemPrompt(){
   $('spFailed').textContent = String(stats.failed || 0);
   // 后端暂未返回 recovered 时显示「—」而不是 0，避免误导成「0 次成功」。
   $('spRecovered').textContent = (stats.recovered == null) ? '—' : String(stats.recovered);
+  const totalLabel = $('spTotalLabel');
+  if (totalLabel) totalLabel.textContent = (data.statsScope === 'memory') ? '近 24h 事件' : '今日事件';
   const scope = $('spStatsScope');
   if (scope) scope.textContent = (data.statsScope === 'memory')
     ? '进程内近 24h（重启会清零）'

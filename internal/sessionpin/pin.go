@@ -87,28 +87,47 @@ const harnessSessionHeader = "X-Deepseek-Harness-Session-Id"
 // dsh 安装」，正好补上 sessionId 缺失的跨重启唯一性。
 const harnessUserHeader = "X-Deepseek-Harness-User-Id"
 
-// harnessKey 把 dsh 的 user-id 与 session-id 组合成稳定且唯一的会话键。
+// firstUserHash 提取首条非空 user 消息文本的短哈希（SHA-256 前 4 字节 8 位 hex）。
+// 只看 user 不看 system，不受 strip 剥离 system 影响；同一会话多轮追加时首条 user 恒定。
+func firstUserHash(messages []map[string]any) string {
+	for _, msg := range messages {
+		role, _ := msg["role"].(string)
+		if strings.ToLower(strings.TrimSpace(role)) != "user" {
+			continue
+		}
+		text := messageText(msg["content"])
+		if text == "" {
+			continue
+		}
+		sum := sha256.Sum256([]byte(text))
+		return hex.EncodeToString(sum[:4])
+	}
+	return ""
+}
+
+// harnessKey 把 dsh 的 user-id、session-id 与首条 user 消息短哈希组合成稳定且唯一的会话键。
 //
-// 四种组合：
-//   - 两者都有：`<user>\x1e<session>` —— 最精确（跨重启、跨实例都不撞）
-//   - 只有 user：`<user>`               —— 稳定但不区分并发会话
-//   - 只有 session：不使用（返回空），因为它跨重启会重复，宁可回落内容哈希
-//   - 都没有：返回空
-//
-// 「只有 session 时不用」是刻意的：错误的键比没有键更糟 —— 没有键会
-// 回落到 system+首条 user 的内容哈希（稳定），而错误的键会让两个不同
-// 会话共用同一账号钉与上游 ConversationID，导致上下文串味。
-func harnessKey(header http.Header) string {
+// 之所以必须拼入首条 user 短哈希：
+//   - user-id 持久化在 ~/.dsh/.anonymous-user-id，同机重启不变；
+//   - session-id 是进程内自增（重启后重新从 session-1 开始）；
+//   - 若不拼入首条 user 哈希，同机重启开新话题仍会撞上旧的 dsh:<user>\x1esession-1，
+//     同理仅有 user-id 无 session-id 时并发新对话也会全部撞到 dsh:<user>。
+//   - messages 为空/无 user 消息时保持 dsh:<user>\x1e<session> / dsh:<user>。
+//   - 只有 session-id 无 user-id 时仍返回空，回落内容哈希。
+func harnessKey(header http.Header, messages []map[string]any) string {
 	user := strings.TrimSpace(header.Get(harnessUserHeader))
-	session := strings.TrimSpace(header.Get(harnessSessionHeader))
-	switch {
-	case user != "" && session != "":
-		return "dsh:" + user + "\x1e" + session
-	case user != "":
-		return "dsh:" + user
-	default:
+	if user == "" {
 		return ""
 	}
+	session := strings.TrimSpace(header.Get(harnessSessionHeader))
+	key := "dsh:" + user
+	if session != "" {
+		key += "\x1e" + session
+	}
+	if uHash := firstUserHash(messages); uHash != "" {
+		key += "\x1e" + uHash
+	}
+	return key
 }
 
 // Key 从客户端头或对话前缀得到稳定 session id，并返回其来源。
@@ -130,8 +149,8 @@ func Key(header http.Header, promptCacheKey string, messages []map[string]any) (
 				return "hdr:" + v, KeySourceHeader
 			}
 		}
-		// dsh 需要 user+session 复合键（session 单独用会跨重启重复）。
-		if v := harnessKey(header); v != "" {
+		// dsh 需要 user+session+首条 user 哈希复合键（session 单独用会跨重启重复）。
+		if v := harnessKey(header, messages); v != "" {
 			return v, KeySourceHeader
 		}
 	}

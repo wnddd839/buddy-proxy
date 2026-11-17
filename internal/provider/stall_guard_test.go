@@ -66,8 +66,20 @@ func TestStallGuardWidensAfterFirstByte(t *testing.T) {
 		t.Fatalf("首字节后阈值应为 500ms，实际 %s", got)
 	}
 
-	// 模拟 readSSE 读到第一个字节后通知看门狗放宽。
-	g.noteFirstByte()
+	// 模拟 Read 读到第一个字节后自动放宽看门狗。
+	mr := struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: io.MultiReader(strings.NewReader("x"), r),
+		Closer: r,
+	}
+	g = newStallGuard(mr, 40*time.Millisecond, 500*time.Millisecond)
+	defer g.timer.Stop()
+	buf := make([]byte, 1)
+	if n, err := g.Read(buf); err != nil || n != 1 {
+		t.Fatalf("首字节读取失败: n=%d err=%v", n, err)
+	}
 	if g.fired.Load() {
 		t.Fatal("刚收到首字节不应触发")
 	}

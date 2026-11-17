@@ -80,6 +80,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request, keySite
 	sessionKey, sessionKeySource := sessionpin.Key(r.Header, req.PromptCacheKey, messages)
 	if req.PreviousResponseID != "" && sessionKey == "" {
 		sessionKey = "resp_prev_" + req.PreviousResponseID
+		sessionKeySource = sessionpin.KeySourceHeader
 	}
 
 	completeOpts := gateway.CompleteOptions{
