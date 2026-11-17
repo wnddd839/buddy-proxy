@@ -19,6 +19,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/models"
+	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
 	"github.com/wnddd839/codebuddy-proxy/internal/openai"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 )
@@ -1582,6 +1583,100 @@ func TestRefreshPoolUsageHitsBillingIncludingCooledAccounts(t *testing.T) {
 				t.Fatalf("other-site account must not be refreshed, remaining=%v", account.QuotaRemaining)
 			}
 		}
+	}
+}
+
+func TestSaveRefreshedTokenPreservesQuotaSpentSinceCheck(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { _ = svc.Close() })
+
+	rem := 50.0
+	acc, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label:          "refresh-me",
+		Site:           "domestic",
+		BearerToken:    "old-access",
+		RefreshToken:   "old-refresh",
+		Enabled:        true,
+		QuotaRemaining: &rem,
+		QuotaCheckedAt: time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Pool.MarkResult(accounts.Selection{Source: "pool", Account: acc}, true, "", 0, 7.5); err != nil {
+		t.Fatal(err)
+	}
+
+	saved, _, err := svc.SaveRefreshedToken(acc, &oauth.TokenData{
+		BearerToken:  "new-access",
+		RefreshToken: "new-refresh",
+		ExpiresIn:    3600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.QuotaSpentSinceCheck != 7.5 {
+		t.Fatalf("SaveRefreshedToken 丢失了 QuotaSpentSinceCheck: got %.2f want 7.5", saved.QuotaSpentSinceCheck)
+	}
+}
+
+func TestQuotaBelowFloorStopsSelectionAndRecoversAfterTTL(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(config.Config{Site: "domestic", AccountsPath: dir + "/accounts.json"}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+	svc.Pool.SetQuotaFloor(20)
+	t.Cleanup(func() { _ = svc.Close() })
+
+	rem := 25.0
+	acc, _, err := svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label:          "floor-acc",
+		Site:           "domestic",
+		BearerToken:    "token-floor",
+		Enabled:        true,
+		QuotaRemaining: &rem,
+		QuotaCheckedAt: time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. 本地扣减 10 点，余额跌至 15（< 20），Pool.Select 必须立刻停选。
+	if err := svc.Pool.MarkResult(accounts.Selection{Source: "pool", Account: acc}, true, "", 0, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Pool.Select(accounts.SelectOptions{Site: "domestic"}); !errors.Is(err, accounts.ErrNoAccounts) {
+		t.Fatalf("跌破 QuotaFloor 后应立刻停选，实际 err=%v", err)
+	}
+
+	// 快照未过期时，不应纳入补探候选。
+	if cands := svc.listQuotaRefreshCandidates(nil, "domestic", true); len(cands) != 0 {
+		t.Fatalf("快照未过期时不应补探跌破下限的账号，实际 got=%d", len(cands))
+	}
+
+	// 2. 快照超过 quotaSnapshotTTL 后，新会话补探应捞出该账号并恢复。
+	if _, _, err := svc.Pool.UpdateAccount(acc.ID, func(cur accounts.Account) accounts.Account {
+		cur.QuotaCheckedAt = time.Now().Add(-quotaSnapshotTTL - time.Minute).UnixMilli()
+		return cur
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	transport := &scriptedChatTransport{creditsByAuth: map[string]float64{"token-floor": 100}}
+	svc.Provider.HTTP = &http.Client{Transport: transport}
+
+	res, err := svc.CompleteFromPool(context.Background(), CompleteOptions{
+		Model:    "auto",
+		Messages: []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("补探回血后应成功选号并完成请求，实际 err=%v", err)
+	}
+	if res.AccountID != acc.ID {
+		t.Fatalf("应选中已回血的账号 %s，实际 %s", acc.ID, res.AccountID)
+	}
+	_, billing := transport.snapshot()
+	if len(billing) != 1 || billing[0] != "token-floor" {
+		t.Fatalf("应触发一次补探 billing 请求，实际 billing=%v", billing)
 	}
 }
 

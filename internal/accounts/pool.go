@@ -235,12 +235,18 @@ func EmptyStore() Store {
 	return Store{Version: 1, Provider: "codebuddy", NextIndex: 0, Accounts: []Account{}}
 }
 
+func cloneAccount(a Account) Account {
+	a.ModelCooldowns = maps.Clone(a.ModelCooldowns)
+	a.QuotaRemaining = cloneFloatPtr(a.QuotaRemaining)
+	return a
+}
+
 func cloneStore(store Store) Store {
 	out := store
 	if store.Accounts != nil {
 		out.Accounts = append([]Account(nil), store.Accounts...)
 		for i := range out.Accounts {
-			out.Accounts[i].ModelCooldowns = maps.Clone(out.Accounts[i].ModelCooldowns)
+			out.Accounts[i] = cloneAccount(out.Accounts[i])
 		}
 	}
 	return out
@@ -534,43 +540,44 @@ func NormalizeAccount(raw Account, now int64) Account {
 
 	expiresAt := raw.TokenExpiresAt
 	account := Account{
-		ID:                  id,
-		Provider:            "codebuddy",
-		Label:               label,
-		Enabled:             enabled,
-		Source:              strutil.First(raw.Source, "pool"),
-		Site:                site,
-		BaseURL:             baseURL,
-		InternetEnvironment: internet,
-		APIEndpoint:         strings.TrimRight(strutil.Compact(raw.APIEndpoint), "/"),
-		ChatCompletionsPath: strutil.Compact(raw.ChatCompletionsPath),
-		Domain:              strutil.Compact(raw.Domain),
-		EnterpriseID:        strutil.Compact(raw.EnterpriseID),
-		TenantID:            strutil.First(strutil.Compact(raw.TenantID), strutil.Compact(raw.EnterpriseID)),
-		DepartmentFullName:  strutil.Compact(raw.DepartmentFullName),
-		Transport:           transport,
-		Proxy:               proxy,
-		AuthType:            authType,
-		APIKey:              apiKey,
-		BearerToken:         bearer,
-		RefreshToken:        strutil.Compact(raw.RefreshToken),
-		TokenExpiresAt:      expiresAt,
-		CredentialHash:      credHash,
-		AuthStatus:          auth,
-		CreatedAt:           created,
-		UpdatedAt:           updated,
-		LastUsedAt:          raw.LastUsedAt,
-		LastSelectedAt:      raw.LastSelectedAt,
-		SuccessRequests:     raw.SuccessRequests,
-		FailedRequests:      raw.FailedRequests,
-		LastError:           strutil.Compact(raw.LastError),
-		CooldownUntil:       raw.CooldownUntil,
-		CooldownSource:      normalizeCooldownSource(raw.CooldownSource, raw.CooldownUntil, raw.QuotaResetAt),
-		ModelCooldowns:      maps.Clone(raw.ModelCooldowns),
-		QuotaRemaining:      cloneFloatPtr(raw.QuotaRemaining),
-		QuotaUnlimited:      raw.QuotaUnlimited,
-		QuotaResetAt:        raw.QuotaResetAt,
-		QuotaCheckedAt:      raw.QuotaCheckedAt,
+		ID:                   id,
+		Provider:             "codebuddy",
+		Label:                label,
+		Enabled:              enabled,
+		Source:               strutil.First(raw.Source, "pool"),
+		Site:                 site,
+		BaseURL:              baseURL,
+		InternetEnvironment:  internet,
+		APIEndpoint:          strings.TrimRight(strutil.Compact(raw.APIEndpoint), "/"),
+		ChatCompletionsPath:  strutil.Compact(raw.ChatCompletionsPath),
+		Domain:               strutil.Compact(raw.Domain),
+		EnterpriseID:         strutil.Compact(raw.EnterpriseID),
+		TenantID:             strutil.First(strutil.Compact(raw.TenantID), strutil.Compact(raw.EnterpriseID)),
+		DepartmentFullName:   strutil.Compact(raw.DepartmentFullName),
+		Transport:            transport,
+		Proxy:                proxy,
+		AuthType:             authType,
+		APIKey:               apiKey,
+		BearerToken:          bearer,
+		RefreshToken:         strutil.Compact(raw.RefreshToken),
+		TokenExpiresAt:       expiresAt,
+		CredentialHash:       credHash,
+		AuthStatus:           auth,
+		CreatedAt:            created,
+		UpdatedAt:            updated,
+		LastUsedAt:           raw.LastUsedAt,
+		LastSelectedAt:       raw.LastSelectedAt,
+		SuccessRequests:      raw.SuccessRequests,
+		FailedRequests:       raw.FailedRequests,
+		LastError:            strutil.Compact(raw.LastError),
+		CooldownUntil:        raw.CooldownUntil,
+		CooldownSource:       normalizeCooldownSource(raw.CooldownSource, raw.CooldownUntil, raw.QuotaResetAt),
+		ModelCooldowns:       maps.Clone(raw.ModelCooldowns),
+		QuotaRemaining:       cloneFloatPtr(raw.QuotaRemaining),
+		QuotaUnlimited:       raw.QuotaUnlimited,
+		QuotaResetAt:         raw.QuotaResetAt,
+		QuotaCheckedAt:       raw.QuotaCheckedAt,
+		QuotaSpentSinceCheck: raw.QuotaSpentSinceCheck,
 	}
 	return account
 }
@@ -683,7 +690,8 @@ func (p *Pool) deductQuotaLocked(account *Account, credit float64) {
 	if account == nil || credit <= 0 || account.QuotaUnlimited || account.QuotaRemaining == nil {
 		return
 	}
-	*account.QuotaRemaining -= credit
+	next := *account.QuotaRemaining - credit
+	account.QuotaRemaining = &next
 	account.QuotaSpentSinceCheck += credit
 }
 
@@ -692,6 +700,7 @@ func clearQuotaCache(account *Account) {
 	account.QuotaUnlimited = false
 	account.QuotaResetAt = 0
 	account.QuotaCheckedAt = 0
+	account.QuotaSpentSinceCheck = 0
 }
 
 func (p *Pool) Select(opts SelectOptions) (Selection, error) {
@@ -730,7 +739,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			store.Accounts[i].LastSelectedAt = now
 			p.mem = store
 			p.markDirtyLocked()
-			return Selection{Source: "pool", Account: store.Accounts[i], Index: i, Store: cloneStore(store), Model: opts.Model}, nil
+			return Selection{Source: "pool", Account: cloneAccount(store.Accounts[i]), Index: i, Store: cloneStore(store), Model: opts.Model}, nil
 		}
 		return Selection{}, fmt.Errorf("%w: %s", ErrAccountNotFound, opts.AccountID)
 	}
@@ -791,7 +800,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		store.NextIndex = (idx + 1) % len(store.Accounts)
 		p.mem = store
 		p.markDirtyLocked()
-		return Selection{Source: "pool", Account: store.Accounts[idx], Index: idx, Store: cloneStore(store), Model: opts.Model}, nil
+		return Selection{Source: "pool", Account: cloneAccount(store.Accounts[idx]), Index: idx, Store: cloneStore(store), Model: opts.Model}, nil
 	}
 	// 全部候选都只是「这个模型」在限流窗口内 ⇒ 不降级、明确报错。
 	if modelResetAt > 0 && fallbackIdx < 0 {
@@ -804,7 +813,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		p.markDirtyLocked()
 		return Selection{
 			Source:           "pool",
-			Account:          store.Accounts[fallbackIdx],
+			Account:          cloneAccount(store.Accounts[fallbackIdx]),
 			Index:            fallbackIdx,
 			Store:            cloneStore(store),
 			BypassedCooldown: true,
@@ -860,7 +869,7 @@ func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site, model strin
 	}
 	store.Accounts[bestIdx].LastSelectedAt = now
 	store.NextIndex = (bestIdx + 1) % len(store.Accounts)
-	return Selection{Source: "pool", Account: store.Accounts[bestIdx], Index: bestIdx, Store: cloneStore(*store), Model: model}, true
+	return Selection{Source: "pool", Account: cloneAccount(store.Accounts[bestIdx]), Index: bestIdx, Store: cloneStore(*store), Model: model}, true
 }
 
 type SelectOptions struct {
@@ -1002,7 +1011,7 @@ func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited b
 			account.CooldownUntil = 0
 			account.CooldownSource = ""
 		}
-		updated = *account
+		updated = cloneAccount(*account)
 		found = true
 		break
 	}
@@ -1048,6 +1057,7 @@ func (p *Pool) Upsert(account Account) (Account, Store, error) {
 			normalized.QuotaUnlimited = existing.QuotaUnlimited
 			normalized.QuotaResetAt = existing.QuotaResetAt
 			normalized.QuotaCheckedAt = existing.QuotaCheckedAt
+			normalized.QuotaSpentSinceCheck = existing.QuotaSpentSinceCheck
 			// 导入数据里没有出口字段时保留原绑定：重新导入不该把号扔回本机 IP。
 			// 要解绑请走 POST /accounts/{id}/proxy {clear:true}。
 			if strings.TrimSpace(normalized.Proxy) == "" {
@@ -1128,7 +1138,7 @@ func (p *Pool) SetEnabled(id string, enabled bool) (Account, Store, error) {
 		}
 		p.mem.Accounts[i].Enabled = enabled
 		p.mem.Accounts[i].UpdatedAt = time.Now().UnixMilli()
-		acc := p.mem.Accounts[i]
+		acc := cloneAccount(p.mem.Accounts[i])
 		p.dirty = false
 		snap := cloneStore(p.mem)
 		p.mu.Unlock()
@@ -1180,12 +1190,12 @@ func (p *Pool) AssignProxies(proxies map[string]string) (Account, Store, error) 
 			continue
 		}
 		if !found {
-			first = p.mem.Accounts[i]
+			first = cloneAccount(p.mem.Accounts[i])
 			found = true
 		}
 		p.mem.Accounts[i].Proxy = proxy
 		p.mem.Accounts[i].UpdatedAt = now
-		first = p.mem.Accounts[i]
+		first = cloneAccount(p.mem.Accounts[i])
 		changed++
 	}
 	if changed == 0 {
@@ -1239,7 +1249,7 @@ func (p *Pool) UpdateAccount(id string, update func(Account) Account) (Account, 
 			p.mu.Unlock()
 			return Account{}, Store{}, err
 		}
-		return account, cloneStore(snap), nil
+		return cloneAccount(account), cloneStore(snap), nil
 	}
 	out := cloneStore(p.mem)
 	p.mu.Unlock()

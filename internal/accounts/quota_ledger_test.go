@@ -1,6 +1,9 @@
 package accounts
 
 import (
+	"fmt"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -213,5 +216,142 @@ func TestApplyQuotaStateResetsLocalSpent(t *testing.T) {
 	}
 	if a.QuotaSpentSinceCheck != 0 {
 		t.Fatalf("对账后本地累计应清零，实际 %.4f", a.QuotaSpentSinceCheck)
+	}
+}
+
+// TestQuotaConcurrentSelectMarkReadFlush 验证真实落盘路径下高并发
+// Select + MarkResult(credit>0) + Read/SummarizeStore + Flush 无数据竞争。
+func TestQuotaConcurrentSelectMarkReadFlush(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	p := NewPool(path)
+	p.SetQuotaFloor(0)
+	now := time.Now().UnixMilli()
+	for i := range 4 {
+		if _, _, err := p.Upsert(CreateAccount(Account{
+			ID:             fmt.Sprintf("acc-%d", i),
+			Label:          fmt.Sprintf("acc-%d", i),
+			Site:           "global",
+			BearerToken:    fmt.Sprintf("tok-%d", i),
+			Enabled:        true,
+			QuotaRemaining: ledgerFloatPtr(10000),
+			QuotaCheckedAt: now,
+		})); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				sel, err := p.Select(SelectOptions{PreferQuota: true, Site: "global"})
+				if err != nil {
+					t.Errorf("Select: %v", err)
+					return
+				}
+				if sel.Account.QuotaRemaining != nil {
+					_ = *sel.Account.QuotaRemaining
+				}
+				if err := p.MarkResult(sel, true, "", 0, 0.5); err != nil {
+					t.Errorf("MarkResult: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				store, err := p.Read()
+				if err != nil {
+					t.Errorf("Read: %v", err)
+					return
+				}
+				_ = SummarizeStore(store, path)
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 30 {
+			if err := p.Flush(); err != nil {
+				t.Errorf("Flush: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	if err := p.Flush(); err != nil {
+		t.Fatalf("final Flush: %v", err)
+	}
+}
+
+// TestQuotaSpentSinceCheckLifecycle 验证 QuotaSpentSinceCheck 在
+// NormalizeStore/readDisk、Upsert、BypassedCooldown 路径下的保持与清零。
+func TestQuotaSpentSinceCheckLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	p := NewPool(path)
+	now := time.Now().UnixMilli()
+	acc, _, err := p.Upsert(CreateAccount(Account{
+		ID:             "acc-life",
+		Label:          "acc-life",
+		Site:           "global",
+		BearerToken:    "tok-life",
+		Enabled:        true,
+		QuotaRemaining: ledgerFloatPtr(100),
+		QuotaCheckedAt: now,
+	}))
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := p.MarkResult(ledgerSel(acc.ID), true, "", 0, 12.5); err != nil {
+		t.Fatalf("MarkResult: %v", err)
+	}
+	if err := p.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	// 1. 重启 readDisk + NormalizeStore 必须保留 QuotaSpentSinceCheck。
+	reloaded := NewPool(path)
+	store, err := reloaded.Read()
+	if err != nil {
+		t.Fatalf("reloaded Read: %v", err)
+	}
+	if len(store.Accounts) != 1 || store.Accounts[0].QuotaSpentSinceCheck != 12.5 {
+		t.Fatalf("readDisk/NormalizeStore 丢失了 QuotaSpentSinceCheck: %+v", store.Accounts)
+	}
+
+	// 2. Upsert 更新同号凭证时必须保留 QuotaSpentSinceCheck。
+	upserted, _, err := reloaded.Upsert(CreateAccount(Account{
+		ID:          "acc-life",
+		Label:       "acc-life",
+		Site:        "global",
+		BearerToken: "tok-life-v2",
+		Enabled:     true,
+	}))
+	if err != nil {
+		t.Fatalf("Upsert existing: %v", err)
+	}
+	if upserted.QuotaSpentSinceCheck != 12.5 {
+		t.Fatalf("Upsert 丢失了 QuotaSpentSinceCheck: got %.2f want 12.5", upserted.QuotaSpentSinceCheck)
+	}
+
+	// 3. BypassedCooldown 成功会触发 clearQuotaCache，必须同步清零 QuotaSpentSinceCheck。
+	if err := reloaded.MarkResult(Selection{
+		Source:           "pool",
+		Account:          Account{ID: "acc-life"},
+		BypassedCooldown: true,
+	}, true, "", 0, 1.0); err != nil {
+		t.Fatalf("MarkResult BypassedCooldown: %v", err)
+	}
+	afterClear := ledgerAccount(reloaded, "acc-life")
+	if afterClear.QuotaRemaining != nil || afterClear.QuotaSpentSinceCheck != 0 {
+		t.Fatalf("clearQuotaCache 后应清零 QuotaRemaining 与 QuotaSpentSinceCheck，实际 rem=%v spent=%.2f",
+			afterClear.QuotaRemaining, afterClear.QuotaSpentSinceCheck)
 	}
 }

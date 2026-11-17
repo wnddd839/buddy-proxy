@@ -722,6 +722,7 @@ func MergeRefreshedToken(existing accounts.Account, token *oauth.TokenData) acco
 	updated.QuotaUnlimited = existing.QuotaUnlimited
 	updated.QuotaResetAt = existing.QuotaResetAt
 	updated.QuotaCheckedAt = existing.QuotaCheckedAt
+	updated.QuotaSpentSinceCheck = existing.QuotaSpentSinceCheck
 	// 出口是运维决策，刷新令牌不该把号扔回本机 IP。
 	updated.Proxy = existing.Proxy
 	return updated
@@ -1013,6 +1014,7 @@ func (s *Service) listQuotaRefreshCandidates(exclude []string, site string, incl
 	for _, account := range out {
 		skip[account.ID] = struct{}{}
 	}
+	floor := s.Pool.QuotaFloor()
 	extra := 0
 	for _, account := range store.Accounts {
 		if extra >= maxQuotaRefreshCooled {
@@ -1027,7 +1029,9 @@ func (s *Service) listQuotaRefreshCandidates(exclude []string, site string, incl
 		if _, ok := skip[account.ID]; ok {
 			continue
 		}
-		if account.CooldownSource != accounts.CooldownSourceQuota || !accounts.InCooldown(account, now) {
+		isQuotaCooled := account.CooldownSource == accounts.CooldownSourceQuota && accounts.InCooldown(account, now)
+		isStaleFloor := accounts.QuotaBelowFloor(account, now, floor) && !quotaSnapshotFresh(account, now)
+		if !isQuotaCooled && !isStaleFloor {
 			continue
 		}
 		out = append(out, account)
