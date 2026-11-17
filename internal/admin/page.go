@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.16-v0.7.5-system-prompt-strip"
+const UIRevision = "2026.11.17-v0.7.6"
 
 func PageHTML() string {
 	return `<!doctype html>

@@ -44,6 +44,7 @@ kiro-proxy 已发布
 - [@240xu](https://github.com/240xu) · [#62](https://github.com/wnddd839/buddy-proxy/pull/62) 国际站 system 补全 · [#63](https://github.com/wnddd839/buddy-proxy/pull/63) 模型目录提速 · [#64](https://github.com/wnddd839/buddy-proxy/pull/64) OAuth 专用出口 · [#65](https://github.com/wnddd839/buddy-proxy/pull/65) 无备选账号时同号重连 · [#66](https://github.com/wnddd839/buddy-proxy/pull/66) 独立签到页、四种调度模式、48h 审计、有方向的模型路由、选号积分下限，以及后续文档/安全修复
 
 - [@240xu](https://github.com/240xu) · [#67](https://github.com/wnddd839/buddy-proxy/pull/67) 签到排班、分布与推理字段实测 · [#69](https://github.com/wnddd839/buddy-proxy/pull/69) 工具 Schema 11129 根因与修复 · [#70](https://github.com/wnddd839/buddy-proxy/pull/70) 额度冷却自愈与源区用尽路由 · [#71](https://github.com/wnddd839/buddy-proxy/pull/71) 冷却可观测性与模型可用账号数（审核补修后发布）
+- [@240xu](https://github.com/240xu) · [#72](https://github.com/wnddd839/buddy-proxy/pull/72) System Prompt 开发者面板与两档流停滞看门狗 · [#73](https://github.com/wnddd839/buddy-proxy/pull/73) `strip` 精确剥离身份句与 DeepSeek Harness 会话亲和修复 · [#74](https://github.com/wnddd839/buddy-proxy/pull/74) 请求后本地实时扣减余额让积分下限即时生效（审核补修后发布）
 
 ---
 
@@ -120,7 +121,7 @@ chmod +x ./codebuddy-proxy-linux-amd64
 
 运行中的实例可在管理台顶栏下方点「检查更新 / 更新并重启」，仅从官方 GitHub Release 下载并按 `SHA256SUMS.txt` 校验，成功后自动重启并回连；下载校验失败或新版本启动失败时保留/回滚旧程序。改动只替换可执行文件，不会覆盖 `.env`、账号池或用量文件。**首个带更新器的版本仍需手动升级一次**；Docker 部署请用镜像更新（`docker compose pull && docker compose up -d`）。
 
-当前正式版为 **[v0.7.5](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.5)**：签到计划/执行审计与延迟窗口修复、推理字段生效、工具 Schema 兼容、额度冷却自愈、「源区用尽才跳」路由及模型可用账号数。特别感谢 [@240xu](https://github.com/240xu) 提供 #67、#69、#70、#71 的实测和实现；均审核补修后纳入。手动刷新余额不会解除真实限流，启动仍不补签。详见 [更新日志](CHANGELOG.md)。
+当前正式版为 **[v0.7.6](https://github.com/wnddd839/buddy-proxy/releases/tag/v0.7.6)**：请求后按上游实际 `credit` 本地实时扣减余额使积分下限即时生效、System Prompt 四档开发者面板（`auto` / `keep` / `fold` / `strip` 精确剥离身份句）、DeepSeek Harness 复合会话亲和修复，以及两档可配置流停滞看门狗（默认各 10 分钟，首字节后底层自动放宽）。特别感谢 [@240xu](https://github.com/240xu) 在 [#72](https://github.com/wnddd839/buddy-proxy/pull/72)、[#73](https://github.com/wnddd839/buddy-proxy/pull/73)、[#74](https://github.com/wnddd839/buddy-proxy/pull/74) 提供线上实证、根因分析与核心实现；三个 PR 均逐项深度审查并补修并发竞态与边界隐患后合入发布。详见 [更新日志](CHANGELOG.md)。
 
 升级注意：可选 `CODEBUDDY_PROXY_OAUTH_PROXY` 仅用于国际站 OAuth（含 token refresh），配置后需重启；信号停止默认等待 10 分钟，Docker/systemd 的停止超时需不小于该宽限（仓库 Compose 已设为 11 分钟），自更新交接仍为 30 秒。隧道需传递 `X-Forwarded-For` 等转发头才会启用 SSE 关闭连接策略。详情见 [更新日志](CHANGELOG.md) 和 [运维手册](docs/operations/runbook.md)。
 
