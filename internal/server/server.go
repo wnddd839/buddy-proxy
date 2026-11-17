@@ -447,6 +447,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, k
 		finish(false, 0, 0, 0, 0, "请求区域与绑定账号不一致", provider.Usage{})
 		return
 	}
+	// 会话键必须在任何 system 改写之前算好：strip 档会剥掉身份句，
+	// 若在剥离后再算，不同客户端的空 system 会撞成同一个键。
+	sessionKey, sessionKeySource := sessionpin.Key(r.Header, body.PromptCacheKey, body.Messages)
 	completeOpts := gateway.CompleteOptions{
 		AccountID:           requestBinding(r).AccountID,
 		FixedAccount:        requestBinding(r).AccountID != "",
@@ -460,7 +463,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, k
 		ReasoningEffort:     reasoningEffort,
 		Reasoning:           body.Reasoning,
 		Thinking:            body.Thinking,
-		SessionKey:          sessionpin.Key(r.Header, body.PromptCacheKey, body.Messages),
+		SessionKey:          sessionKey,
+		SessionKeySource:    sessionKeySource,
+		ClientHint:          sessionpin.ClientHint(r.Header),
 		RequestID:           proxyRequestID,
 		// system 形态由 CompleteFromPool 回填，供 07 用量明细交叉对照。
 		SystemOutcome: &gateway.SystemPromptOutcome{},
@@ -1919,7 +1924,7 @@ func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) 
 	mode := strings.TrimSpace(body.Mode)
 	if !config.IsValidSystemPromptMode(mode) {
 		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
-			"ok": false, "error": "mode 只能是 auto / keep / fold",
+			"ok": false, "error": "mode 只能是 auto / keep / fold / strip",
 		})
 		return
 	}

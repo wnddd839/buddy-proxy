@@ -384,6 +384,12 @@ type CompleteOptions struct {
 	routeFallbacks []modelroute.Rule // Remaining rules from the original source/model snapshot.
 	// RequestID 是本次请求的代理 ID，用来把 system 事件与用量明细对上。
 	RequestID string
+	// SessionKeySource 是 SessionKey 的来源（header/cachekey/content/none），
+	// 只用于事件观测：面板据此判断客户端有没有发会话头。
+	SessionKeySource string
+	// ClientHint 是从请求头推断的客户端类型（claude-code/opencode/...）。
+	// 只用于事件观测，绝不参与剥离决策 —— 见 sessionpin.ClientHint 的说明。
+	ClientHint string
 	// systemMode 是请求首次进入 CompleteFromPool 时快照的 system 模式，
 	// 沿递归重试原样传递（opts 按值传递），调用方不要设置。
 	systemMode string
@@ -460,13 +466,31 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		OnThinkingDelta:    opts.OnThinkingDelta,
 		OnEvent:            opts.OnEvent,
 		DeliverToolDeltas:  opts.DeliverToolDeltas,
-		// system 策略：fold 永远折叠；auto/keep 原样透传；已降级过的重试强制折叠。
+		// system 策略：fold 永远折叠；auto/keep/strip 原样透传；已降级过的重试强制折叠。
 		KeepSystem: s.keepSystemFor(opts),
 	}
 }
 
+// applyStripConfig 给上游请求挂上「身份句剥离」配置。
+//
+// 只有 strip 档才启用：auto/keep/fold 的 system 形态必须与改动前完全一致。
+// 剥离规则按**账号所在站点**取（与 chatOptionsFromAccount 的 site 同源），
+// 因为黑名单本身按站点分流（DeepSeek 身份句只在 domestic 拦）。
+//
+// 剥离在 provider 层执行，晚于 sessionpin.Key —— 会话键始终用原始 system 计算。
+func applyStripConfig(chatOpts *provider.ChatOptions, mode, site string, report *provider.StripReport) {
+	if mode != config.SystemPromptModeStrip {
+		return
+	}
+	chatOpts.Strip = &provider.StripConfig{
+		Enabled: true,
+		Rules:   provider.RulesForSite(site),
+	}
+	chatOpts.StripReport = report
+}
+
 // keepSystemFor 决定本次上游请求是否原样透传 system。
-// fold 模式永远折叠；auto / keep 模式首试原样；已降级过的重试强制折叠。
+// fold 模式永远折叠；auto / keep / strip 模式首试原样；已降级过的重试强制折叠。
 func (s *Service) keepSystemFor(opts CompleteOptions) bool {
 	if opts.FoldedRetry {
 		return false
@@ -555,7 +579,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		return CompleteResult{}, fmt.Errorf("%w（max=%d）", errRetryDepthExceeded, defaultMaxAccountRetries)
 	}
 	if opts.SessionKey == "" {
-		opts.SessionKey = sessionpin.Key(nil, "", opts.Messages)
+		opts.SessionKey, opts.SessionKeySource = sessionpin.Key(nil, "", opts.Messages)
 	}
 	site := s.requestSite(opts)
 	pinKey := SessionPinKey(opts.SessionKey, site)
@@ -623,6 +647,11 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		opts.SystemOutcome.Fingerprint = att.fp
 	}
 	chatOpts := s.chatOptionsFromAccount(account, opts)
+	// strip 档：挂上身份句剥离配置（auto/keep/fold 不启用）。
+	// site 用本次实际选中的账号所在站点，与黑名单的站点分流口径一致。
+	// 每次尝试使用局部 stripReport，避免跨递归重试累加或跨区重试残留假阳性。
+	var stripReport provider.StripReport
+	applyStripConfig(&chatOpts, att.mode, chatOpts.Site, &stripReport)
 	// 同会话复用上游会话 ID；仅在有账号钉（pinKey 非空）时注入，与钉号生命周期一致。
 	if pinKey != "" {
 		chatOpts.ConversationID = s.Conversations.ID(pinKey+"\x1e"+chatOpts.Product, account.ID)
@@ -635,6 +664,14 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		s.recordRateLimit(account, err)
 	}
 	endFlight(err == nil)
+	// 回填剥离结果：必须早于任何 recordSystemPromptAttempt 调用，
+	// 否则事件里的 stripped / strippedBytes 永远是零值。
+	att.stripped = stripReport.Stripped
+	att.strippedBytes = stripReport.Bytes
+	if opts.SystemOutcome != nil {
+		opts.SystemOutcome.Stripped = stripReport.Stripped
+		opts.SystemOutcome.StrippedBytes = stripReport.Bytes
+	}
 	if err != nil {
 		// 客户端主动断开 SSE/HTTP，不算账号或上游故障。
 		if errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
@@ -647,12 +684,12 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 			return CompleteResult{Result: result, Account: accounts.SummarizeAccount(account), AccountID: account.ID}, err
 		}
-		// system 原样优先（auto 模式）：上游以 11128 拒收时，把 system
+		// system 原样优先（auto / strip 模式）：上游以 11128 拒收时，把 system
 		// 折叠进 <client_instructions> 用**同一账号**重试一次。折叠后不再命中竞品
 		// CLI 指纹扫描；每个请求最多降级一次（FoldedRetry 防死循环）。
-		// 这是内容策略拒收，不是账号问题：不罚号、不换号。
-		// keep 模式不降级 —— 用户显式要求「永远原样」，被拦截就如实报错。
-		if att.keepForm && att.mode == config.SystemPromptModeAuto &&
+		// strip 档遇到黑名单尚未收录的新 11128 身份句时同样折叠兜底；
+		// 需要原始报错排障已有专门的 keep 模式 —— keep 不降级，被拦截就如实报错。
+		if att.keepForm && (att.mode == config.SystemPromptModeAuto || att.mode == config.SystemPromptModeStrip) &&
 			!opts.FoldedRetry && isChannelBlocked(err) {
 			s.recordSystemPromptAttempt(opts, account, site, att, err, true)
 			if opts.SystemOutcome != nil {

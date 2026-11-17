@@ -7,11 +7,12 @@ import (
 
 const defaultJournalCapacity = 500
 
-// Stats 是近 24 小时的聚合视图。
+// Stats 是近 24 小时或按天的聚合视图。
 type Stats struct {
 	Total     int `json:"total"`
 	Keep      int `json:"keep"`
 	Fold      int `json:"fold"`
+	Stripped  int `json:"stripped"`
 	Degraded  int `json:"degraded"`
 	Recovered int `json:"recovered"` // 降级重放成功次数
 	Blocked   int `json:"blocked"`
@@ -93,6 +94,9 @@ func statsFrom(events []Event, cutoff int64) Stats {
 			s.Keep++
 		case "fold":
 			s.Fold++
+		}
+		if e.Stripped {
+			s.Stripped++
 		}
 		if e.Degraded {
 			s.Degraded++

@@ -12,14 +12,14 @@ import (
 func TestKeyPrefersSessionHeader(t *testing.T) {
 	h := make(http.Header)
 	h.Set("X-Session-Id", "codex-abc")
-	got := sessionpin.Key(h, "ignored", []map[string]any{{"role": "user", "content": "hello"}})
+	got, _ := sessionpin.Key(h, "ignored", []map[string]any{{"role": "user", "content": "hello"}})
 	if got != "hdr:codex-abc" {
 		t.Fatalf("key=%q", got)
 	}
 }
 
 func TestKeyUsesPromptCacheKey(t *testing.T) {
-	got := sessionpin.Key(nil, "pc-1", []map[string]any{{"role": "user", "content": "hello"}})
+	got, _ := sessionpin.Key(nil, "pc-1", []map[string]any{{"role": "user", "content": "hello"}})
 	if got != "hdr:pc-1" {
 		t.Fatalf("key=%q", got)
 	}
@@ -49,12 +49,12 @@ func TestKeyStableFromFirstUserMessage(t *testing.T) {
 		{"role": "assistant", "content": "ok"},
 		{"role": "user", "content": "also tests"},
 	}
-	a := sessionpin.Key(nil, "", first)
-	b := sessionpin.Key(nil, "", later)
+	a, _ := sessionpin.Key(nil, "", first)
+	b, _ := sessionpin.Key(nil, "", later)
 	if a == "" || a != b {
 		t.Fatalf("expected stable conversation key, got %q vs %q", a, b)
 	}
-	other := sessionpin.Key(nil, "", []map[string]any{{"role": "user", "content": "different"}})
+	other, _ := sessionpin.Key(nil, "", []map[string]any{{"role": "user", "content": "different"}})
 	if other == a {
 		t.Fatal("different first user message must not collide")
 	}

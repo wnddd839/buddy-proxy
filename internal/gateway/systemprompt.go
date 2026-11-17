@@ -31,6 +31,11 @@ type SystemPromptOutcome struct {
 	Form        string `json:"form,omitempty"`        // keep / fold
 	Fingerprint string `json:"fingerprint,omitempty"` // system 的 SHA-256 前 8 位
 	Degraded    bool   `json:"degraded,omitempty"`    // 是否因 11128 降级过
+	// Stripped 表示 strip 档实际删掉了身份句（system 内容与客户端原文不同）。
+	// 与 Degraded 语义不同：stripped 是「定向删除一句」，degraded 是「整条降级」。
+	Stripped bool `json:"stripped,omitempty"`
+	// StrippedBytes 是删除的字节数，便于核对「只删了那一句」。
+	StrippedBytes int `json:"strippedBytes,omitempty"`
 }
 
 // systemAttempt 是一次上游尝试的 system 侧快照，只算一次指纹。
@@ -42,6 +47,9 @@ type systemAttempt struct {
 	fp       string
 	size     int
 	mode     string
+	// stripped / strippedBytes 是 strip 档的实际剥离结果（provider 回填）。
+	stripped      bool
+	strippedBytes int
 }
 
 func formName(keep bool) string {
@@ -224,19 +232,23 @@ func (s *Service) recordSystemPromptAttempt(
 	// 才算「降级恢复成功」。重放再次失败不置 Recovered。
 	recovered := opts.FoldedRetry && callErr == nil
 	s.RecordSystemPromptEvent(systemprompt.Event{
-		At:          att.started.UnixMilli(),
-		RequestID:   opts.RequestID,
-		AccountID:   account.ID,
-		Site:        site,
-		Model:       opts.Model,
-		Mode:        att.mode,
-		Form:        formName(att.keepForm),
-		Degraded:    degraded,
-		Recovered:   recovered,
-		Fingerprint: att.fp,
-		SystemLen:   att.size,
-		Status:      status,
-		ErrorCode:   code,
-		DurationMs:  time.Since(att.started).Milliseconds(),
+		At:            att.started.UnixMilli(),
+		RequestID:     opts.RequestID,
+		AccountID:     account.ID,
+		Site:          site,
+		Model:         opts.Model,
+		Mode:          att.mode,
+		Form:          formName(att.keepForm),
+		Degraded:      degraded,
+		Recovered:     recovered,
+		Fingerprint:   att.fp,
+		SystemLen:     att.size,
+		Status:        status,
+		ErrorCode:     code,
+		DurationMs:    time.Since(att.started).Milliseconds(),
+		ClientHint:    opts.ClientHint,
+		SessionSource: opts.SessionKeySource,
+		Stripped:      att.stripped,
+		StrippedBytes: att.strippedBytes,
 	})
 }

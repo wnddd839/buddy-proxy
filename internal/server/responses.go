@@ -77,9 +77,10 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request, keySite
 	}
 
 	// session 钉号：Codex 传 prompt_cache_key，或按消息指纹。
-	sessionKey := sessionpin.Key(r.Header, req.PromptCacheKey, messages)
+	sessionKey, sessionKeySource := sessionpin.Key(r.Header, req.PromptCacheKey, messages)
 	if req.PreviousResponseID != "" && sessionKey == "" {
 		sessionKey = "resp_prev_" + req.PreviousResponseID
+		sessionKeySource = sessionpin.KeySourceHeader
 	}
 
 	completeOpts := gateway.CompleteOptions{
@@ -94,6 +95,8 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request, keySite
 		MaxCompletionTokens: req.MaxTokens(),
 		ReasoningEffort:     req.ReasoningEffort(),
 		SessionKey:          sessionKey,
+		SessionKeySource:    sessionKeySource,
+		ClientHint:          sessionpin.ClientHint(r.Header),
 		RequestID:           proxyRequestID,
 		// system 形态由 CompleteFromPool 回填，供 07 用量明细交叉对照。
 		SystemOutcome: &gateway.SystemPromptOutcome{},

@@ -656,17 +656,18 @@ Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS
 {
   "ok": true,
   "mode": "auto",
-  "stats": {"total":0,"keep":0,"fold":0,"degraded":0,"blocked":0,"ok":0,"failed":0,"recovered":0},
+  "stats": {"total":0,"keep":0,"fold":0,"stripped":0,"degraded":0,"blocked":0,"ok":0,"failed":0,"recovered":0},
   "statsScope": "date:20261115",
   "recent": [],
   "dates": ["20261115"]
 }
 ```
 
+- `mode` 取值：`auto` / `keep` / `fold` / `strip`。
 - `statsScope` 为 `date:YYYYMMDD` 时，`stats` 来自当天落盘 jsonl 全量（重启不清零）；
   为 `memory` 时是进程内近 24h（重启清零）。
 - `recent` 最多 200 条（最新在前），内存环形缓冲容量 500。
-- `recovered` 统计「11128 被拦截后折叠重放成功」的次数。
+- `recovered` 统计「11128 被拦截后折叠重放成功」的次数；`stripped` 统计 `strip` 档删掉身份句的事件数。
 
 ### `GET /direct-admin/api/system-prompt/events`
 
@@ -674,20 +675,28 @@ Access-Control-Allow-Methods: GET,POST,DELETE,OPTIONS
 `size`（默认 100，上限 500）、`onlyProblems`（`1`/`true` 等）。
 
 `onlyProblems=1` 包含：传输层失败（`status=0`）、`status>=400`、非空 `errorCode`、
-`degraded`（被 11128 拦截触发降级）。一次 auto 降级产生两条事件，用同一
+`degraded`（被 11128 拦截触发降级）。一次 auto/strip 降级产生两条事件，用同一
 `requestId` 关联：`keep/400/11128/degraded` 与 `fold/200/recovered:true`。
 
-响应含 `total` / `hasMore` / `events`。
+响应含 `total` / `hasMore` / `events`。事件观测字段说明：
+
+| 字段 | 含义 |
+|---|---|
+| `clientHint` | 从请求头推断的客户端类型（`claude-code` / `opencode` / `deepseek-harness` / `cline` / `cursor` / `codex` / `openai-sdk` / `unknown`）。空表示识别不出。**仅观测，不参与任何决策。** |
+| `sessionSource` | 会话键来源：`header`（客户端显式会话头）/ `cachekey`（`prompt_cache_key`）/ `content`（system+首条 user 哈希）/ `none` |
+| `stripped` / `strippedBytes` | strip 档是否删掉身份句、删了多少字节 |
+
+同一尝试若先删掉已知身份句、剩余内容又命中未知 11128 触发折叠降级时，失败尝试事件可同时带 `stripped:true` 与 `degraded:true`，重放成功的第二条事件为 `form:"fold", recovered:true`。
 
 ### `POST /direct-admin/api/system-prompt`
 
 热切换模式，同时写入 env 文件持久化：
 
 ```json
-{"mode": "fold"}
+{"mode": "strip"}
 ```
 
-`mode` 只接受 `auto` / `keep` / `fold`，其它值返回 400。
+`mode` 接受 `auto` / `keep` / `fold` / `strip`，其它值返回 `400`（`mode 只能是 auto / keep / fold / strip`）。
 
 > 事件按天写入账号池同目录的 `proxy-systemprompt-YYYYMMDD.jsonl`，保留 7 天、权限 0600。
 > **只存 system 的 SHA-256 前 8 位指纹与字节数，不存 system / user 原文。**

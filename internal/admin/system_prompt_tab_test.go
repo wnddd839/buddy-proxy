@@ -229,8 +229,11 @@ func TestUsageTableHasSystemColumn(t *testing.T) {
 	if !strings.Contains(page, "<th>System</th>") {
 		t.Fatal("用量明细表应新增 System 列")
 	}
-	if strings.Contains(page, `colspan="11"`) {
-		t.Fatal("用量表 colspan 仍为 11，加列后应为 12")
+	// 用量表（07）应为 12 列：12 个 <th> 对应 colspan="12" 空态。
+	// 注意 06 事件表现在是 11 列（原 10 列 + 客户端），所以不能再用
+	// 「页面里不得出现 colspan=11」这种全局断言 —— 会误伤 06。
+	if !strings.Contains(page, `colspan="12"`) {
+		t.Fatal("用量表空态应为 colspan=12（12 列）")
 	}
 	if !strings.Contains(page, "systemForm") {
 		t.Fatal("用量表应渲染 systemForm")

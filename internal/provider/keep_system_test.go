@@ -10,7 +10,7 @@ func TestKeepSystemPreservesRoleAndPosition(t *testing.T) {
 		{"role": "system", "content": "You are Claude Code, Anthropic's official CLI for Claude."},
 		{"role": "user", "content": "hello"},
 	}
-	out := EnsureUpstreamMessagesWith(in, true)
+	out := EnsureUpstreamMessagesWith(in, true, nil, nil)
 	if len(out) != 2 {
 		t.Fatalf("条数变了：%d", len(out))
 	}
@@ -30,7 +30,7 @@ func TestKeepSystemDoesNotWrapInClientInstructions(t *testing.T) {
 		{"role": "system", "content": "SYSTEM-TEXT"},
 		{"role": "user", "content": "hi"},
 	}
-	out := EnsureUpstreamMessagesWith(in, true)
+	out := EnsureUpstreamMessagesWith(in, true, nil, nil)
 	for _, m := range out {
 		if s, ok := m["content"].(string); ok {
 			if s == wrapClientInstructions("SYSTEM-TEXT") {
@@ -50,7 +50,7 @@ func TestFoldIsDefaultPreserved(t *testing.T) {
 	}
 	// 旧签名必须与历史行为一致
 	viaOld := EnsureUpstreamMessages(in)
-	viaNew := EnsureUpstreamMessagesWith(in, false)
+	viaNew := EnsureUpstreamMessagesWith(in, false, nil, nil)
 	if !reflect.DeepEqual(viaOld, viaNew) {
 		t.Fatalf("旧签名与 keepSystem=false 应等价\nold=%v\nnew=%v", viaOld, viaNew)
 	}
@@ -67,7 +67,7 @@ func TestKeepSystemStillMergesToolAssistants(t *testing.T) {
 		{"role": "assistant", "content": nil, "tool_calls": []any{
 			map[string]any{"id": "c2", "type": "function", "function": map[string]any{"name": "bash", "arguments": "{}"}}}},
 	}
-	out := EnsureUpstreamMessagesWith(in, true)
+	out := EnsureUpstreamMessagesWith(in, true, nil, nil)
 	merged := 0
 	for _, m := range out {
 		if m["role"] == "assistant" {
@@ -88,7 +88,7 @@ func TestKeepSystemStillDropsEmptyMessages(t *testing.T) {
 		{"role": "user", "content": "   "},
 		{"role": "user", "content": "real"},
 	}
-	out := EnsureUpstreamMessagesWith(in, true)
+	out := EnsureUpstreamMessagesWith(in, true, nil, nil)
 	users := 0
 	for _, m := range out {
 		if m["role"] == "user" {
@@ -112,7 +112,7 @@ func TestKeepSystemStillNormalizesToolOutput(t *testing.T) {
 			map[string]any{"type": "text", "text": "b"},
 		}},
 	}
-	out := EnsureUpstreamMessagesWith(in, true)
+	out := EnsureUpstreamMessagesWith(in, true, nil, nil)
 	found := false
 	for _, m := range out {
 		if m["role"] != "tool" {
@@ -137,7 +137,7 @@ func TestKeepSystemMapsDeveloperToSystem(t *testing.T) {
 		{"role": "developer", "content": "DEV-TEXT"},
 		{"role": "user", "content": "hi"},
 	}
-	out := EnsureUpstreamMessagesWith(in, true)
+	out := EnsureUpstreamMessagesWith(in, true, nil, nil)
 	if out[0]["role"] != "system" {
 		t.Fatalf("developer 应归一为 system，实际 %v", out[0]["role"])
 	}
@@ -149,7 +149,7 @@ func TestKeepSystemMapsDeveloperToSystem(t *testing.T) {
 func TestKeepSystemGlobalAddsMissingSystem(t *testing.T) {
 	// provider 层不负责 global 兜底（在 Complete 里），此测试锁「无 system 时不伪造」
 	in := []map[string]any{{"role": "user", "content": "hi"}}
-	out := EnsureUpstreamMessagesWith(in, true)
+	out := EnsureUpstreamMessagesWith(in, true, nil, nil)
 	for _, m := range out {
 		if m["role"] == "system" {
 			t.Fatal("客户端没发 system 时 EnsureUpstreamMessagesWith 不应伪造")
@@ -163,7 +163,7 @@ func TestKeepSystemMultipleSystemsAllPreserved(t *testing.T) {
 		{"role": "system", "content": "S2"},
 		{"role": "user", "content": "hi"},
 	}
-	out := EnsureUpstreamMessagesWith(in, true)
+	out := EnsureUpstreamMessagesWith(in, true, nil, nil)
 	if len(out) != 3 {
 		t.Fatalf("应保留 3 条，实际 %d", len(out))
 	}
