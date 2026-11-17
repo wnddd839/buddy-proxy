@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -341,17 +342,82 @@ func TestQuotaSpentSinceCheckLifecycle(t *testing.T) {
 		t.Fatalf("Upsert 丢失了 QuotaSpentSinceCheck: got %.2f want 12.5", upserted.QuotaSpentSinceCheck)
 	}
 
-	// 3. BypassedCooldown 成功会触发 clearQuotaCache，必须同步清零 QuotaSpentSinceCheck。
+	// 3. 普通 upstream 冷却的 BypassedCooldown 恢复必须保留有效正余额并正常扣费（不清空下限保护）。
+	if err := reloaded.MarkResult(Selection{
+		Source:           "pool",
+		Account:          Account{ID: "acc-life"},
+		BypassedCooldown: true,
+	}, true, "", 0, 2.5); err != nil {
+		t.Fatalf("MarkResult upstream BypassedCooldown: %v", err)
+	}
+	afterUpstreamBypass := ledgerAccount(reloaded, "acc-life")
+	if afterUpstreamBypass.QuotaRemaining == nil || *afterUpstreamBypass.QuotaRemaining != 85 || afterUpstreamBypass.QuotaSpentSinceCheck != 15 {
+		t.Fatalf("普通冷却降级不应清空正余额，实际 rem=%v spent=%.2f",
+			afterUpstreamBypass.QuotaRemaining, afterUpstreamBypass.QuotaSpentSinceCheck)
+	}
+
+	// 4. 仅当账号处于 QuotaBlocked（<=0 且未到 resetAt）时，BypassedCooldown 成功才清空过期额度快照与累计。
+	if _, err := reloaded.ApplyQuotaState("acc-life", ledgerFloatPtr(0), false, now+3_600_000, now); err != nil {
+		t.Fatalf("ApplyQuotaState exhausted: %v", err)
+	}
 	if err := reloaded.MarkResult(Selection{
 		Source:           "pool",
 		Account:          Account{ID: "acc-life"},
 		BypassedCooldown: true,
 	}, true, "", 0, 1.0); err != nil {
-		t.Fatalf("MarkResult BypassedCooldown: %v", err)
+		t.Fatalf("MarkResult quota BypassedCooldown: %v", err)
 	}
 	afterClear := ledgerAccount(reloaded, "acc-life")
 	if afterClear.QuotaRemaining != nil || afterClear.QuotaSpentSinceCheck != 0 {
 		t.Fatalf("clearQuotaCache 后应清零 QuotaRemaining 与 QuotaSpentSinceCheck，实际 rem=%v spent=%.2f",
 			afterClear.QuotaRemaining, afterClear.QuotaSpentSinceCheck)
+	}
+}
+
+// TestQuotaNonFiniteAndInFlightProbeGuard 验证 NaN/+Inf 不会污染落盘，且在途探测不会把刚扣穿门槛的余额覆写回旧高值。
+func TestQuotaNonFiniteAndInFlightProbeGuard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	p := NewPool(path)
+	p.SetQuotaFloor(20)
+	now := time.Now().UnixMilli()
+	if _, _, err := p.Upsert(CreateAccount(Account{
+		ID:             "acc-guard",
+		Label:          "acc-guard",
+		Site:           "global",
+		BearerToken:    "tok-guard",
+		Enabled:        true,
+		QuotaRemaining: ledgerFloatPtr(25),
+		QuotaCheckedAt: now,
+	})); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if err := p.MarkResult(ledgerSel("acc-guard"), true, "", 0, bad); err != nil {
+			t.Fatalf("MarkResult(%v): %v", bad, err)
+		}
+	}
+	if err := p.Flush(); err != nil {
+		t.Fatalf("Flush after NaN/Inf must succeed: %v", err)
+	}
+	if got := *ledgerAccount(p, "acc-guard").QuotaRemaining; got != 25 {
+		t.Fatalf("NaN/Inf 不得污染余额: got %v want 25", got)
+	}
+
+	// 模拟 billing 探测发起后、回包前发生了 10 积分扣减（25 -> 15，低于门槛 20）。
+	baseline := p.QuotaBaseline("acc-guard")
+	if err := p.MarkResult(ledgerSel("acc-guard"), true, "", 0, 10); err != nil {
+		t.Fatalf("MarkResult(10): %v", err)
+	}
+	// 迟到的 billing 回包仍携带探测前采样的 25。
+	updated, err := p.ApplyQuotaProbe("acc-guard", baseline, ledgerFloatPtr(25), false, 0, now+100)
+	if err != nil {
+		t.Fatalf("ApplyQuotaProbe: %v", err)
+	}
+	if updated.QuotaRemaining == nil || *updated.QuotaRemaining != 15 || updated.QuotaSpentSinceCheck != 10 {
+		t.Fatalf("在途探测不得抹平刚发生的 10 扣减: rem=%v spent=%.2f", updated.QuotaRemaining, updated.QuotaSpentSinceCheck)
+	}
+	if !QuotaBelowFloor(updated, now+100, 20) {
+		t.Fatal("扣减后的 15 必须继续触发下限 20 拦截")
 	}
 }

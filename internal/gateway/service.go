@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -666,10 +667,11 @@ func creditOf(usage provider.Usage) float64 {
 	if usage.Credit == nil {
 		return 0
 	}
-	if *usage.Credit <= 0 {
+	v := *usage.Credit
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
 		return 0
 	}
-	return *usage.Credit
+	return v
 }
 
 // recordRateLimit 只把确认的限流写入观测器，且必须在 endFlight 之前调用。
@@ -910,6 +912,7 @@ func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.A
 		}
 		return base
 	}
+	baseline := s.Pool.QuotaBaseline(account.ID)
 	usage, probeErr := billing.FetchAccountUsage(ctx, s.Provider, account, s.Config())
 	if probeErr != nil {
 		s.Log.Debug("quota probe skipped after upstream failure", "accountId", account.ID, "error", probeErr.Error())
@@ -917,7 +920,7 @@ func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.A
 	}
 	now := time.Now()
 	state := billing.QuotaStateFromUsage(usage, now)
-	if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
+	if _, applyErr := s.Pool.ApplyQuotaProbe(account.ID, baseline, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
 		s.Log.Warn("quota state apply failed after probe", "accountId", account.ID, "error", applyErr.Error())
 	}
 	if quotaCooldown := state.CooldownDuration(now); quotaCooldown > base {
@@ -1078,6 +1081,7 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, 
 	var refreshed atomic.Int32
 	for _, account := range candidates {
 		wg.Go(func() {
+			baseline := s.Pool.QuotaBaseline(account.ID)
 			usage, probeErr := billing.FetchAccountCredits(ctx, s.Provider, account, s.Config())
 			if probeErr != nil {
 				s.Log.Debug("candidate quota refresh skipped", "accountId", account.ID, "error", probeErr.Error())
@@ -1087,7 +1091,7 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, 
 				return
 			}
 			state := billing.QuotaStateFromUsage(usage, time.Now())
-			if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
+			if _, applyErr := s.Pool.ApplyQuotaProbe(account.ID, baseline, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
 				s.Log.Debug("candidate quota apply failed", "accountId", account.ID, "error", applyErr.Error())
 				return
 			}
@@ -1140,13 +1144,14 @@ func (s *Service) RefreshPoolUsage(ctx context.Context, site string) []PoolUsage
 	var refreshed atomic.Int32
 	for i, account := range accounts {
 		wg.Go(func() {
+			baseline := s.Pool.QuotaBaseline(account.ID)
 			usage, err := billing.FetchAccountUsage(ctx, s.Provider, account, s.Config())
 			if err != nil {
 				items[i] = PoolUsageItem{AccountID: account.ID, Site: account.Site, Error: err.Error()}
 				return
 			}
 			state := billing.QuotaStateFromUsage(usage, time.Now())
-			if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
+			if _, applyErr := s.Pool.ApplyQuotaProbe(account.ID, baseline, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
 				s.Log.Debug("admin quota apply failed", "accountId", account.ID, "error", applyErr.Error())
 			}
 			items[i] = PoolUsageItem{
