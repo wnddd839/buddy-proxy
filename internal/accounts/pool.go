@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,6 +149,16 @@ type Account struct {
 	QuotaUnlimited bool     `json:"quotaUnlimited,omitempty"`
 	QuotaResetAt   int64    `json:"quotaResetAt,omitempty"`
 	QuotaCheckedAt int64    `json:"quotaCheckedAt,omitempty"`
+	// QuotaSpentSinceCheck 是「上次向上游核实之后，本地累计记账的消耗」。
+	// 用途有两个：
+	//   1. 对账：与「服务端余额的变化量」比对，偏差大说明漏记/重复记（如套餐扣减）
+	//   2. 观测：面板显示「本地认为花了多少」与「服务端掉了多少」
+	//
+	// QuotaRemaining 已在每次成功的 MarkResult 里按 credit 扣减，
+	// 所以这个字段是**冗余的记账凭证**，不参与选号判断。
+	QuotaSpentSinceCheck float64 `json:"quotaSpentSinceCheck,omitempty"`
+	// quotaSpentTotal 是进程内单调递增的累计扣费基线，用于在途 billing 探测回包时扣掉探测期间刚完成的本地消耗。
+	quotaSpentTotal float64 `json:"-"`
 
 	ModelCooldowns map[string]int64 `json:"modelCooldowns,omitempty"`
 }
@@ -227,12 +238,19 @@ func EmptyStore() Store {
 	return Store{Version: 1, Provider: "codebuddy", NextIndex: 0, Accounts: []Account{}}
 }
 
+func cloneAccount(a Account) Account {
+	a.AuthStatus.LoggedIn = cloneBoolPtr(a.AuthStatus.LoggedIn)
+	a.ModelCooldowns = maps.Clone(a.ModelCooldowns)
+	a.QuotaRemaining = cloneFloatPtr(a.QuotaRemaining)
+	return a
+}
+
 func cloneStore(store Store) Store {
 	out := store
 	if store.Accounts != nil {
 		out.Accounts = append([]Account(nil), store.Accounts...)
 		for i := range out.Accounts {
-			out.Accounts[i].ModelCooldowns = maps.Clone(out.Accounts[i].ModelCooldowns)
+			out.Accounts[i] = cloneAccount(out.Accounts[i])
 		}
 	}
 	return out
@@ -473,7 +491,7 @@ func NormalizeAccount(raw Account, now int64) Account {
 		}
 	}
 	auth := AuthStatus{
-		LoggedIn:     raw.AuthStatus.LoggedIn,
+		LoggedIn:     cloneBoolPtr(raw.AuthStatus.LoggedIn),
 		UserID:       strutil.Compact(raw.AuthStatus.UserID),
 		UserName:     strutil.Compact(raw.AuthStatus.UserName),
 		UserNickname: strutil.Compact(raw.AuthStatus.UserNickname),
@@ -526,43 +544,45 @@ func NormalizeAccount(raw Account, now int64) Account {
 
 	expiresAt := raw.TokenExpiresAt
 	account := Account{
-		ID:                  id,
-		Provider:            "codebuddy",
-		Label:               label,
-		Enabled:             enabled,
-		Source:              strutil.First(raw.Source, "pool"),
-		Site:                site,
-		BaseURL:             baseURL,
-		InternetEnvironment: internet,
-		APIEndpoint:         strings.TrimRight(strutil.Compact(raw.APIEndpoint), "/"),
-		ChatCompletionsPath: strutil.Compact(raw.ChatCompletionsPath),
-		Domain:              strutil.Compact(raw.Domain),
-		EnterpriseID:        strutil.Compact(raw.EnterpriseID),
-		TenantID:            strutil.First(strutil.Compact(raw.TenantID), strutil.Compact(raw.EnterpriseID)),
-		DepartmentFullName:  strutil.Compact(raw.DepartmentFullName),
-		Transport:           transport,
-		Proxy:               proxy,
-		AuthType:            authType,
-		APIKey:              apiKey,
-		BearerToken:         bearer,
-		RefreshToken:        strutil.Compact(raw.RefreshToken),
-		TokenExpiresAt:      expiresAt,
-		CredentialHash:      credHash,
-		AuthStatus:          auth,
-		CreatedAt:           created,
-		UpdatedAt:           updated,
-		LastUsedAt:          raw.LastUsedAt,
-		LastSelectedAt:      raw.LastSelectedAt,
-		SuccessRequests:     raw.SuccessRequests,
-		FailedRequests:      raw.FailedRequests,
-		LastError:           strutil.Compact(raw.LastError),
-		CooldownUntil:       raw.CooldownUntil,
-		CooldownSource:      normalizeCooldownSource(raw.CooldownSource, raw.CooldownUntil, raw.QuotaResetAt),
-		ModelCooldowns:      maps.Clone(raw.ModelCooldowns),
-		QuotaRemaining:      cloneFloatPtr(raw.QuotaRemaining),
-		QuotaUnlimited:      raw.QuotaUnlimited,
-		QuotaResetAt:        raw.QuotaResetAt,
-		QuotaCheckedAt:      raw.QuotaCheckedAt,
+		ID:                   id,
+		Provider:             "codebuddy",
+		Label:                label,
+		Enabled:              enabled,
+		Source:               strutil.First(raw.Source, "pool"),
+		Site:                 site,
+		BaseURL:              baseURL,
+		InternetEnvironment:  internet,
+		APIEndpoint:          strings.TrimRight(strutil.Compact(raw.APIEndpoint), "/"),
+		ChatCompletionsPath:  strutil.Compact(raw.ChatCompletionsPath),
+		Domain:               strutil.Compact(raw.Domain),
+		EnterpriseID:         strutil.Compact(raw.EnterpriseID),
+		TenantID:             strutil.First(strutil.Compact(raw.TenantID), strutil.Compact(raw.EnterpriseID)),
+		DepartmentFullName:   strutil.Compact(raw.DepartmentFullName),
+		Transport:            transport,
+		Proxy:                proxy,
+		AuthType:             authType,
+		APIKey:               apiKey,
+		BearerToken:          bearer,
+		RefreshToken:         strutil.Compact(raw.RefreshToken),
+		TokenExpiresAt:       expiresAt,
+		CredentialHash:       credHash,
+		AuthStatus:           auth,
+		CreatedAt:            created,
+		UpdatedAt:            updated,
+		LastUsedAt:           raw.LastUsedAt,
+		LastSelectedAt:       raw.LastSelectedAt,
+		SuccessRequests:      raw.SuccessRequests,
+		FailedRequests:       raw.FailedRequests,
+		LastError:            strutil.Compact(raw.LastError),
+		CooldownUntil:        raw.CooldownUntil,
+		CooldownSource:       normalizeCooldownSource(raw.CooldownSource, raw.CooldownUntil, raw.QuotaResetAt),
+		ModelCooldowns:       maps.Clone(raw.ModelCooldowns),
+		QuotaRemaining:       cloneFloatPtr(raw.QuotaRemaining),
+		QuotaUnlimited:       raw.QuotaUnlimited,
+		QuotaResetAt:         raw.QuotaResetAt,
+		QuotaCheckedAt:       raw.QuotaCheckedAt,
+		QuotaSpentSinceCheck: raw.QuotaSpentSinceCheck,
+		quotaSpentTotal:      raw.quotaSpentTotal,
 	}
 	return account
 }
@@ -589,6 +609,13 @@ func HasCredentials(account Account) bool {
 }
 
 func cloneFloatPtr(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	return new(*v)
+}
+
+func cloneBoolPtr(v *bool) *bool {
 	if v == nil {
 		return nil
 	}
@@ -660,11 +687,40 @@ func UsableForModel(account Account, nowMillis int64, model string, floor float6
 	return unavailableUntil(account, nowMillis, model) <= nowMillis
 }
 
+// deductQuotaLocked 按上游实际扣费扣减余额并累计记账。
+//
+// 调用方必须已持有 p.mu 且已确认 ok==true。
+//
+// 三种情况跳过扣减（都不猜）：
+//   - credit <= 0：免费额度/套餐内请求，或上游没返回扣费字段
+//   - QuotaUnlimited：不限量账号没有余额概念
+//   - QuotaRemaining == nil：从未核实过余额，凭空造一个值只会误导下限判断
+//
+// 允许扣成负数：宁可多算，不可少算。负数会让下限立刻拦住该账号，
+// 而「保守地不扣」会让账号继续被打穿。
+func (p *Pool) deductQuotaLocked(account *Account, credit float64) {
+	if account == nil || math.IsNaN(credit) || math.IsInf(credit, 0) || credit <= 0 || account.QuotaUnlimited || account.QuotaRemaining == nil {
+		return
+	}
+	next := *account.QuotaRemaining - credit
+	spent := account.QuotaSpentSinceCheck + credit
+	total := account.quotaSpentTotal + credit
+	if math.IsNaN(next) || math.IsInf(next, 0) || math.IsNaN(spent) || math.IsInf(spent, 0) {
+		return
+	}
+	account.QuotaRemaining = &next
+	account.QuotaSpentSinceCheck = spent
+	if !math.IsNaN(total) && !math.IsInf(total, 0) {
+		account.quotaSpentTotal = total
+	}
+}
+
 func clearQuotaCache(account *Account) {
 	account.QuotaRemaining = nil
 	account.QuotaUnlimited = false
 	account.QuotaResetAt = 0
 	account.QuotaCheckedAt = 0
+	account.QuotaSpentSinceCheck = 0
 }
 
 func (p *Pool) Select(opts SelectOptions) (Selection, error) {
@@ -703,7 +759,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			store.Accounts[i].LastSelectedAt = now
 			p.mem = store
 			p.markDirtyLocked()
-			return Selection{Source: "pool", Account: store.Accounts[i], Index: i, Store: cloneStore(store), Model: opts.Model}, nil
+			return Selection{Source: "pool", Account: cloneAccount(store.Accounts[i]), Index: i, Store: cloneStore(store), Model: opts.Model}, nil
 		}
 		return Selection{}, fmt.Errorf("%w: %s", ErrAccountNotFound, opts.AccountID)
 	}
@@ -764,7 +820,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		store.NextIndex = (idx + 1) % len(store.Accounts)
 		p.mem = store
 		p.markDirtyLocked()
-		return Selection{Source: "pool", Account: store.Accounts[idx], Index: idx, Store: cloneStore(store), Model: opts.Model}, nil
+		return Selection{Source: "pool", Account: cloneAccount(store.Accounts[idx]), Index: idx, Store: cloneStore(store), Model: opts.Model}, nil
 	}
 	// 全部候选都只是「这个模型」在限流窗口内 ⇒ 不降级、明确报错。
 	if modelResetAt > 0 && fallbackIdx < 0 {
@@ -777,7 +833,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		p.markDirtyLocked()
 		return Selection{
 			Source:           "pool",
-			Account:          store.Accounts[fallbackIdx],
+			Account:          cloneAccount(store.Accounts[fallbackIdx]),
 			Index:            fallbackIdx,
 			Store:            cloneStore(store),
 			BypassedCooldown: true,
@@ -833,7 +889,7 @@ func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site, model strin
 	}
 	store.Accounts[bestIdx].LastSelectedAt = now
 	store.NextIndex = (bestIdx + 1) % len(store.Accounts)
-	return Selection{Source: "pool", Account: store.Accounts[bestIdx], Index: bestIdx, Store: cloneStore(*store), Model: model}, true
+	return Selection{Source: "pool", Account: cloneAccount(store.Accounts[bestIdx]), Index: bestIdx, Store: cloneStore(*store), Model: model}, true
 }
 
 type SelectOptions struct {
@@ -850,7 +906,19 @@ func InCooldown(account Account, nowMillis int64) bool {
 	return account.CooldownUntil > 0 && account.CooldownUntil > nowMillis
 }
 
-func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown time.Duration) error {
+// MarkResult 记一次请求结果。
+//
+// credit 是上游本次实际扣费（Usage.Credit）。>0 时立即从 QuotaRemaining 扣减，
+// 让积分下限（QuotaBelowFloor）在**每次请求后**就生效，而不是等下一次
+// 轮询刷新（quotaCacheMaxAge 默认 6 小时，期间账号可能被打穿）。
+//
+// 为什么必须这样：2026-11-16 实测账号 70b8cc3ac591cef7 连续 70 次请求
+// 全部成功、累计扣费 21.90 直到 rem=0，全程没有被下限 20 拦住 ——
+// 因为余额只在 6 小时一次的轮询里更新。
+//
+// credit<=0 时不做任何扣减（22.9% 的请求扣费为 0，属免费/套餐内额度；
+// 失败请求也不能扣）。无法判断时不猜 —— 猜错会误伤可用账号。
+func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown time.Duration, credit float64) error {
 	if selection.Source != "pool" || selection.Account.ID == "" {
 		return nil
 	}
@@ -872,9 +940,13 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 			p.mem.Accounts[i].CooldownSource = ""
 			p.mem.Accounts[i].ModelCooldowns = maps.Clone(p.mem.Accounts[i].ModelCooldowns)
 			delete(p.mem.Accounts[i].ModelCooldowns, selection.Model)
-			// 全冷却降级打成功，说明「耗尽」快照已经过期；正常成功不能清额度，否则 PreferQuota 立刻失效。
-			if selection.BypassedCooldown {
+			// 全冷却降级打成功且原本是「额度耗尽阻塞」快照时，说明旧快照已过期，清空它；
+			// 普通 upstream 冷却降级恢复时必须保留有效正余额并正常扣减，否则会抹掉积分下限保护。
+			wasQuotaBlocked := QuotaBlocked(p.mem.Accounts[i], now)
+			if selection.BypassedCooldown && wasQuotaBlocked {
 				clearQuotaCache(&p.mem.Accounts[i])
+			} else {
+				p.deductQuotaLocked(&p.mem.Accounts[i], credit)
 			}
 		} else {
 			p.mem.Accounts[i].FailedRequests++
@@ -913,13 +985,29 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 	return nil
 }
 
-// ApplyQuotaState 将上游 billing 快照写入账号，并让 cooldownUntil 跟着额度走。
-//
-// 只设不清是旧实现的硬伤：上游提前补回额度后，账号仍会冷却到 resetAt，
-// 而冷却号选不中 ⇒ 永远拿不到一次成功 ⇒ 永远解不开（实测两个号 886 积分
-// 白废 4 天）。现在按来源区分：quota 冷却在余额恢复的瞬间自动解除，
-// upstream 冷却（真实限流）不受影响。
+// QuotaBaseline 返回账号当前进程内累计扣费基线，供发起上游 billing 探测前快照。
+func (p *Pool) QuotaBaseline(accountID string) float64 {
+	if p == nil {
+		return 0
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for i := range p.mem.Accounts {
+		if p.mem.Accounts[i].ID == accountID {
+			return p.mem.Accounts[i].quotaSpentTotal
+		}
+	}
+	return 0
+}
+
+// ApplyQuotaState 将上游 billing 快照直接写入账号，并让 cooldownUntil 跟着额度走。
 func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited bool, resetAt, checkedAt int64) (Account, error) {
+	return p.ApplyQuotaProbe(accountID, math.Inf(1), remaining, unlimited, resetAt, checkedAt)
+}
+
+// ApplyQuotaProbe 将探测回包的 billing 快照写入账号，并扣除探测发起（baseline）之后在途请求刚记下的本地消耗，
+// 防止较慢的 billing 响应把探测期间已扣穿门槛的余额重新覆盖回旧高值。
+func (p *Pool) ApplyQuotaProbe(accountID string, baseline float64, remaining *float64, unlimited bool, resetAt, checkedAt int64) (Account, error) {
 	accountID = strings.TrimSpace(accountID)
 	if accountID == "" {
 		return Account{}, fmt.Errorf("%w: empty id", ErrAccountNotFound)
@@ -937,16 +1025,28 @@ func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited b
 			continue
 		}
 		account := &p.mem.Accounts[i]
-		// 没有来源标记的旧数据：额度冷却的指纹是 CooldownUntil 与 QuotaResetAt
-		// 精确相等（MarkResult 写的是 now+固定时长，撞不上上游给的整点重置）。
 		legacyQuotaCooldown := account.CooldownSource == "" &&
 			account.CooldownUntil > 0 && account.CooldownUntil == account.QuotaResetAt
-		exhausted := !unlimited && remaining != nil && *remaining <= 0
-		recovered := unlimited || (remaining != nil && *remaining > 0)
-		account.QuotaRemaining = cloneFloatPtr(remaining)
+		inFlightSpent := 0.0
+		if !math.IsNaN(baseline) && account.quotaSpentTotal > baseline {
+			inFlightSpent = account.quotaSpentTotal - baseline
+		}
+		nextRemaining := cloneFloatPtr(remaining)
+		if !unlimited && nextRemaining != nil {
+			if math.IsNaN(*nextRemaining) || math.IsInf(*nextRemaining, 0) {
+				nextRemaining = nil
+			} else if inFlightSpent > 0 {
+				adj := *nextRemaining - inFlightSpent
+				nextRemaining = &adj
+			}
+		}
+		exhausted := !unlimited && nextRemaining != nil && *nextRemaining <= 0
+		recovered := unlimited || (nextRemaining != nil && *nextRemaining > 0)
+		account.QuotaRemaining = nextRemaining
 		account.QuotaUnlimited = unlimited
 		account.QuotaResetAt = resetAt
 		account.QuotaCheckedAt = checkedAt
+		account.QuotaSpentSinceCheck = inFlightSpent
 		switch {
 		case exhausted && resetAt > now && resetAt > account.CooldownUntil:
 			account.CooldownUntil = resetAt
@@ -955,7 +1055,7 @@ func (p *Pool) ApplyQuotaState(accountID string, remaining *float64, unlimited b
 			account.CooldownUntil = 0
 			account.CooldownSource = ""
 		}
-		updated = *account
+		updated = cloneAccount(*account)
 		found = true
 		break
 	}
@@ -1001,6 +1101,8 @@ func (p *Pool) Upsert(account Account) (Account, Store, error) {
 			normalized.QuotaUnlimited = existing.QuotaUnlimited
 			normalized.QuotaResetAt = existing.QuotaResetAt
 			normalized.QuotaCheckedAt = existing.QuotaCheckedAt
+			normalized.QuotaSpentSinceCheck = existing.QuotaSpentSinceCheck
+			normalized.quotaSpentTotal = existing.quotaSpentTotal
 			// 导入数据里没有出口字段时保留原绑定：重新导入不该把号扔回本机 IP。
 			// 要解绑请走 POST /accounts/{id}/proxy {clear:true}。
 			if strings.TrimSpace(normalized.Proxy) == "" {
@@ -1081,7 +1183,7 @@ func (p *Pool) SetEnabled(id string, enabled bool) (Account, Store, error) {
 		}
 		p.mem.Accounts[i].Enabled = enabled
 		p.mem.Accounts[i].UpdatedAt = time.Now().UnixMilli()
-		acc := p.mem.Accounts[i]
+		acc := cloneAccount(p.mem.Accounts[i])
 		p.dirty = false
 		snap := cloneStore(p.mem)
 		p.mu.Unlock()
@@ -1133,12 +1235,12 @@ func (p *Pool) AssignProxies(proxies map[string]string) (Account, Store, error) 
 			continue
 		}
 		if !found {
-			first = p.mem.Accounts[i]
+			first = cloneAccount(p.mem.Accounts[i])
 			found = true
 		}
 		p.mem.Accounts[i].Proxy = proxy
 		p.mem.Accounts[i].UpdatedAt = now
-		first = p.mem.Accounts[i]
+		first = cloneAccount(p.mem.Accounts[i])
 		changed++
 	}
 	if changed == 0 {
@@ -1174,13 +1276,17 @@ func (p *Pool) UpdateAccount(id string, update func(Account) Account) (Account, 
 		if p.mem.Accounts[i].ID != id {
 			continue
 		}
-		account := update(p.mem.Accounts[i])
+		prevTotal := p.mem.Accounts[i].quotaSpentTotal
+		account := update(cloneAccount(p.mem.Accounts[i]))
 		if !HasCredentials(account) {
 			p.mu.Unlock()
 			return Account{}, Store{}, ErrNoCredentials
 		}
 		account.ID = id
 		account.UpdatedAt = time.Now().UnixMilli()
+		if account.quotaSpentTotal == 0 {
+			account.quotaSpentTotal = prevTotal
+		}
 		p.mem.Accounts[i] = account
 		p.mem = NormalizeStore(p.mem)
 		p.dirty = false
@@ -1192,7 +1298,7 @@ func (p *Pool) UpdateAccount(id string, update func(Account) Account) (Account, 
 			p.mu.Unlock()
 			return Account{}, Store{}, err
 		}
-		return account, cloneStore(snap), nil
+		return cloneAccount(account), cloneStore(snap), nil
 	}
 	out := cloneStore(p.mem)
 	p.mu.Unlock()
