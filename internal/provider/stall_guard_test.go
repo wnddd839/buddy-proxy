@@ -52,7 +52,14 @@ func (r *blockingReader) feedByte() {
 // （StallTimeoutAfterFirstByte），让长静默/长思考不被误杀。
 // 用毫秒级阈值驱动，避免真等数分钟。
 func TestStallGuardWidensAfterFirstByte(t *testing.T) {
-	r := newBlockingReader()
+	br := newBlockingReader()
+	r := struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: io.MultiReader(strings.NewReader("x"), br),
+		Closer: br,
+	}
 	g := newStallGuard(r, 40*time.Millisecond, 500*time.Millisecond)
 	if g == nil {
 		t.Fatal("看门狗不应为 nil")
@@ -66,8 +73,11 @@ func TestStallGuardWidensAfterFirstByte(t *testing.T) {
 		t.Fatalf("首字节后阈值应为 500ms，实际 %s", got)
 	}
 
-	// 模拟 readSSE 读到第一个字节后通知看门狗放宽。
-	g.noteFirstByte()
+	// Read 读到第一个字节（甚至无换行符）时应在底层直接放宽阈值。
+	buf := make([]byte, 1)
+	if n, err := g.Read(buf); err != nil || n != 1 {
+		t.Fatalf("首次 Read 应读到 1 字节，实际 n=%d err=%v", n, err)
+	}
 	if g.fired.Load() {
 		t.Fatal("刚收到首字节不应触发")
 	}

@@ -555,6 +555,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
   .checkin-rule>label:first-child{flex-basis:100%}
   .test-model-label{flex-wrap:wrap;white-space:normal}
   .log-table-wrap,.usage-models{max-width:100%;overflow-x:auto}
+  .seg{flex-wrap:wrap;max-width:100%}
   .modal{padding:12px}.modal-card{padding:20px 16px}
 }
 
@@ -1119,7 +1120,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
 
         <p class="checkin-hint" style="margin:16px 0 0">指标口径：优先按今天落盘事件统计（重启不清零）；若后端返回 <code>statsScope="memory"</code> 则为进程内近 24h（重启会清零）。当前口径：<strong id="spStatsScope">加载中…</strong></p>
         <div class="metrics">
-          <div class="metric"><div class="k">近 24h 事件</div><div class="v" id="spTotal">0</div></div>
+          <div class="metric"><div class="k" id="spTotalLabel">今日事件</div><div class="v" id="spTotal">0</div></div>
           <div class="metric"><div class="k">keep</div><div class="v" id="spKeep">0</div></div>
           <div class="metric"><div class="k">fold</div><div class="v" id="spFold">0</div></div>
           <div class="metric" title="degraded:true 的事件数，即被 11128 拦截的失败尝试次数"><div class="k">降级/被拦截次数</div><div class="v" id="spDegraded">0</div></div>
@@ -2144,6 +2145,8 @@ async function refreshSystemPrompt(){
   $('spFailed').textContent = String(stats.failed || 0);
   // 后端暂未返回 recovered 时显示「—」而不是 0，避免误导成「0 次成功」。
   $('spRecovered').textContent = (stats.recovered == null) ? '—' : String(stats.recovered);
+  const totalLabel = $('spTotalLabel');
+  if (totalLabel) totalLabel.textContent = (data.statsScope === 'memory') ? '近 24h 事件' : '今日事件';
   const scope = $('spStatsScope');
   if (scope) scope.textContent = (data.statsScope === 'memory')
     ? '进程内近 24h（重启会清零）'

@@ -1292,11 +1292,6 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 	for {
 		line, err := reader.ReadString('\n')
 		bytesRead += int64(len(line))
-		if len(line) > 0 && guard != nil {
-			// 任意字节都算「上游活着」，含 thinking 增量、心跳注释、空行。
-			// 首字节之后切到宽松阈值，长思考静默不再被 3 分钟看门狗误杀。
-			guard.noteFirstByte()
-		}
 		if len(line) > 0 {
 			trimmed := strings.TrimRight(line, "\r\n")
 			if trimmed == "" {
@@ -2143,19 +2138,13 @@ func newStallGuard(body io.Reader, timeout, afterFirstByte time.Duration) *stall
 	return g
 }
 
-// noteFirstByte 在 readSSE 收到任意字节（含 thinking / 心跳 / 注释帧）后调用，
-// 把阈值放宽到 afterFirstByte 并重启定时器。只生效一次。
-func (g *stallGuard) noteFirstByte() {
-	if g == nil || g.afterFirstByte <= 0 || !g.widened.CompareAndSwap(false, true) {
-		return
-	}
-	g.timeout = g.afterFirstByte
-	g.timer.Reset(g.timeout)
-}
-
 func (g *stallGuard) Read(p []byte) (int, error) {
 	n, err := g.r.Read(p)
 	if n > 0 {
+		// 收到任意字节即放宽到 afterFirstByte（仅首字节触发一次），避免首包无换行时仍按窄阈值 Reset。
+		if g.afterFirstByte > 0 && g.widened.CompareAndSwap(false, true) {
+			g.timeout = g.afterFirstByte
+		}
 		g.timer.Reset(g.timeout)
 	}
 	return n, err
