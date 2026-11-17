@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -642,7 +643,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		}
 		// 已经发给客户端的正文或工具不能撤回，任何错误都不得再换号或刷新后重放。
 		if result.Turn.Delivered {
-			_ = s.Pool.MarkResult(selection, false, err.Error(), 0)
+			_ = s.Pool.MarkResult(selection, false, err.Error(), 0, 0)
 			s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 			return CompleteResult{Result: result, Account: accounts.SummarizeAccount(account), AccountID: account.ID}, err
 		}
@@ -691,7 +692,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		if !opts.FixedAccount && isQuotaExhausted(err) {
 			next := append(append([]string{}, opts.ExcludeIDs...), account.ID)
 			if id, ok := s.nextSelectableAccount(site, opts.Model, next); ok {
-				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err), 0)
 				s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 				if pinKey != "" {
 					s.Pins.Forget(pinKey)
@@ -711,7 +712,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			opts.ExcludeIDs = next
 			opts.sameAccountRetry = false
 			if s.advanceRouteFallback(&opts) || s.advanceDeferredRoute(&opts) {
-				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err))
+				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err), 0)
 				s.recordSystemPromptAttempt(prevOpts, account, site, att, err, false)
 				if pinKey != "" {
 					s.Pins.Forget(pinKey)
@@ -749,11 +750,11 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		if !isChannelBlocked(err) {
 			cooldown = s.resolveFailureCooldown(ctx, account, err)
 		}
-		_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown)
+		_ = s.Pool.MarkResult(selection, false, err.Error(), cooldown, 0)
 		s.recordSystemPromptAttempt(opts, account, site, att, err, false)
 		return CompleteResult{}, err
 	}
-	_ = s.Pool.MarkResult(selection, true, "", 0)
+	_ = s.Pool.MarkResult(selection, true, "", 0, creditOf(result.Turn.Usage))
 	if pinKey != "" {
 		s.Pins.Remember(pinKey, account.ID)
 	}
@@ -763,6 +764,23 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		Account:   accounts.SummarizeAccount(account),
 		AccountID: account.ID,
 	}, nil
+}
+
+// creditOf 取出上游本次实际扣费，缺失时返回 0（= 不扣减）。
+//
+// Usage.Credit 是 *float64：上游没返回这个字段时为 nil，此时**不估算** ——
+// 猜一个值会让下限判断误伤可用账号，而少扣一次只是让保护晚一拍。
+// 实测 22.9% 的请求 credit 为 0（免费额度/套餐内），与「字段缺失」表现一致，
+// 两者都不扣减是安全的。
+func creditOf(usage provider.Usage) float64 {
+	if usage.Credit == nil {
+		return 0
+	}
+	v := *usage.Credit
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return 0
+	}
+	return v
 }
 
 // recordRateLimit 只把确认的限流写入观测器，且必须在 endFlight 之前调用。
@@ -815,6 +833,7 @@ func MergeRefreshedToken(existing accounts.Account, token *oauth.TokenData) acco
 	updated.QuotaUnlimited = existing.QuotaUnlimited
 	updated.QuotaResetAt = existing.QuotaResetAt
 	updated.QuotaCheckedAt = existing.QuotaCheckedAt
+	updated.QuotaSpentSinceCheck = existing.QuotaSpentSinceCheck
 	// 出口是运维决策，刷新令牌不该把号扔回本机 IP。
 	updated.Proxy = existing.Proxy
 	return updated
@@ -1002,6 +1021,7 @@ func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.A
 		}
 		return base
 	}
+	baseline := s.Pool.QuotaBaseline(account.ID)
 	usage, probeErr := billing.FetchAccountUsage(ctx, s.Provider, account, s.Config())
 	if probeErr != nil {
 		s.Log.Debug("quota probe skipped after upstream failure", "accountId", account.ID, "error", probeErr.Error())
@@ -1009,7 +1029,7 @@ func (s *Service) resolveFailureCooldown(ctx context.Context, account accounts.A
 	}
 	now := time.Now()
 	state := billing.QuotaStateFromUsage(usage, now)
-	if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
+	if _, applyErr := s.Pool.ApplyQuotaProbe(account.ID, baseline, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
 		s.Log.Warn("quota state apply failed after probe", "accountId", account.ID, "error", applyErr.Error())
 	}
 	if quotaCooldown := state.CooldownDuration(now); quotaCooldown > base {
@@ -1106,6 +1126,7 @@ func (s *Service) listQuotaRefreshCandidates(exclude []string, site string, incl
 	for _, account := range out {
 		skip[account.ID] = struct{}{}
 	}
+	floor := s.Pool.QuotaFloor()
 	extra := 0
 	for _, account := range store.Accounts {
 		if extra >= maxQuotaRefreshCooled {
@@ -1120,7 +1141,9 @@ func (s *Service) listQuotaRefreshCandidates(exclude []string, site string, incl
 		if _, ok := skip[account.ID]; ok {
 			continue
 		}
-		if account.CooldownSource != accounts.CooldownSourceQuota || !accounts.InCooldown(account, now) {
+		isQuotaCooled := account.CooldownSource == accounts.CooldownSourceQuota && accounts.InCooldown(account, now)
+		isStaleFloor := accounts.QuotaBelowFloor(account, now, floor) && !quotaSnapshotFresh(account, now)
+		if !isQuotaCooled && !isStaleFloor {
 			continue
 		}
 		out = append(out, account)
@@ -1167,6 +1190,7 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, 
 	var refreshed atomic.Int32
 	for _, account := range candidates {
 		wg.Go(func() {
+			baseline := s.Pool.QuotaBaseline(account.ID)
 			usage, probeErr := billing.FetchAccountCredits(ctx, s.Provider, account, s.Config())
 			if probeErr != nil {
 				s.Log.Debug("candidate quota refresh skipped", "accountId", account.ID, "error", probeErr.Error())
@@ -1176,7 +1200,7 @@ func (s *Service) refreshCandidateQuotas(ctx context.Context, exclude []string, 
 				return
 			}
 			state := billing.QuotaStateFromUsage(usage, time.Now())
-			if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
+			if _, applyErr := s.Pool.ApplyQuotaProbe(account.ID, baseline, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
 				s.Log.Debug("candidate quota apply failed", "accountId", account.ID, "error", applyErr.Error())
 				return
 			}
@@ -1229,13 +1253,14 @@ func (s *Service) RefreshPoolUsage(ctx context.Context, site string) []PoolUsage
 	var refreshed atomic.Int32
 	for i, account := range accounts {
 		wg.Go(func() {
+			baseline := s.Pool.QuotaBaseline(account.ID)
 			usage, err := billing.FetchAccountUsage(ctx, s.Provider, account, s.Config())
 			if err != nil {
 				items[i] = PoolUsageItem{AccountID: account.ID, Site: account.Site, Error: err.Error()}
 				return
 			}
 			state := billing.QuotaStateFromUsage(usage, time.Now())
-			if _, applyErr := s.Pool.ApplyQuotaState(account.ID, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
+			if _, applyErr := s.Pool.ApplyQuotaProbe(account.ID, baseline, state.Remaining, state.Unlimited, state.ResetAt, state.CheckedAt); applyErr != nil {
 				s.Log.Debug("admin quota apply failed", "accountId", account.ID, "error", applyErr.Error())
 			}
 			items[i] = PoolUsageItem{

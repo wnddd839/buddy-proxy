@@ -35,7 +35,7 @@ func TestMarkResultKeepsQuotaCooldownSource(t *testing.T) {
 	//    resolveFailureCooldown 返回的是「从它自己的 now 到 resetAt」，
 	//    与上面 ApplyQuotaState 用的 now 有毫秒级漂移 —— 这里刻意复现该漂移。
 	if err := pool.MarkResult(selection, false, "429 usage exceeds frequency limit (code 6004)",
-		time.Until(reset)); err != nil {
+		time.Until(reset), 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -74,7 +74,7 @@ func TestMarkResultWritesUpstreamSourceForRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.MarkResult(selection, false, "502 bad gateway", 30*time.Second); err != nil {
+	if err := pool.MarkResult(selection, false, "502 bad gateway", 30*time.Second, 0); err != nil {
 		t.Fatal(err)
 	}
 	store, err := pool.Read()

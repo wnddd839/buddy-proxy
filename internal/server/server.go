@@ -1399,13 +1399,14 @@ func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, pat
 			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "account has no credentials"})
 			return
 		}
+		baseline := s.Svc.Pool.QuotaBaseline(selected.ID)
 		usage, err := billing.FetchAccountUsage(r.Context(), s.Svc.Provider, selected, s.Svc.Config())
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		quotaState := billing.QuotaStateFromUsage(usage, time.Now())
-		if updated, applyErr := s.Svc.Pool.ApplyQuotaState(selected.ID, quotaState.Remaining, quotaState.Unlimited, quotaState.ResetAt, quotaState.CheckedAt); applyErr == nil {
+		if updated, applyErr := s.Svc.Pool.ApplyQuotaProbe(selected.ID, baseline, quotaState.Remaining, quotaState.Unlimited, quotaState.ResetAt, quotaState.CheckedAt); applyErr == nil {
 			selected = updated
 		}
 		payload := map[string]any{
