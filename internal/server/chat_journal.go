@@ -48,5 +48,12 @@ func (s *Server) recordChatJournal(
 		input.Account = result.Account
 		input.AccountID = result.AccountID
 	}
+	// system 形态由 CompleteFromPool 回填到共享指针里；同一行用量明细能显示
+	// keep / fold / fold(降级)，与 06 面板按 ProxyRequestID 互查。
+	if outcome := opts.SystemOutcome; outcome != nil {
+		input.SystemForm = outcome.Form
+		input.SystemFp = outcome.Fingerprint
+		input.SystemDegraded = outcome.Degraded
+	}
 	s.Svc.RecordChat(input)
 }

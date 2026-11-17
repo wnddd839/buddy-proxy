@@ -181,3 +181,28 @@ func PromoteToolImages(messages []map[string]any) []map[string]any {
 func ResponsesContent(content any) any {
 	return normalizeContent(content)
 }
+
+// SystemDigestText 把 system content 压成与 gateway.systemPromptText 逐字节一致的文本：
+// nil -> ""；string 零拷贝原样返回；其它类型走 json.Marshal（键序稳定）。
+//
+// gateway.systemPromptDigest 用**原始** opts.Messages 里的 content 算指纹（见
+// internal/gateway/systemprompt.go），而 fold 收集 <client_instructions> 若用
+// normalizeContent 之后的形状再 fmt.Sprint，结构化（多模态数组）system 的文本
+// 表示就会分叉：json.Marshal 得 "[{...}]"，fmt.Sprint 得 "[map[...]]"，同一份
+// 输入在 keep / fold 两条事件里 SystemLen 对不上，"按指纹对照同一 system"被破坏。
+// 此函数由 provider 导出，供 EnsureUpstreamMessagesWith 复用同一口径；gateway
+// 包内小写同语义实现保持不变，两侧必须同步修改。
+func SystemDigestText(content any) string {
+	switch v := content.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	default:
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return ""
+		}
+		return string(raw)
+	}
+}

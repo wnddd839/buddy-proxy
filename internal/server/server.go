@@ -35,6 +35,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/proxies"
 	"github.com/wnddd839/codebuddy-proxy/internal/sessionpin"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
+	"github.com/wnddd839/codebuddy-proxy/internal/systemprompt"
 	"github.com/wnddd839/codebuddy-proxy/internal/update"
 	"github.com/wnddd839/codebuddy-proxy/internal/usagejournal"
 	"github.com/wnddd839/codebuddy-proxy/internal/version"
@@ -53,6 +54,7 @@ type Server struct {
 	// ModelRoutes 是跨区模型路由表（proxy-model-routes.json）。
 	ModelRoutes      *modelroute.File
 	maxJSONBodyBytes int64
+	envMu            sync.Mutex
 }
 
 func New(cfg config.Config, svc *gateway.Service) *Server {
@@ -459,9 +461,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, k
 		Reasoning:           body.Reasoning,
 		Thinking:            body.Thinking,
 		SessionKey:          sessionpin.Key(r.Header, body.PromptCacheKey, body.Messages),
-		SessionLabel:        sessionpin.SessionLabel(body.Messages),
-		Site:                site,
-		SiteExplicit:        siteExplicit,
+		RequestID:           proxyRequestID,
+		// system 形态由 CompleteFromPool 回填，供 07 用量明细交叉对照。
+		SystemOutcome: &gateway.SystemPromptOutcome{},
+		SessionLabel:  sessionpin.SessionLabel(body.Messages),
+		Site:          site,
+		SiteExplicit:  siteExplicit,
 	}
 
 	if body.Stream {
@@ -1100,6 +1105,27 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "auto": body.Auto})
 		return
+	// system 提示词面板：模式热切换 / 实时事件流 / 按天历史回溯。
+	// 三个都是只读观测 + 一个模式开关，不碰账号与请求路径。
+	case path == "/direct-admin/api/system-prompt" && r.Method == http.MethodGet:
+		// 指标口径优先用「今天落盘」的全量统计（重启不清零）；
+		// 落盘不可用时才退回进程内近 24h，并用 statsScope 明确告诉前端当前口径。
+		stats, scope := s.systemPromptOverviewStats()
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok":         true,
+			"mode":       config.NormalizeSystemPromptMode(s.Svc.Config().SystemPromptMode),
+			"stats":      stats,
+			"statsScope": scope,
+			"recent":     s.Svc.SystemPromptJournal.Recent(systemPromptRealtimeLimit),
+			"dates":      s.Svc.SystemPromptStore.Dates(),
+		})
+		return
+	case path == "/direct-admin/api/system-prompt/events" && r.Method == http.MethodGet:
+		s.handleSystemPromptEvents(w, r)
+		return
+	case path == "/direct-admin/api/system-prompt" && (r.Method == http.MethodPost || r.Method == http.MethodPut):
+		s.handleSystemPromptMode(w, r)
+		return
 	// 积分下限：独立端点，配独立的保存按钮。
 	// 单独拆出来的原因：这是选号门槛，改错会让整池号瞬间不可用，
 	// 放在签到表单里跟「保存签到」混在一起容易被误改、又不知道该不该点保存。
@@ -1696,6 +1722,8 @@ func checkinTimezone() *time.Location { return time.FixedZone("UTC+8", 8*60*60) 
 // 每个开关都是 *bool：nil 表示请求没带这个字段（老前端），此时不动它。
 // 值真正变化时才写 .env 并更新内存配置，避免每次保存都重写文件。
 func (s *Server) saveBehaviorSwitches(allowDirectFallback *bool, retryMin, retryMax *int) error {
+	s.envMu.Lock()
+	defer s.envMu.Unlock()
 	type binding struct {
 		envKey  string
 		value   *bool
@@ -1776,6 +1804,8 @@ func (s *Server) setQuotaFloor(floor float64) (config.Config, error) {
 	if floor < 0 {
 		return config.Config{}, fmt.Errorf("积分下限不能是负数")
 	}
+	s.envMu.Lock()
+	defer s.envMu.Unlock()
 	envPath := config.ResolveEnvFilePath()
 	if err := config.UpsertEnvFile(envPath, map[string]string{
 		"CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS": strconv.FormatFloat(floor, 'f', -1, 64),
@@ -1791,6 +1821,120 @@ func (s *Server) setQuotaFloor(floor float64) (config.Config, error) {
 		CheckinRetryMax:            cfg.CheckinRetryMax,
 	}
 	return s.Svc.SetBehaviorSwitches(next), nil
+}
+
+// systemPromptOverviewStats 返回面板指标与口径标记。
+// 优先按今天落盘事件统计（与 06 历史页同源，重启不清零）；
+// 落盘读取失败则退回进程内近 24h，scope 标成 "memory"。
+func (s *Server) systemPromptOverviewStats() (systemprompt.Stats, string) {
+	if s == nil || s.Svc == nil {
+		return systemprompt.Stats{}, "memory"
+	}
+	date := time.Now().Format("20060102")
+	if store := s.Svc.SystemPromptStore; store != nil && store.IsPersistent() {
+		if stats, err := store.StatsForDate(date); err == nil {
+			return stats, "date:" + date
+		}
+	}
+	if journal := s.Svc.SystemPromptJournal; journal != nil {
+		return journal.Stats24h(time.Now()), "memory"
+	}
+	return systemprompt.Stats{}, "memory"
+}
+
+// System Prompt 面板的常量。首屏只要 200 条就够填满一屏，
+// 历史分页默认 100、上限 500（单日文件最多几千行，全量读也够快）。
+const (
+	systemPromptRealtimeLimit   = 200
+	systemPromptDefaultPageSize = 100
+	systemPromptMaxPageSize     = 500
+)
+
+// handleSystemPromptEvents 返回某一天的 system 事件分页（最新在前）。
+// onlyProblems=1 时包含传输层失败（Status==0）、被拦截与降级过的请求。
+func (s *Server) handleSystemPromptEvents(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	date := strings.TrimSpace(query.Get("date"))
+	if date == "" {
+		date = time.Now().Format("20060102")
+	}
+	page := 1
+	if n, err := strconv.Atoi(strings.TrimSpace(query.Get("page"))); err == nil && n > 0 {
+		page = n
+	}
+	size := systemPromptDefaultPageSize
+	if n, err := strconv.Atoi(strings.TrimSpace(query.Get("size"))); err == nil && n > 0 {
+		size = n
+	}
+	if size > systemPromptMaxPageSize {
+		size = systemPromptMaxPageSize
+	}
+	// 先取全日再过滤：否则「只看问题」的分页总数会算错。
+	all, _, err := s.Svc.SystemPromptStore.Read(date, 0, 0)
+	if err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if queryTruthy(query.Get("onlyProblems")) {
+		filtered := all[:0]
+		for _, e := range all {
+			if e.IsProblem() {
+				filtered = append(filtered, e)
+			}
+		}
+		all = filtered
+	}
+	total := len(all)
+	start := (page - 1) * size
+	// page 无上界时 (page-1)*size 可能溢出成负数（如 page=1e17），
+	// 负下标切片会 panic，让 net/http 断连并打堆栈。正向越界与溢出都钳到末尾（返回空页）。
+	if start < 0 || start > total {
+		start = total
+	}
+	end := start + size
+	if end < 0 || end > total {
+		end = total
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"date":    date,
+		"page":    page,
+		"size":    size,
+		"total":   total,
+		"hasMore": end < total,
+		"events":  all[start:end],
+	})
+}
+
+// handleSystemPromptMode 热切换 system 提示词策略并落盘。
+// 非法值直接 400，不静默归一成 auto —— 否则用户拼错了还以为切换成功。
+func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	mode := strings.TrimSpace(body.Mode)
+	if !config.IsValidSystemPromptMode(mode) {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "mode 只能是 auto / keep / fold",
+		})
+		return
+	}
+	s.envMu.Lock()
+	defer s.envMu.Unlock()
+	envPath := config.ResolveEnvFilePath()
+	if err := config.UpsertEnvFile(envPath, map[string]string{
+		"CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE": mode,
+	}); err != nil {
+		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	_ = os.Setenv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE", mode)
+	cfg := s.Svc.SetSystemPromptMode(mode)
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": cfg.SystemPromptMode})
 }
 
 // recordCheckinBatch 把一轮手动签到的结果逐条写进签到日志，

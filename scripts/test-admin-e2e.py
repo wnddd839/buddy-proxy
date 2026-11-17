@@ -63,7 +63,7 @@ def run(binary, output):
                     expect(page.locator("#checkinRules")).to_contain_text("账号池还没有账号")
                     expect(page.locator("#updateInstall")).to_be_hidden()
                     expect(page.locator("#concurrencyBar")).to_be_hidden()  # separate overview chapter
-                    assert page.locator(".tab-link").count() == 6
+                    assert page.locator(".tab-link").count() == 7
                     assert page.locator("#tab-client #checkinAuto").count() == 0
                     ids = page.locator("[id]").evaluate_all("els => els.map(el => el.id)")
                     assert len(ids) == len(set(ids)), "duplicate DOM IDs"
@@ -157,11 +157,22 @@ def run(binary, output):
                     accounts[0]["quotaRemaining"] = 50
                     page.evaluate("refreshStatus()")
                     expect(badge).to_have_text("可用 1 · 冷却 1")
-                    for anchor, panel in [("#codebuddy", "tab-pool"), ("#client-config", "tab-client"), ("#usage", "tab-usage")]:
+                    page.locator('[data-tab="tab-system-prompt"]').click()
+                    expect(page.locator("#tab-system-prompt")).to_be_visible()
+                    expect(page.locator('#spModeSeg [data-mode="auto"]')).to_have_class("active")
+                    page.locator('#spModeSeg [data-mode="fold"]').click()
+                    expect(page.locator('#spModeSeg [data-mode="fold"]')).to_have_class("active")
+                    expect(page.locator('#spModeSeg [data-mode="auto"]')).not_to_have_class("active")
+                    assert page.request.get(base + "/direct-admin/api/system-prompt").json()["mode"] == "fold"
+                    page.locator('#spModeSeg [data-mode="auto"]').click()
+                    expect(page.locator('#spModeSeg [data-mode="auto"]')).to_have_class("active")
+                    expect(page.locator('#spModeSeg [data-mode="fold"]')).not_to_have_class("active")
+                    assert page.request.get(base + "/direct-admin/api/system-prompt").json()["mode"] == "auto"
+                    for anchor, panel in [("#codebuddy", "tab-pool"), ("#client-config", "tab-client"), ("#system-prompt", "tab-system-prompt"), ("#usage", "tab-usage")]:
                         page.goto(base + "/direct-admin/" + anchor)
                         expect(page.locator("#" + panel)).to_be_visible()
                     page.set_viewport_size({"width": 390, "height": 844})
-                    for chapter in ["overview", "pool", "checkin", "client", "models", "usage"]:
+                    for chapter in ["overview", "pool", "checkin", "client", "models", "system-prompt", "usage"]:
                         page.evaluate("tab => switchTab('tab-' + tab)", chapter)
                         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), f"mobile overflow: {chapter}"
                     page.evaluate("switchTab('tab-checkin')")

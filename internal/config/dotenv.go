@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/atomicwrite"
 )
+
+var envFileMu sync.Mutex
 
 // LoadDotEnv 从就近 env 文件加载 KEY=VALUE 到进程环境。
 // 已存在且非空的环境变量不会被覆盖；空值视为未设置，允许文件回填。
@@ -163,6 +166,8 @@ func UpsertEnvFile(path string, values map[string]string) error {
 	if path == "" {
 		return fmt.Errorf("empty env file path")
 	}
+	envFileMu.Lock()
+	defer envFileMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && !os.IsExist(err) {
 		// 目录可能是 "."，忽略即可。
 		if filepath.Dir(path) != "." {
