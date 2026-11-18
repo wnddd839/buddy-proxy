@@ -376,14 +376,44 @@ type StripConfig struct {
 type StripReport struct {
 	Stripped bool
 	Bytes    int
+	// SystemBytes / AssistantBytes 区分剥离发生在哪一侧。
+	//
+	// 为什么必须分开记：stripped=true 只说「删过东西」，但用户真正关心的是
+	// 「我发给模型的 system 有没有被改」。只删 assistant 历史时 system 仍是
+	// 100% 原样，这与「system 被削过」是完全不同的两件事，不能混成一个数字。
+	SystemBytes    int
+	AssistantBytes int
 }
 
-func (r *StripReport) add(removed int) {
+// add 累加一次剥离。isSystem 决定计入哪一侧。
+func (r *StripReport) add(removed int, isSystem bool) {
 	if r == nil || removed <= 0 {
 		return
 	}
 	r.Stripped = true
 	r.Bytes += removed
+	if isSystem {
+		r.SystemBytes += removed
+	} else {
+		r.AssistantBytes += removed
+	}
+}
+
+// Scope 返回剥离发生的位置：system / assistant / both / 空串（没剥）。
+func (r *StripReport) Scope() string {
+	if r == nil || !r.Stripped {
+		return ""
+	}
+	switch {
+	case r.SystemBytes > 0 && r.AssistantBytes > 0:
+		return "both"
+	case r.SystemBytes > 0:
+		return "system"
+	case r.AssistantBytes > 0:
+		return "assistant"
+	default:
+		return "both"
+	}
 }
 
 // stripContent 对一条消息的 content 做剥离，返回新 content 与是否改动。
@@ -395,7 +425,7 @@ func (r *StripReport) add(removed int) {
 //
 // 其他类型（nil / 数字 / 未知结构）一律不碰 —— 保守处理，
 // 宁可漏剥也不破坏客户端结构。
-func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool) {
+func stripContent(content any, cfg *StripConfig, report *StripReport, isSystem bool) (any, bool) {
 	if cfg == nil || !cfg.Enabled || (len(cfg.Rules) == 0 && len(cfg.Contains) == 0) {
 		return content, false
 	}
@@ -405,7 +435,7 @@ func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool
 		if !hit {
 			return content, false
 		}
-		report.add(removed)
+		report.add(removed, isSystem)
 		return out, true
 	case []any:
 		var outSlice []any
@@ -431,7 +461,7 @@ func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool
 			cloned := maps.Clone(pm)
 			cloned["text"] = out
 			outSlice[i] = cloned
-			report.add(removed)
+			report.add(removed, isSystem)
 		}
 		if outSlice == nil {
 			return content, false

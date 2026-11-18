@@ -34,6 +34,12 @@ type SystemPromptOutcome struct {
 	// Stripped 表示 strip 档实际删掉了身份句（system 内容与客户端原文不同）。
 	// 与 Degraded 语义不同：stripped 是「定向删除一句」，degraded 是「整条降级」。
 	Stripped bool `json:"stripped,omitempty"`
+	// StripScope / StripSystemBytes / StripAssistantBytes 说明剥离位置。
+	// system 侧为 0 时，客户端发的 system 与模型看到的是同一条 —— 这正是
+	// 「注入是否原样」的判据。
+	StripScope          string `json:"stripScope,omitempty"`
+	StripSystemBytes    int    `json:"stripSystemBytes,omitempty"`
+	StripAssistantBytes int    `json:"stripAssistantBytes,omitempty"`
 	// StrippedBytes 是删除的字节数，便于核对「只删了那一句」。
 	StrippedBytes int `json:"strippedBytes,omitempty"`
 }
@@ -48,8 +54,12 @@ type systemAttempt struct {
 	size     int
 	mode     string
 	// stripped / strippedBytes 是 strip 档的实际剥离结果（provider 回填）。
-	stripped      bool
-	strippedBytes int
+	// stripScope 与两个分侧字节数用于回答「被改的是 system 还是 assistant」。
+	stripped            bool
+	strippedBytes       int
+	stripScope          string
+	stripSystemBytes    int
+	stripAssistantBytes int
 }
 
 func formName(keep bool) string {
@@ -232,23 +242,26 @@ func (s *Service) recordSystemPromptAttempt(
 	// 才算「降级恢复成功」。重放再次失败不置 Recovered。
 	recovered := opts.FoldedRetry && callErr == nil
 	s.RecordSystemPromptEvent(systemprompt.Event{
-		At:            att.started.UnixMilli(),
-		RequestID:     opts.RequestID,
-		AccountID:     account.ID,
-		Site:          site,
-		Model:         opts.Model,
-		Mode:          att.mode,
-		Form:          formName(att.keepForm),
-		Degraded:      degraded,
-		Recovered:     recovered,
-		Fingerprint:   att.fp,
-		SystemLen:     att.size,
-		Status:        status,
-		ErrorCode:     code,
-		DurationMs:    time.Since(att.started).Milliseconds(),
-		ClientHint:    opts.ClientHint,
-		SessionSource: opts.SessionKeySource,
-		Stripped:      att.stripped,
-		StrippedBytes: att.strippedBytes,
+		At:                  att.started.UnixMilli(),
+		RequestID:           opts.RequestID,
+		AccountID:           account.ID,
+		Site:                site,
+		Model:               opts.Model,
+		Mode:                att.mode,
+		Form:                formName(att.keepForm),
+		Degraded:            degraded,
+		Recovered:           recovered,
+		Fingerprint:         att.fp,
+		SystemLen:           att.size,
+		Status:              status,
+		ErrorCode:           code,
+		DurationMs:          time.Since(att.started).Milliseconds(),
+		ClientHint:          opts.ClientHint,
+		SessionSource:       opts.SessionKeySource,
+		Stripped:            att.stripped,
+		StrippedBytes:       att.strippedBytes,
+		StripScope:          att.stripScope,
+		StripSystemBytes:    att.stripSystemBytes,
+		StripAssistantBytes: att.stripAssistantBytes,
 	})
 }

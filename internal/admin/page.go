@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.18-v0.7.7-strip-switch"
+const UIRevision = "2026.11.18-v0.7.8-strip-scope"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -2112,10 +2112,14 @@ function spRowsHtml(rows, emptyText){
     // 用形态徽标括号说明 + 行 class 把两行在视觉上串起来，避免被当成两个独立请求。
     let formText = e.form || '—';
     // 优先级：降级重放 > 已剥离但仍被新规则拦截 > 被拦截 > 已剥离（auto/strip 档）> 原形态。
+    // 已剥离要区分「删的是 system 还是 assistant」：只动 assistant 时
+    // 客户端发的 system 与模型看到的完全一致，不能说成「system 被改」。
+    const stripScope = e.stripScope || '';
     if (e.recovered === true) formText = 'fold(降级重放)';
     else if (e.degraded === true && e.stripped === true) formText = 'keep(已剥离·被拦截)';
     else if (e.degraded === true) formText = 'keep(被拦截)';
-    else if (e.stripped === true) formText = 'keep(已剥离)';
+    else if (e.stripped === true) formText = stripScope === 'assistant' ? 'keep(system未改·剥assistant)'
+      : (stripScope === 'both' ? 'keep(system+assistant剥离)' : 'keep(system已剥离)');
     // 客户端列：显示识别结果；带会话来源提示，方便判断账号亲和是否走头。
     const clientText = e.clientHint ? escapeHtml(e.clientHint) : '<span style="color:var(--fg-40)">—</span>';
     const sessTitle = e.sessionSource

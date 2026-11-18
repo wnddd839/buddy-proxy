@@ -787,7 +787,7 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, stri
 		// SkipAssistant=true 时跳过这一段：system 仍照剥，只是不动历史输出
 		// （被污染的会话会因此回到「永久 502」，这是关掉它的已知代价）。
 		if role == "assistant" && strip != nil && strip.Enabled && !strip.SkipAssistant {
-			if stripped, changed := stripContent(item["content"], strip, report); changed {
+			if stripped, changed := stripContent(item["content"], strip, report, false); changed {
 				item["content"] = stripped
 			}
 		}
@@ -799,7 +799,9 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, stri
 			if keepSystem {
 				if text := strings.TrimSpace(fmt.Sprint(item["content"])); text != "" && text != "<nil>" {
 					// 剥离放在判空之后：保证剥空的 system 仍被保留。
-					if stripped, changed := stripContent(item["content"], strip, report); changed {
+					// isSystem=true：计入 SystemBytes，便于区分「system 被削」
+					// 与「只动了 assistant 历史」。
+					if stripped, changed := stripContent(item["content"], strip, report, true); changed {
 						item["content"] = stripped
 					}
 					rest = append(rest, item)

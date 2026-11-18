@@ -724,9 +724,15 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	// 否则事件里的 stripped / strippedBytes 永远是零值。
 	att.stripped = stripReport.Stripped
 	att.strippedBytes = stripReport.Bytes
+	att.stripScope = stripReport.Scope()
+	att.stripSystemBytes = stripReport.SystemBytes
+	att.stripAssistantBytes = stripReport.AssistantBytes
 	if opts.SystemOutcome != nil {
 		opts.SystemOutcome.Stripped = stripReport.Stripped
 		opts.SystemOutcome.StrippedBytes = stripReport.Bytes
+		opts.SystemOutcome.StripScope = stripReport.Scope()
+		opts.SystemOutcome.StripSystemBytes = stripReport.SystemBytes
+		opts.SystemOutcome.StripAssistantBytes = stripReport.AssistantBytes
 	}
 	if err != nil {
 		// 客户端主动断开 SSE/HTTP，不算账号或上游故障。
