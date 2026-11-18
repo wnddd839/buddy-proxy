@@ -16,7 +16,7 @@ import (
 func TestApplyStripConfigEnablesKnownFingerprintStripForAutoAndStrip(t *testing.T) {
 	for _, mode := range []string{config.SystemPromptModeAuto, config.SystemPromptModeStrip} {
 		var opts provider.ChatOptions
-		applyStripConfig(&opts, mode, "domestic", nil)
+		applyStripConfig(&opts, mode, "domestic", true, true, nil)
 		if opts.Strip == nil || !opts.Strip.Enabled {
 			t.Fatalf("%s: Strip 未启用", mode)
 		}
@@ -26,6 +26,9 @@ func TestApplyStripConfigEnablesKnownFingerprintStripForAutoAndStrip(t *testing.
 		if len(opts.Strip.Contains) == 0 {
 			t.Fatalf("%s: 缺任意位置指纹规则", mode)
 		}
+		if opts.Strip.SkipAssistant {
+			t.Fatalf("%s: assistant 剥离应默认开启", mode)
+		}
 	}
 }
 
@@ -33,9 +36,32 @@ func TestApplyStripConfigEnablesKnownFingerprintStripForAutoAndStrip(t *testing.
 func TestApplyStripConfigLeavesKeepAndFoldUntouched(t *testing.T) {
 	for _, mode := range []string{config.SystemPromptModeKeep, config.SystemPromptModeFold} {
 		var opts provider.ChatOptions
-		applyStripConfig(&opts, mode, "domestic", nil)
+		applyStripConfig(&opts, mode, "domestic", true, true, nil)
 		if opts.Strip != nil {
 			t.Fatalf("%s: 不应挂 Strip", mode)
 		}
+	}
+}
+
+// 总开关关掉 ⇒ 退回 v0.7.6 行为（不挂 Strip，先直传、被拒再折叠）。
+func TestApplyStripConfigHonorsTotalSwitchOff(t *testing.T) {
+	for _, mode := range []string{config.SystemPromptModeAuto, config.SystemPromptModeStrip} {
+		var opts provider.ChatOptions
+		applyStripConfig(&opts, mode, "domestic", false, true, nil)
+		if opts.Strip != nil {
+			t.Fatalf("%s: 总开关关掉后不应挂 Strip", mode)
+		}
+	}
+}
+
+// assistant 子开关只影响 assistant，system 仍照剥（Strip 仍然挂着）。
+func TestApplyStripConfigAssistantSwitchOnlySkipsAssistant(t *testing.T) {
+	var opts provider.ChatOptions
+	applyStripConfig(&opts, config.SystemPromptModeAuto, "domestic", true, false, nil)
+	if opts.Strip == nil || !opts.Strip.Enabled {
+		t.Fatal("关 assistant 不应连 system 剥离一起关掉")
+	}
+	if !opts.Strip.SkipAssistant {
+		t.Fatal("关掉 assistant 剥离时应置 SkipAssistant")
 	}
 }

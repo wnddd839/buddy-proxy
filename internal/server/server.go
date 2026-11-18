@@ -1116,13 +1116,16 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		// 指标口径优先用「今天落盘」的全量统计（重启不清零）；
 		// 落盘不可用时才退回进程内近 24h，并用 statsScope 明确告诉前端当前口径。
 		stats, scope := s.systemPromptOverviewStats()
+		cfg := s.Svc.Config()
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
-			"ok":         true,
-			"mode":       config.NormalizeSystemPromptMode(s.Svc.Config().SystemPromptMode),
-			"stats":      stats,
-			"statsScope": scope,
-			"recent":     s.Svc.SystemPromptJournal.Recent(systemPromptRealtimeLimit),
-			"dates":      s.Svc.SystemPromptStore.Dates(),
+			"ok":             true,
+			"mode":           config.NormalizeSystemPromptMode(cfg.SystemPromptMode),
+			"strip":          !cfg.SystemStripDisabled,
+			"stripAssistant": !cfg.SystemStripAssistantDisabled,
+			"stats":          stats,
+			"statsScope":     scope,
+			"recent":         s.Svc.SystemPromptJournal.Recent(systemPromptRealtimeLimit),
+			"dates":          s.Svc.SystemPromptStore.Dates(),
 		})
 		return
 	case path == "/direct-admin/api/system-prompt/events" && r.Method == http.MethodGet:
@@ -1913,33 +1916,89 @@ func (s *Server) handleSystemPromptEvents(w http.ResponseWriter, r *http.Request
 
 // handleSystemPromptMode 热切换 system 提示词策略并落盘。
 // 非法值直接 400，不静默归一成 auto —— 否则用户拼错了还以为切换成功。
+//
+// 同一条路径也接受两个剥离开关（对外用**正向语义**，内部存跳过式）：
+//   - strip：总开关。false 退回「先直传、被拒再折叠」（每请求多一次 400）。
+//   - stripAssistant：只控制 assistant 正文这一路，system 仍照剥。
+//
+// 指针字段 = 「没传就不动」，这样只改模式不会把开关顺手重置。
 func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Mode string `json:"mode"`
+		Mode           string `json:"mode"`
+		Strip          *bool  `json:"strip"`
+		StripAssistant *bool  `json:"stripAssistant"`
 	}
 	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
 		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	mode := strings.TrimSpace(body.Mode)
-	if !config.IsValidSystemPromptMode(mode) {
+	// 允许只改开关、不动模式：没传 mode 就当作「保持当前」。
+	if mode != "" && !config.IsValidSystemPromptMode(mode) {
 		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
 			"ok": false, "error": "mode 只能是 auto / keep / fold / strip",
+		})
+		return
+	}
+	if mode == "" && body.Strip == nil && body.StripAssistant == nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "至少要传 mode / strip / stripAssistant 之一",
 		})
 		return
 	}
 	s.envMu.Lock()
 	defer s.envMu.Unlock()
 	envPath := config.ResolveEnvFilePath()
-	if err := config.UpsertEnvFile(envPath, map[string]string{
-		"CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE": mode,
-	}); err != nil {
+	updates := map[string]string{}
+	if mode != "" {
+		updates["CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE"] = mode
+	}
+	// .env 里存的是「跳过」开关，所以 false（关掉剥离）要写 1。
+	if body.Strip != nil {
+		updates["CODEBUDDY_PROXY_SYSTEM_STRIP_OFF"] = boolEnvValue(!*body.Strip)
+	}
+	if body.StripAssistant != nil {
+		updates["CODEBUDDY_PROXY_SYSTEM_STRIP_ASSISTANT_OFF"] = boolEnvValue(!*body.StripAssistant)
+	}
+	if err := config.UpsertEnvFile(envPath, updates); err != nil {
 		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	_ = os.Setenv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE", mode)
-	cfg := s.Svc.SetSystemPromptMode(mode)
-	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": cfg.SystemPromptMode})
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
+	}
+	// 模式与开关分开更新：SetSystemPromptMode 只碰模式，
+	// SetSystemStripSwitches 只碰开关 —— 二者都不覆写积分下限等其它行为开关。
+	if mode != "" {
+		s.Svc.SetSystemPromptMode(mode)
+	}
+	var stripOff, stripAsstOff *bool
+	if body.Strip != nil {
+		v := !*body.Strip
+		stripOff = &v
+	}
+	if body.StripAssistant != nil {
+		v := !*body.StripAssistant
+		stripAsstOff = &v
+	}
+	if stripOff != nil || stripAsstOff != nil {
+		s.Svc.SetSystemStripSwitches(stripOff, stripAsstOff)
+	}
+	cfg := s.Svc.Config()
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"mode":           config.NormalizeSystemPromptMode(cfg.SystemPromptMode),
+		"strip":          !cfg.SystemStripDisabled,
+		"stripAssistant": !cfg.SystemStripAssistantDisabled,
+	})
+}
+
+// boolEnvValue 把开关写成 .env 里的规范值（只认 1/0，避免 "True"/"yes" 变体）。
+func boolEnvValue(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
 }
 
 // recordCheckinBatch 把一轮手动签到的结果逐条写进签到日志，

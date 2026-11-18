@@ -784,7 +784,9 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, stri
 		// assistant 里出现 @ 段指纹（子串）或开头身份句（前缀）都会被拦，
 		// 而折叠 system 救不了它（折叠后仍然 400）。只有显式启用剥离的
 		// 档位（auto / strip）会挂 Strip；keep / fold 不挂，保持原样。
-		if role == "assistant" && strip != nil && strip.Enabled {
+		// SkipAssistant=true 时跳过这一段：system 仍照剥，只是不动历史输出
+		// （被污染的会话会因此回到「永久 502」，这是关掉它的已知代价）。
+		if role == "assistant" && strip != nil && strip.Enabled && !strip.SkipAssistant {
 			if stripped, changed := stripContent(item["content"], strip, report); changed {
 				item["content"] = stripped
 			}

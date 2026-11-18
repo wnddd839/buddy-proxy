@@ -361,6 +361,14 @@ type StripConfig struct {
 	Rules []string
 	// Contains 是「任意位置」命中的指纹段落（归一化形态）。
 	Contains []string
+	// SkipAssistant 为 true 时不剥 assistant 正文（只剥 system）。
+	//
+	// 用「跳过」而不是「启用」做字段，是为了让零值保持既有行为：
+	// 上游 11128 会扫 assistant，历史里出现指纹会让整段会话永久 502，
+	// 而折叠 system 救不了它（只改 system）。所以默认必须剥。
+	// 但它改的是「模型自己的历史输出」，语义风险高于改 system ——
+	// 需要能单独关掉。
+	SkipAssistant bool
 }
 
 // StripReport 回填一次请求实际发生的剥离情况，供网关记事件。

@@ -273,6 +273,11 @@ type BehaviorSwitches struct {
 	CheckinAllowDirectFallback bool
 	// SystemPromptMode 是 system 提示词策略：auto / keep / fold。
 	// 传空值时保留当前值（管理台只改别的开关时不会意外重置）。
+	//
+	// ⚠️ 剥离开关不在这里：本结构的字段是值语义，每次调用都会把没传的字段
+	// 写成零值。剥离开关是「跳过式」（零值=启用），放进来会导致「保存签到
+	// 设置」这类无关操作把用户关掉的剥离又悄悄打开。它们走独立方法
+	// SetSystemStripSwitches（指针语义，nil=本次不涉及）。
 	SystemPromptMode  string
 	QuotaFloorCredits float64
 	// 签到失败重试：间隔 0 = 不重试。
@@ -304,6 +309,22 @@ func (s *Service) SetSystemPromptMode(mode string) config.Config {
 	normalized := config.NormalizeSystemPromptMode(mode)
 	return s.updateConfig(func(c *config.Config) {
 		c.SystemPromptMode = normalized
+	})
+}
+
+// SetSystemStripSwitches 只改剥离开关，不动其它行为开关（尤其是积分下限）。
+//
+// 与 SetBehaviorSwitches 分开的原因：后者的字段是值语义，没传的字段会被
+// 写成零值 —— 用它单独改开关会把积分下限顺手清零。这里用指针，
+// nil = 本次不涉及。
+func (s *Service) SetSystemStripSwitches(stripOff, stripAssistantOff *bool) config.Config {
+	return s.updateConfig(func(c *config.Config) {
+		if stripOff != nil {
+			c.SystemStripDisabled = *stripOff
+		}
+		if stripAssistantOff != nil {
+			c.SystemStripAssistantDisabled = *stripAssistantOff
+		}
 	})
 }
 
@@ -393,6 +414,11 @@ type CompleteOptions struct {
 	// systemMode 是请求首次进入 CompleteFromPool 时快照的 system 模式，
 	// 沿递归重试原样传递（opts 按值传递），调用方不要设置。
 	systemMode string
+	// stripSnapshot 是入口快照的剥离开关（总开关 + assistant 子开关）。
+	// 与 systemMode 同理：管理员拨开关不该改变在途请求已发出的形态，
+	// 否则同一次请求的两条事件可能一个剥过、一个没剥。
+	stripTotal, stripAsst bool
+	stripSnapshotted      bool
 	// FoldedRetry 表示已经因 11128 降级过一次；置位后强制 fold，防止无限重试。
 	FoldedRetry      bool
 	sameAccountRetry bool
@@ -473,27 +499,31 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 
 // applyStripConfig 给上游请求挂上「指纹剥离」配置。
 //
-// auto 与 strip 档都启用：
-//   - auto：首试前就删掉已知指纹，避免每次请求都先吃一个 400/11128
-//     （上游按拒收次数累计账号风险，不能靠「失败再重试」兜底）；
-//     若仍被未知的新指纹拒收，auto 的折叠重试继续兜底。
-//   - strip：规则与 auto 相同。保留该档只为兼容已有配置 ——
-//     历史上它是唯一做剥离的档位，现在 auto 也剥了，两档实际等价
-//     （都保留 11128 折叠兜底，见 CompleteFromPool 的降级分支）。
-//   - keep / fold：不启用，保持与改动前完全一致的形态。
+// auto 与 strip 档都会调到这里，是否真的剥离由**两个运行时开关**决定：
+//   - cfg.SystemStripEnabled：总开关。关掉后退回 v0.7.6 行为 ——
+//     先原样直传，被 11128 拒收才折叠重试（每个请求多一次 400）。
+//   - cfg.SystemStripAssistant：只控制 assistant 正文这一路。
+//     system 仍照剥；关掉它可以保留完整历史，代价是被污染的会话会永久 502。
+//   - keep / fold：永远不启用，保持与改动前完全一致的形态。
 //
 // 剥离规则按**账号所在站点**取（与 chatOptionsFromAccount 的 site 同源），
 // 因为黑名单本身按站点分流（DeepSeek 身份句只在 domestic 拦）。
 //
 // 剥离在 provider 层执行，晚于 sessionpin.Key —— 会话键始终用原始 system 计算。
-func applyStripConfig(chatOpts *provider.ChatOptions, mode, site string, report *provider.StripReport) {
+func applyStripConfig(chatOpts *provider.ChatOptions, mode, site string, stripEnabled, stripAssistant bool, report *provider.StripReport) {
 	if mode != config.SystemPromptModeStrip && mode != config.SystemPromptModeAuto {
+		return
+	}
+	if !stripEnabled {
+		// 总开关关掉：不挂 Strip，走「先直传、被拒再折叠」的老路。
 		return
 	}
 	chatOpts.Strip = &provider.StripConfig{
 		Enabled:  true,
 		Rules:    provider.RulesForSite(site),
 		Contains: provider.ContainsForSite(site),
+		// 关掉 assistant 剥离时只跳过 assistant，system 仍照剥。
+		SkipAssistant: !stripAssistant,
 	}
 	chatOpts.StripReport = report
 }
@@ -516,6 +546,16 @@ func (s *Service) keepSystemFor(opts CompleteOptions) bool {
 // systemPromptMode 返回归一后的当前模式（空值按 auto）。
 func (s *Service) systemPromptMode() string {
 	return config.NormalizeSystemPromptMode(s.Config().SystemPromptMode)
+}
+
+// stripEnabled 报告「首试前剥离已知指纹」总开关是否打开（跳过式的反面）。
+func (s *Service) stripEnabled() bool {
+	return !s.Config().SystemStripDisabled
+}
+
+// stripAssistant 报告是否连 assistant 正文一起剥（跳过式的反面）。
+func (s *Service) stripAssistant() bool {
+	return !s.Config().SystemStripAssistantDisabled
 }
 
 type CompleteResult struct {
@@ -546,6 +586,11 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	// 切换模式不改变本次请求实际发出的形态，事件归因与降级判定都以它为准。
 	if opts.systemMode == "" {
 		opts.systemMode = s.systemPromptMode()
+	}
+	// 剥离开关同样只在入口快照一次（见 stripTotal/stripAsst 的注释）。
+	if !opts.stripSnapshotted {
+		opts.stripTotal, opts.stripAsst = s.stripEnabled(), s.stripAssistant()
+		opts.stripSnapshotted = true
 	}
 	// 模型路由：用户在管理台配置「源站点 + 源模型名 → 目标站点 + 目标模型名」。
 	//
@@ -656,11 +701,13 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		opts.SystemOutcome.Fingerprint = att.fp
 	}
 	chatOpts := s.chatOptionsFromAccount(account, opts)
-	// auto/strip 档：挂上指纹剥离配置（keep/fold 不启用）。
+	// auto/strip 档：按运行时开关决定是否挂指纹剥离（keep/fold 永远不挂）。
 	// site 用本次实际选中的账号所在站点，与黑名单的站点分流口径一致。
 	// 每次尝试使用局部 stripReport，避免跨递归重试累加或跨区重试残留假阳性。
+	// 开关取请求入口快照（att.strip/systemStrip*），与 mode 同一口径：
+	// 管理员在请求进行中拨开关，不改变本次请求已发出的形态。
 	var stripReport provider.StripReport
-	applyStripConfig(&chatOpts, att.mode, chatOpts.Site, &stripReport)
+	applyStripConfig(&chatOpts, att.mode, chatOpts.Site, opts.stripTotal, opts.stripAsst, &stripReport)
 	// 同会话复用上游会话 ID；仅在有账号钉（pinKey 非空）时注入，与钉号生命周期一致。
 	if pinKey != "" {
 		chatOpts.ConversationID = s.Conversations.ID(pinKey+"\x1e"+chatOpts.Product, account.ID)

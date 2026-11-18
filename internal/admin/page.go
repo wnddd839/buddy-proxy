@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.17-v0.7.7-pre-strip"
+const UIRevision = "2026.11.18-v0.7.7-strip-switch"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -1082,7 +1082,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
         <div class="eyebrow">System Prompt · Developer Panel</div>
         <h1>system 提示词处理</h1>
         <p class="lede">
-          三档模式热切换，并实时看每次请求的 system 形态。事件只记 SHA-256 前 8 位指纹与字节数，
+          四档模式 + 两个剥离开关，全部热切换。事件只记 SHA-256 前 8 位指纹与字节数，
           <strong>不保存 system / user 原文</strong>。历史按天写入 <code>proxy-systemprompt-YYYYMMDD.jsonl</code>，保留 7 天。
         </p>
 
@@ -1097,6 +1097,22 @@ button:disabled{opacity:.4;cursor:not-allowed}
             <label class="sp-check" title="含传输失败、被拦截、降级、其它错误，不是只看失败"><input type="checkbox" id="spOnlyProblems"/> 只看问题</label>
             <span class="sp-check" style="text-transform:none;letter-spacing:0" title="含传输失败、被拦截、降级、其它错误">含传输失败、被拦截、降级、其它错误</span>
             <button class="ghost" id="btnRefreshSp" type="button">刷新</button>
+          </div>
+        </div>
+
+        <div class="section-head" style="margin-top:16px;border:none;padding:0">
+          <div class="seg" style="gap:10px;display:flex;flex-wrap:wrap" role="group" aria-label="指纹剥离开关">
+            <label class="sp-check" style="display:flex;align-items:center;gap:8px;cursor:pointer"
+                   title="总开关。关掉后 auto/strip 退回 v0.7.6 行为：先直传原 system，被 11128 拒了才折叠重试 —— 每个请求都会先吃一次 400">
+              <input type="checkbox" id="spStripEnabled"/> 首试前剥离已知指纹
+            </label>
+            <label class="sp-check" style="display:flex;align-items:center;gap:8px;cursor:pointer"
+                   title="只控制 assistant 正文这一路。关掉后 system 仍照剥，但历史里带指纹的会话会永久 502（折叠救不了）">
+              <input type="checkbox" id="spStripAssistant"/> 连 assistant 正文一起剥
+            </label>
+          </div>
+          <div class="actions">
+            <span class="sp-check" style="text-transform:none;letter-spacing:0" id="spStripState">—</span>
           </div>
         </div>
         <div class="checkin-hint" id="spModeHint">
@@ -2060,6 +2076,9 @@ function paintUsagePager(data){
    事件只有指纹与字节数，绝不发明文。
    ============================================================ */
 let spMode = 'auto';
+// 剥离开关：总开关 + assistant 子开关。两者都由后端持久化到 .env。
+let spStrip = true;
+let spStripAssistant = true;
 let spHistory = {date:'', page:1, size:100, total:0, hasMore:false};
 
 function spResultLabel(e){
@@ -2128,6 +2147,32 @@ function paintSpMode(){
     b.classList.toggle('active', b.getAttribute('data-mode') === spMode);
   });
 }
+// 剥离开关的两个勾选框 + 一句状态说明。
+// assistant 勾选框在总开关关掉时置灰：此时它不起作用，避免误以为还生效。
+function paintSpStrip(){
+  const total = $('spStripEnabled');
+  const asst = $('spStripAssistant');
+  if (total) total.checked = !!spStrip;
+  if (asst){ asst.checked = !!spStripAssistant; asst.disabled = !spStrip; }
+  const state = $('spStripState');
+  if (state){
+    if (!spStrip) state.textContent = '已关闭：先直传，被 11128 拒了才折叠重试（每请求多一次 400）';
+    else if (!spStripAssistant) state.textContent = '只剥 system：assistant 历史不改动（带指纹的会话会永久 502）';
+    else state.textContent = '已开启：system 与 assistant 都在首试前剥离（推荐）';
+  }
+}
+async function spSwitchStrip(which, value){
+  const body = {};
+  body[which] = value;
+  const data = await api('/direct-admin/api/system-prompt', {method:'POST', body: JSON.stringify(body)});
+  spStrip = data.strip !== false;
+  spStripAssistant = data.stripAssistant !== false;
+  paintSpStrip();
+  showToast(which === 'strip'
+    ? ('首试前剥离已' + (spStrip ? '开启' : '关闭'))
+    : ('assistant 剥离已' + (spStripAssistant ? '开启' : '关闭')));
+  await refreshSystemPrompt();
+}
 function fillSpDates(dates){
   const sel = $('spDateSelect');
   if (!sel) return;
@@ -2150,7 +2195,10 @@ function fillSpDates(dates){
 async function refreshSystemPrompt(){
   const data = await api('/direct-admin/api/system-prompt');
   spMode = data.mode || 'auto';
+  spStrip = data.strip !== false;
+  spStripAssistant = data.stripAssistant !== false;
   paintSpMode();
+  paintSpStrip();
   const stats = data.stats || {};
   $('spTotal').textContent = String(stats.total || 0);
   $('spKeep').textContent = String(stats.keep || 0);
@@ -2213,6 +2261,17 @@ function spTick(){
 document.querySelectorAll('#spModeSeg button[data-mode]').forEach(function(b){
   b.addEventListener('click', function(){
     spSwitchMode(b.getAttribute('data-mode')).catch(function(e){ showToast(e.message,'error'); });
+  });
+});
+// 剥离开关：点一下立刻生效（热更新，不重启）。
+if ($('spStripEnabled')) $('spStripEnabled').addEventListener('change', function(){
+  spSwitchStrip('strip', this.checked).catch(function(e){
+    showToast(e.message,'error'); paintSpStrip();
+  });
+});
+if ($('spStripAssistant')) $('spStripAssistant').addEventListener('change', function(){
+  spSwitchStrip('stripAssistant', this.checked).catch(function(e){
+    showToast(e.message,'error'); paintSpStrip();
   });
 });
 if ($('btnRefreshSp')) $('btnRefreshSp').addEventListener('click', function(){
