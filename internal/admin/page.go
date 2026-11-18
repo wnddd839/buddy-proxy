@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.18-v0.7.8-strip-scope"
+const UIRevision = "2026.11.18-v0.7.10-effort-canon"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -668,6 +668,8 @@ button:disabled{opacity:.4;cursor:not-allowed}
       <div class="note-item">
         <h3>Reasoning 思考链透传</h3>
         <p>支持客户端 <code>reasoning_effort</code> / <code>reasoning</code> 入站映射；流式与非流式可回传 <code>reasoning_content</code>（视上游模型是否开启思考）。</p>
+        <p><strong>档位只有三档。</strong><code>minimal</code>/<code>low</code> 都落到 <code>low</code>，<code>medium</code>/<code>high</code>/<code>xhigh</code> 都落到 <code>high</code>，<code>max</code>/<code>ultra</code> 都落到 <code>max</code>；网关按此收敛后再发给上游。同一题实测 <code>reasoning_tokens</code> 中位：<code>low</code> 约 2.5k、<code>high</code> 约 2.4k、<code>max</code> 约 6.4k（<code>max</code> 相对 <code>high</code> 为 2.67 倍，8/8 胜）。</p>
+        <p><strong>写错的档位名会被回落成 <code>high</code>。</strong>上游对无法识别的档位值是<em>静默接受但完全不思考</em>（实测 <code>reasoning_tokens=0</code>），所以网关会先收敛再发。用量明细里 <code>reasoningEffort</code> 是客户端传的值、<code>reasoningTier</code> 是实际生效档位，两者不一致即说明客户端传了别名或被回落。</p>
       </div>
     </div>
   </div>

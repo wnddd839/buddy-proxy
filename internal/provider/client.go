@@ -602,8 +602,14 @@ func ApplyReasoningFields(body map[string]any, opts ChatOptions) {
 			}
 		}
 	}
-	if effort != "" {
-		body["reasoning_effort"] = effort
+	// 收敛到上游真实档位（low/high/max）。
+	//
+	// 必须收敛而不是原样透传：上游对未知值是静默接受的，但结果是完全不思考
+	// ——实测 bogus-xyz 连续 3 次 reasoning_tokens=0 且正文 0 字，同期 max 是 6172。
+	// 也就是说一个拼错的档位能把思考悄悄关掉，且没有任何报错可循。
+	// 原始档位仍会经 usage journal 落盘，事后能查到「谁传了什么」。
+	if wire, _ := canonicalEffort(effort); wire != "" {
+		body["reasoning_effort"] = wire
 	}
 	if opts.Thinking != nil {
 		body["thinking"] = opts.Thinking
@@ -629,11 +635,18 @@ func ReasoningRequested(opts ChatOptions) bool {
 	}
 
 	// 扁平字段是真正生效的那个（见 ApplyReasoningFields 的实测说明）。
+	//
+	// 这里**不能**再用「枚举已知档位」来判定：未知值现在会被收敛成 high 并
+	// 真的让上游思考，若仍按白名单判，这类样本会被判成「客户端没要推理」而
+	// 排除出推理缺失率，等于「思考消失」永远不告警。
+	// 只要不是明确的关闭关键词、且确实写进了 body，就算要求了推理。
 	if effort, ok := body["reasoning_effort"].(string); ok {
 		switch strings.ToLower(strings.TrimSpace(effort)) {
 		case "none", "disabled", "off":
 			return false
-		case "minimal", "low", "medium", "high", "xhigh", "max":
+		case "":
+			// 没写进 body（客户端没传），不算要求推理。
+		default:
 			enabled = true
 		}
 	}

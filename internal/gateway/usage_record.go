@@ -28,9 +28,11 @@ type ChatRecordInput struct {
 	// ReasoningEffort 是客户端本次传的档位原值（空 = 没传）。
 	// 与 usage 里的 reasoning_tokens 配对落盘，才能回答「哪一档更省」。
 	ReasoningEffort string
-	Trace           provider.RequestTrace
-	Account         accounts.Summary
-	AccountID       string
+	// ReasoningTier 是收敛后的上游实际档位（low/high/max）。
+	ReasoningTier string
+	Trace         provider.RequestTrace
+	Account       accounts.Summary
+	AccountID     string
 
 	// SystemForm / SystemFp / SystemDegraded 记录本次请求实际使用的 system 形态。
 	// SystemFp 只是 SHA-256 前 8 位，绝不存 system 原文。
@@ -81,6 +83,7 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		CachedTokens:                  int64(input.Usage.CachedTokens()),
 		ReasoningTokens:               int64(reasoningTokens(input.Usage)),
 		ReasoningEffort:               input.ReasoningEffort,
+		ReasoningTier:                 input.ReasoningTier,
 		Credit:                        input.Usage.Credit,
 		DurationMs:                    duration,
 		SystemForm:                    input.SystemForm,

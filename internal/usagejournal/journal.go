@@ -48,10 +48,17 @@ type Entry struct {
 	// 只记 completion_tokens 无法区分这两种情况 —— 而它们的处置完全不同：
 	// 前者要降档位，后者要查链路。
 	ReasoningTokens int64 `json:"reasoningTokens,omitempty"`
-	// ReasoningEffort 是客户端本次请求的档位（未传时为空）。
+	// ReasoningEffort 是客户端本次请求的档位原值（未传时为空）。
 	// 与 ReasoningTokens 配对才能回答「哪一档真的更省/更快」。
-	ReasoningEffort string   `json:"reasoningEffort,omitempty"`
-	Credit          *float64 `json:"credit,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// ReasoningTier 是**上游实际生效的档位**：low / high / max。
+	//
+	// 为什么单列一个而不是复用 ReasoningEffort：上游只有三档，客户端却会送来
+	// minimal/medium/xhigh/ultra 等别名，甚至拼错的值。按原值聚合吞吐，每档
+	// 都只剩 1~2 条，回答不了「哪档更快」。而把 ReasoningEffort 的语义改掉
+	// 又会让历史行与新行在同一列上代表不同东西 —— 所以新增，不改旧。
+	ReasoningTier string   `json:"reasoningTier,omitempty"`
+	Credit        *float64 `json:"credit,omitempty"`
 
 	DurationMs int64 `json:"durationMs"`
 

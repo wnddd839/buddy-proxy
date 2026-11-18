@@ -42,9 +42,10 @@ func (s *Server) recordChatJournal(
 		ReasoningRequested: provider.ReasoningRequested(provider.ChatOptions{
 			ReasoningEffort: opts.ReasoningEffort, Reasoning: opts.Reasoning, Thinking: opts.Thinking,
 		}),
-		// 档位原值一并落盘：只有和 reasoning_tokens 配对，
-		// 才回答得了「哪一档真的更省/更快」。
+		// 原值 + 实际档位并排落盘：前者回答「客户端要了什么」，
+		// 后者回答「上游真按哪档跑」——拼错的档位只有并排才看得出来。
 		ReasoningEffort: effectiveEffort(opts.ReasoningEffort, opts.Reasoning),
+		ReasoningTier:   effortTier(effectiveEffort(opts.ReasoningEffort, opts.Reasoning)),
 	}
 	if result != nil {
 		input.Trace = result.Trace
@@ -74,5 +75,21 @@ func effectiveEffort(flat string, obj map[string]any) string {
 			}
 		}
 	}
+	return ""
+}
+
+// effortTier 把客户端原值换算成上游实际档位（low/high/max）。
+// 与 provider.ApplyReasoningFields 写进 body 的值保持一致；
+// 客户端没传或明确关掉思考时返回空，避免把「不思考」记成某一档。
+func effortTier(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	wire, _ := provider.CanonicalReasoningEffort(raw)
+	switch wire {
+	case provider.EffortLow, provider.EffortHigh, provider.EffortMax:
+		return wire
+	}
+	// none/off/disabled 之类：上游确实不思考，不归入任何档位。
 	return ""
 }
