@@ -37,10 +37,21 @@ type Entry struct {
 	AccountID    string `json:"accountId,omitempty"`
 	AccountLabel string `json:"accountLabel,omitempty"`
 
-	PromptTokens     int64    `json:"promptTokens"`
-	CompletionTokens int64    `json:"completionTokens"`
-	CachedTokens     int64    `json:"cachedTokens"`
-	Credit           *float64 `json:"credit,omitempty"`
+	PromptTokens     int64 `json:"promptTokens"`
+	CompletionTokens int64 `json:"completionTokens"`
+	CachedTokens     int64 `json:"cachedTokens"`
+	// ReasoningTokens 是 completion_tokens 里用于思考的那部分。
+	//
+	// 必须单记的原因：这两个模型（deepseek-v4.1-flash）思考占 completion
+	// 的比例可以到 77%~96%（实测 high=77%、max=96%），也就是说
+	// 「输出慢/话少」很可能不是上游慢，而是预算被思考吃掉了。
+	// 只记 completion_tokens 无法区分这两种情况 —— 而它们的处置完全不同：
+	// 前者要降档位，后者要查链路。
+	ReasoningTokens int64 `json:"reasoningTokens,omitempty"`
+	// ReasoningEffort 是客户端本次请求的档位（未传时为空）。
+	// 与 ReasoningTokens 配对才能回答「哪一档真的更省/更快」。
+	ReasoningEffort string   `json:"reasoningEffort,omitempty"`
+	Credit          *float64 `json:"credit,omitempty"`
 
 	DurationMs int64 `json:"durationMs"`
 

@@ -42,6 +42,9 @@ func (s *Server) recordChatJournal(
 		ReasoningRequested: provider.ReasoningRequested(provider.ChatOptions{
 			ReasoningEffort: opts.ReasoningEffort, Reasoning: opts.Reasoning, Thinking: opts.Thinking,
 		}),
+		// 档位原值一并落盘：只有和 reasoning_tokens 配对，
+		// 才回答得了「哪一档真的更省/更快」。
+		ReasoningEffort: effectiveEffort(opts.ReasoningEffort, opts.Reasoning),
 	}
 	if result != nil {
 		input.Trace = result.Trace
@@ -56,4 +59,20 @@ func (s *Server) recordChatJournal(
 		input.SystemDegraded = outcome.Degraded
 	}
 	s.Svc.RecordChat(input)
+}
+
+// effectiveEffort 取客户端实际生效的档位：扁平字段优先，其次对象里的 effort。
+// 与 provider.ApplyReasoningFields 的取值顺序保持一致。
+func effectiveEffort(flat string, obj map[string]any) string {
+	if v := strings.TrimSpace(flat); v != "" {
+		return v
+	}
+	if obj != nil {
+		if raw, ok := obj["effort"]; ok {
+			if s, ok := raw.(string); ok {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
 }

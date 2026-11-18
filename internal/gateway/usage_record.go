@@ -25,9 +25,12 @@ type ChatRecordInput struct {
 	// ReasoningRequested 表示客户端显式要求了推理（reasoning_effort / reasoning / thinking）。
 	// 只有为 true 时，缺失推理 token 才说明上游掉了思考能力。
 	ReasoningRequested bool
-	Trace              provider.RequestTrace
-	Account            accounts.Summary
-	AccountID          string
+	// ReasoningEffort 是客户端本次传的档位原值（空 = 没传）。
+	// 与 usage 里的 reasoning_tokens 配对落盘，才能回答「哪一档更省」。
+	ReasoningEffort string
+	Trace           provider.RequestTrace
+	Account         accounts.Summary
+	AccountID       string
 
 	// SystemForm / SystemFp / SystemDegraded 记录本次请求实际使用的 system 形态。
 	// SystemFp 只是 SHA-256 前 8 位，绝不存 system 原文。
@@ -76,12 +79,22 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		PromptTokens:                  int64(input.Usage.PromptTokens),
 		CompletionTokens:              int64(input.Usage.CompletionTokens),
 		CachedTokens:                  int64(input.Usage.CachedTokens()),
+		ReasoningTokens:               int64(reasoningTokens(input.Usage)),
+		ReasoningEffort:               input.ReasoningEffort,
 		Credit:                        input.Usage.Credit,
 		DurationMs:                    duration,
 		SystemForm:                    input.SystemForm,
 		SystemFp:                      input.SystemFp,
 		SystemDegraded:                input.SystemDegraded,
 	})
+}
+
+// reasoningTokens 取出 completion_tokens_details.reasoning_tokens（没有则 0）。
+func reasoningTokens(u provider.Usage) int {
+	if u.CompletionTokensDetails == nil {
+		return 0
+	}
+	return u.CompletionTokensDetails.ReasoningTokens
 }
 
 // recordWatchSample 把一次真实请求喂给波动监测器；未启用时是空操作。

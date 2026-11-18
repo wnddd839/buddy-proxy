@@ -556,22 +556,36 @@ func isPortalDomain(domain string) bool {
 //
 // ApplyReasoningFields 将客户端思考档位写入上游 body。
 //
-// ⚠️ 2026-11-12 实测订正（此前记录的结论是反的，已作废）：
-// 上游 **只认扁平的 `reasoning_effort` 字段**；`reasoning:{effort:...}` 这个
-// 对象形式**完全不生效**。同一 prompt 直连上游的对照数据：
+// 2026-11-18 实测订正（覆盖此前 2026-11-12 的注释，那条结论不成立）：
 //
-//	都不传              thinking_chars=0    reasoning_tokens=0
-//	只传 reasoning_effort  thinking_chars=487  reasoning_tokens=142   ← 生效
-//	只传 reasoning 对象    thinking_chars=0    reasoning_tokens=0     ← 无效
-//	两者都传             thinking_chars=270  reasoning_tokens=73    ← 部分生效
+// ① 扁平 `reasoning_effort` 与对象 `reasoning:{effort:...}` **都生效**，
 //
-// 所以这里必须**始终**写 reasoning_effort，不能因为客户端带了 reasoning
-// 对象就跳过它——否则客户端传 `reasoning:{effort:"max"}` 时思考被静默关掉，
-// 表现为「设了 max 但完全不思考」。
+//	两者思考量相当（各 5 次中位：扁平 2561 字节 / 对象 1898 字节，
+//	差异在单次波动范围内；对象形式出现过 7111 的单次高点）。
+//	两者都传也不劣化（中位 2989）。所以「对象完全无效」是错的。
 //
-// 另外注意：各档位（minimal/low/medium/high/xhigh/max）在上游侧**没有稳定
-// 梯度**，实测 think_chars 在 384~726 之间随机波动、medium 反而最高。
-// 上游实际是「开/关」二元语义，具体档位值只用于透传给支持的模型。
+// ② 档位不是二元，但**也不是六个**。按 DeepSeek 官方文档
+//
+//	   （api-docs.deepseek.com/guides/thinking_mode）与本地实测：
+//
+//		请求值   实际档位   实测 reasoning_tokens 中位（各 5 次）
+//		minimal  low        459
+//		low      low        412
+//		medium   high       591
+//		high     high       500
+//		xhigh    high       415
+//		max      max        726
+//		ultra    max        1081
+//
+//	   即 6 个可选值实际只有 3 级语义：low / high / max。
+//	   minimal=low、medium=high=xhigh 完全等价；max 是唯一更强的一档，
+//	   ultra 在实测中比 max 还高（官方把两者都映射到 max，但实测有差异，
+//	   属噪声或上游实现细节，不建议依赖）。
+//
+// ③ 不传任何字段 ⇒ **完全不思考**（实测 think=0，5/5 稳定）。
+//
+//	这与官方「thinking mode 默认开启、默认 high」不符 ——
+//	上游这条 relay 在缺省时并没有打开思考，所以**必须显式传**。
 func ApplyReasoningFields(body map[string]any, opts ChatOptions) {
 	// 对象形式原样透传（部分模型可能认），但不再作为「是否发 reasoning_effort」的开关。
 	if opts.Reasoning != nil {
