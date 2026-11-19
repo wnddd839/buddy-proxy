@@ -9,6 +9,16 @@ import (
 
 const bucketSeconds = 1
 
+// bucketRetention 是秒桶的保留期，与 Snapshot 里「只统计最近一小时」一致。
+const bucketRetention = time.Hour
+
+// pruneEvery 是惰性清理的最小间隔。
+//
+// 为什么要写入时清理：此前秒桶只在 Snapshot() 里淘汰，而 Snapshot 只有打开
+// 管理台才会被调用 —— 没人看面板时，秒桶按 1 个/秒/账号无限累积。
+// 清理本身 O(账号×桶)，5 分钟一次可以忽略。
+const pruneEvery = 5 * time.Minute
+
 type bucket struct {
 	requests    int64
 	failures    int64
@@ -54,13 +64,34 @@ type Event struct {
 
 // Tracker 只做内存计数；零值不可用，请用 New。
 type Tracker struct {
-	mu       sync.Mutex
-	accounts map[string]*state
-	events   []Event
-	global   int
+	mu        sync.Mutex
+	accounts  map[string]*state
+	events    []Event
+	global    int
+	lastPrune time.Time
 }
 
 func New() *Tracker { return &Tracker{accounts: map[string]*state{}} }
+
+// pruneLocked 淘汰过期的秒桶，并清掉「既无在途、又无桶」的空账号条目。
+// 调用方必须持有 t.mu。
+func (t *Tracker) pruneLocked(now time.Time) {
+	if now.Sub(t.lastPrune) < pruneEvery {
+		return
+	}
+	t.lastPrune = now
+	cutoff := now.Add(-bucketRetention).Unix()
+	for id, st := range t.accounts {
+		for key := range st.buckets {
+			if key < cutoff {
+				delete(st.buckets, key)
+			}
+		}
+		if st.inFlight == 0 && len(st.buckets) == 0 {
+			delete(t.accounts, id)
+		}
+	}
+}
 
 func (t *Tracker) locked(accountID string) *state {
 	if accountID == "" {
@@ -91,6 +122,7 @@ func (t *Tracker) Begin(accountID, label string) func(ok bool) {
 	}
 	started := time.Now()
 	t.mu.Lock()
+	t.pruneLocked(started)
 	st := t.locked(accountID)
 	st.inFlight++
 	if label != "" {
@@ -133,6 +165,7 @@ func (t *Tracker) RecordRateLimit(accountID, message string) {
 	now := time.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.pruneLocked(now)
 	st := t.locked(accountID)
 	t.events = append(t.events, Event{
 		At:              now.UnixMilli(),
@@ -155,6 +188,8 @@ func (t *Tracker) Snapshot() Snapshot {
 	cutoff := now.Add(-time.Hour).UnixMilli()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.lastPrune = time.Time{} // 强制走一次完整清理，保证面板看到的就是清理后的口径
+	t.pruneLocked(now)
 	out := Snapshot{GeneratedAt: now.UnixMilli(), GlobalInFlight: t.global}
 	ids := make([]string, 0, len(t.accounts))
 	for id := range t.accounts {
@@ -165,10 +200,6 @@ func (t *Tracker) Snapshot() Snapshot {
 		st := t.accounts[id]
 		view := AccountView{AccountID: id, Label: st.label, InFlight: st.inFlight}
 		for key, b := range st.buckets {
-			if key < now.Add(-time.Hour).Unix() {
-				delete(st.buckets, key)
-				continue
-			}
 			age := now.Unix() - key
 			if b.peak > view.PeakInFlight {
 				view.PeakInFlight = b.peak

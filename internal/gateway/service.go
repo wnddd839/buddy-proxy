@@ -1537,7 +1537,15 @@ func (s *Service) storeModelsCache(key string, result models.ListResult) {
 	if s.modelsCache == nil {
 		s.modelsCache = map[string]modelsCacheEntry{}
 	}
-	s.modelsCache[key] = modelsCacheEntry{result: result, expiresAt: time.Now().Add(modelsCacheTTL)}
+	now := time.Now()
+	// 顺手清过期项。读路径只判断 TTL 不删除，而缓存键里含 account.ID，
+	// 账号一换就永久留一条，长期运行会只增不减。
+	for k, entry := range s.modelsCache {
+		if now.After(entry.expiresAt) {
+			delete(s.modelsCache, k)
+		}
+	}
+	s.modelsCache[key] = modelsCacheEntry{result: result, expiresAt: now.Add(modelsCacheTTL)}
 }
 
 func (s *Service) invalidateModelsCache() {
