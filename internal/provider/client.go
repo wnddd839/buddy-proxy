@@ -782,6 +782,92 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 	return EnsureUpstreamMessagesWith(messages, false, nil, nil)
 }
 
+// reusableMessageKeys 是重建路径「会原样写出」的键集合。
+//
+// 白名单而非黑名单：出现任何不认识的键就退回重建路径 —— 重建路径会把
+// 它丢掉，复用原 map 却会带出去，那是行为差异。
+var reusableMessageKeys = map[string]bool{
+	"role":              true,
+	"content":           true,
+	"tool_calls":        true,
+	"tool_call_id":      true,
+	"name":              true,
+	"reasoning_content": true, // 仅 assistant 且为字符串时才允许（见下）
+}
+
+// canReuseMessages 判断能否跳过逐条重建。
+//
+// 判定必须与重建路径的**输出**严格一致：只要有一条 message 的形态
+// 会让重建结果与原 map 不同，就返回 false 走老路径。快路径只省分配，
+// 绝不改变行为。
+func canReuseMessages(messages []map[string]any, keepSystem bool, strip *StripConfig, reasoningReplay bool) bool {
+	stripOn := strip != nil && strip.Enabled
+	for _, message := range messages {
+		rawRole := fmt.Sprint(message["role"])
+		role := NormalizeMessageRole(rawRole)
+		// 重建路径会把角色改写成规范形式；原样返回就改不了
+		if role != rawRole {
+			return false
+		}
+		// 只允许白名单内的键
+		for key := range message {
+			if !reusableMessageKeys[key] {
+				return false
+			}
+		}
+		// fold 模式要把 system 抽出来重排
+		if role == "system" && !keepSystem {
+			return false
+		}
+		// content 必须是字符串：数组/对象会被 normalizeContent 改结构
+		content, isStr := message["content"].(string)
+		if !isStr {
+			return false
+		}
+		// 剥离开启时，必须确认「剥离不会改动这条正文」，否则要走重建路径。
+		//
+		// stripText 未命中时返回同一个 string（零拷贝），所以这里可以直接
+		// 比较字符串是否发生变化。system 与 assistant 是唯一两个会被剥离
+		// 的角色（见 EnsureUpstreamMessagesWithReplay），判定也只对它们做。
+		if stripOn && (role == "system" || role == "assistant") {
+			skip := role == "assistant" && strip.SkipAssistant
+			if !skip {
+				if out, _, changed := stripText(content, strip); changed || out != content {
+					return false
+				}
+			}
+		}
+		// tool 输出以 '[' 开头时 NormalizeToolOutput 会尝试解析图片数组
+		if role == "tool" && strings.HasPrefix(strings.TrimSpace(content), "[") {
+			return false
+		}
+		// 空正文会被重建路径丢弃（除非带 tool_calls 或 tool_call_id）
+		if strings.TrimSpace(content) == "" {
+			hasCalls := len(asAnySlice(message["tool_calls"])) > 0
+			if !hasCalls && message["tool_call_id"] == nil {
+				return false
+			}
+			// 空的 tool-assistant 会被 mergeConsecutiveToolAssistants 合并
+			if role == "assistant" && hasCalls {
+				return false
+			}
+		}
+		// reasoning_content 只有 assistant 且为字符串时才是「原样带出」
+		if v, ok := message["reasoning_content"]; ok {
+			if !reasoningReplay || role != "assistant" {
+				return false
+			}
+			if _, isStr := v.(string); !isStr {
+				return false
+			}
+			if v == "" {
+				return false // 重建路径不写空串
+			}
+		}
+	}
+	return true
+}
+
 // EnsureUpstreamMessagesWith 规整客户端消息。
 //
 // keepSystem=false（默认，fold 模式）：把客户端 system/developer 折叠进第一条
@@ -817,6 +903,14 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, stri
 // 只透传 reasoning_content：OpenRouter 的 reasoning / reasoning_details
 // 是不同形态的结构化字段，混进来会把命名空间搞乱。
 func EnsureUpstreamMessagesWithReplay(messages []map[string]any, keepSystem bool, strip *StripConfig, report *StripReport, reasoningReplay bool) []map[string]any {
+	// 快路径：形态与「重建后的结果」完全一致时，直接复用原切片。
+	//
+	// 为什么值得做：重建路径为每条 message 新建一个 map 做浅拷贝。一个
+	// 200 轮历史的 agent 请求有 600+ 条 message，等于 600+ 次 map 分配，
+	// 而内容与原始 map 完全相同。压测显示大请求的 CPU 主要花在这里。
+	if canReuseMessages(messages, keepSystem, strip, reasoningReplay) {
+		return messages
+	}
 	var (
 		instructions []string
 		rest         []map[string]any

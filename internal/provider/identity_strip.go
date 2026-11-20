@@ -166,6 +166,25 @@ func normalizeOnly(s string, maxNormBytes int) string {
 	initCap := min(len(s), maxNormBytes+8)
 	norm := make([]byte, 0, initCap)
 	for i := 0; i < len(s) && len(norm) < maxNormBytes; {
+		// ASCII 快路径：位运算小写化，不碰 unicode 包、不产生临时 string。
+		//
+		// 剖析显示 unicode.ToLower 的查表 + string(rune) 分配合计占生产路径
+		// 约 1/4 的 CPU（13.8% lookupCaseRange + 3.5% intstring + 分配）。
+		// 真实流量绝大部分是 ASCII，这部分完全是浪费。
+		//
+		// ⚠️ normalizedSpace 里唯一的 ASCII 成员是 SPACE。
+		// TAB/LF/CR 属于「保留」—— 不要搬 unicode.IsSpace 的语义进来。
+		if b := s[i]; b < utf8.RuneSelf {
+			i++
+			if b == ' ' {
+				continue
+			}
+			if b >= 'A' && b <= 'Z' {
+				b += 'a' - 'A'
+			}
+			norm = append(norm, b)
+			continue
+		}
 		r, size := decodeRune(s[i:])
 		if normalizedSpace(r) {
 			i += size
