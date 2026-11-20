@@ -37,6 +37,7 @@ import {
 } from '@/lib/domain';
 import {
   bareModelId,
+  formatCompactNumber,
   formatNextCheckin,
   formatTime,
   normalizeSite,
@@ -68,8 +69,11 @@ interface PoolPageProps {
   onRefreshStatus: (fresh?: boolean) => Promise<void>;
   onFetchAccountUsage: (accountId: string, silent?: boolean) => Promise<void>;
   onNavigate: (tab: TabId) => void;
+  onSwitchSite: (site: Site) => void;
   initialModal?: 'oauth' | 'import' | 'strategy' | null;
   onClearInitialModal?: () => void;
+  initialFilter?: StatusFilter | null;
+  onClearInitialFilter?: () => void;
 }
 
 type StatusFilter = 'all' | 'ok' | 'issue' | 'disabled';
@@ -89,8 +93,11 @@ export function PoolPage({
   onRefreshStatus,
   onFetchAccountUsage,
   onNavigate,
+  onSwitchSite,
   initialModal,
   onClearInitialModal,
+  initialFilter,
+  onClearInitialFilter,
 }: PoolPageProps) {
   const { showToast } = useToast();
   const { confirm } = useConfirm();
@@ -162,6 +169,13 @@ export function PoolPage({
     if (!poolTestBusy) setPoolTestLog('');
   }, [activeSite, checkinBusy, poolTestBusy]);
 
+  // 响应从首页跳转过来直接筛选问题账号
+  useEffect(() => {
+    if (!initialFilter) return;
+    setStatusFilter(initialFilter);
+    onClearInitialFilter?.();
+  }, [initialFilter, onClearInitialFilter]);
+
   // 响应 #codebuddy / #quota-floor 等深度锚点
   useEffect(() => {
     if (!initialModal) return;
@@ -208,6 +222,12 @@ export function PoolPage({
     let ok = 0;
     let issue = 0;
     let disabled = 0;
+    let remaining = 0;
+    let total = 0;
+    let unlimited = false;
+    let withSnapshot = 0;
+    let expiring7d = 0;
+
     for (const a of siteAccounts) {
       if (!a.enabled) {
         disabled++;
@@ -215,11 +235,49 @@ export function PoolPage({
       }
       const states = computeAccountStates(a);
       const logged = a.loggedIn && a.hasCredentials;
-      if (!logged || a.tokenExpired || states.length > 0 || a.lastError) issue++;
-      else ok++;
+      const usage = usageByAccount[a.id];
+      const creditLvl = usage?.credits ? computeCreditLevel(usage) : 'good';
+      if (!logged || a.tokenExpired || states.length > 0 || a.lastError || creditLvl !== 'good') {
+        issue++;
+      } else {
+        ok++;
+      }
+      if (usage?.credits) {
+        withSnapshot++;
+        if (usage.credits.unlimited) {
+          unlimited = true;
+        } else {
+          if (usage.credits.remaining != null) remaining += Number(usage.credits.remaining);
+          if (usage.credits.total != null) total += Number(usage.credits.total);
+        }
+        expiring7d += computeExpirySummary(usage).expiringAmount7d;
+      } else if (a.quotaRemaining != null) {
+        withSnapshot++;
+        remaining += Number(a.quotaRemaining);
+      }
     }
-    return { all: siteAccounts.length, ok, issue, disabled };
-  }, [siteAccounts]);
+    return {
+      all: siteAccounts.length,
+      ok,
+      issue,
+      disabled,
+      enabled: ok + issue,
+      remaining,
+      total,
+      unlimited,
+      withSnapshot,
+      expiring7d,
+    };
+  }, [siteAccounts, usageByAccount]);
+
+  const domesticTotal =
+    status?.accounts?.domesticCount ??
+    allAccounts.filter((a) => normalizeSite(a.site) === 'domestic').length;
+  const globalTotal =
+    status?.accounts?.globalCount ??
+    allAccounts.filter((a) => normalizeSite(a.site) === 'global').length;
+  const poolCreditRatio =
+    counts.total > 0 ? Math.min(100, Math.max(0, (counts.remaining / counts.total) * 100)) : 0;
 
   const visibleAccounts = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -229,7 +287,10 @@ export function PoolPage({
         if (!a.enabled) return false;
         const states = computeAccountStates(a);
         const logged = a.loggedIn && a.hasCredentials;
-        const hasIssue = !logged || a.tokenExpired || states.length > 0 || !!a.lastError;
+        const usage = usageByAccount[a.id];
+        const creditLvl = usage?.credits ? computeCreditLevel(usage) : 'good';
+        const hasIssue =
+          !logged || a.tokenExpired || states.length > 0 || !!a.lastError || creditLvl !== 'good';
         if (statusFilter === 'ok' && hasIssue) return false;
         if (statusFilter === 'issue' && !hasIssue) return false;
       }
@@ -814,6 +875,113 @@ export function PoolPage({
           </>
         }
       />
+
+      {/* 整合后的号池扁平总览带（总剩余额度 / 健康分布 / 双区号池计数） */}
+      <div className="border-y border-[var(--border)] grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-[var(--border)]">
+        <div className="py-3.5 sm:pr-5">
+          <div className="flex items-center justify-between text-[11px] text-[var(--fg-3)]">
+            <span>号池总剩余 Credits（{siteLabel(activeSite)}站）</span>
+            {counts.expiring7d > 0 && (
+              <span className="text-[var(--warn)]">7 日到期 {counts.expiring7d.toFixed(0)}</span>
+            )}
+          </div>
+          <div className="mt-1.5 flex items-baseline gap-2">
+            <span className="ds-mono text-xl font-medium text-[var(--fg)]">
+              {counts.unlimited
+                ? '不限量'
+                : counts.withSnapshot > 0
+                  ? formatCompactNumber(Math.round(counts.remaining))
+                  : '—'}
+            </span>
+            {!counts.unlimited && counts.total > 0 && (
+              <span className="ds-mono text-xs text-[var(--fg-3)]">
+                / {formatCompactNumber(Math.round(counts.total))} ({poolCreditRatio.toFixed(0)}%)
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="py-3.5 sm:px-5">
+          <div className="flex items-center justify-between text-[11px] text-[var(--fg-3)]">
+            <span>健康分布</span>
+            <span className="ds-mono">
+              正常 {counts.ok} · 问题 {counts.issue}
+              {counts.disabled > 0 ? ` · 禁用 ${counts.disabled}` : ''}
+            </span>
+          </div>
+          <div className="mt-2.5 h-1.5 w-full rounded-full overflow-hidden bg-[var(--surface-2)] flex gap-0.5">
+            {counts.ok > 0 && (
+              <div
+                style={{
+                  width: `${(counts.ok / Math.max(1, counts.enabled)) * 100}%`,
+                  background: 'var(--ok)',
+                }}
+              />
+            )}
+            {counts.issue > 0 && (
+              <div
+                style={{
+                  width: `${(counts.issue / Math.max(1, counts.enabled)) * 100}%`,
+                  background: 'var(--warn)',
+                }}
+              />
+            )}
+          </div>
+          {counts.issue > 0 && statusFilter !== 'issue' ? (
+            <div className="mt-1.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setStatusFilter('issue')}
+                className="text-[var(--warn)] hover:underline underline-offset-2 cursor-pointer"
+              >
+                {counts.issue} 个账号需要关注，点击筛选处理 →
+              </button>
+            </div>
+          ) : (
+            <div className="mt-1.5 text-[11px] text-[var(--fg-3)]">
+              {counts.enabled === 0
+                ? '当前区域暂无启用账号'
+                : counts.issue === 0
+                  ? '全部启用账号可正常调度'
+                  : '正在筛选问题账号'}
+            </div>
+          )}
+        </div>
+
+        <div className="py-3.5 sm:pl-5 flex items-center justify-between gap-3">
+          <div>
+            <div className="text-[11px] text-[var(--fg-3)]">双区账号分布</div>
+            <div className="mt-1.5 flex items-center gap-3 text-xs">
+              <button
+                type="button"
+                onClick={() => onSwitchSite('domestic')}
+                className={`cursor-pointer transition-colors ${
+                  activeSite === 'domestic'
+                    ? 'text-[var(--fg)] font-medium underline underline-offset-4'
+                    : 'text-[var(--fg-2)] hover:text-[var(--fg)]'
+                }`}
+              >
+                国内站 <span className="ds-mono">{domesticTotal}</span>
+              </button>
+              <span className="text-[var(--border-strong)]">/</span>
+              <button
+                type="button"
+                onClick={() => onSwitchSite('global')}
+                className={`cursor-pointer transition-colors ${
+                  activeSite === 'global'
+                    ? 'text-[var(--fg)] font-medium underline underline-offset-4'
+                    : 'text-[var(--fg-2)] hover:text-[var(--fg)]'
+                }`}
+              >
+                国际站 <span className="ds-mono">{globalTotal}</span>
+              </button>
+            </div>
+          </div>
+          {quotaFloorSaved != null && quotaFloorSaved > 0 && (
+            <StatusBadge tone="neutral">门槛 {quotaFloorSaved}</StatusBadge>
+          )}
+        </div>
+      </div>
 
       {/* 顶部紧凑操作条：筛选 / 搜索 / 批量操作 / 视图切换 */}
       <Card className="p-3.5 space-y-3">

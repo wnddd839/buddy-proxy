@@ -237,9 +237,44 @@ def run(binary, output):
                     assert page.request.get(base + "/direct-admin/api/system-prompt").json()["mode"] == "auto"
                     page.screenshot(path=str(output / "system-prompt-desktop.png"), full_page=True)
 
-                    # Overview screenshot in light & dark themes + topbar switcher non-wrap & real site toggle
+                    # Overview screenshot in light & dark themes + hero chart + persistent sidebar check
+                    usage_sample = {
+                        "ok": True,
+                        "summary": {
+                            "requests": 128,
+                            "failed": 2,
+                            "totalTokens": 1420800,
+                            "cacheHitRate": 68.4,
+                            "credits": 12.45,
+                            "creditRows": 96,
+                        },
+                        "series": [
+                            {"at": 1, "label": "00:00", "totalTokens": 42000, "cacheHitRate": 48},
+                            {"at": 2, "label": "03:00", "totalTokens": 18000, "cacheHitRate": 52},
+                            {"at": 3, "label": "06:00", "totalTokens": 65000, "cacheHitRate": 61},
+                            {"at": 4, "label": "09:00", "totalTokens": 215000, "cacheHitRate": 71},
+                            {"at": 5, "label": "12:00", "totalTokens": 310000, "cacheHitRate": 74},
+                            {"at": 6, "label": "15:00", "totalTokens": 284000, "cacheHitRate": 69},
+                            {"at": 7, "label": "18:00", "totalTokens": 248000, "cacheHitRate": 72},
+                            {"at": 8, "label": "21:00", "totalTokens": 172000, "cacheHitRate": 66},
+                            {"at": 9, "label": "23:00", "totalTokens": 66800, "cacheHitRate": 64},
+                        ],
+                        "byModel": [
+                            {"model": "claude-4-sonnet", "requests": 64, "promptTokens": 520000, "totalTokens": 780000, "cachedTokens": 395000, "cacheHitRate": 76.0},
+                            {"model": "gpt-5.4", "requests": 42, "promptTokens": 310000, "totalTokens": 440800, "cachedTokens": 198000, "cacheHitRate": 63.9},
+                            {"model": "gemini-2.5-pro", "requests": 22, "promptTokens": 140000, "totalTokens": 200000, "cachedTokens": 72000, "cacheHitRate": 51.4},
+                        ],
+                        "requests": [],
+                        "requestsTotal": 0,
+                        "accounts": [],
+                        "models": [],
+                    }
+                    page.route("**/api/usage*", lambda route: route.fulfill(json=usage_sample))
                     page.locator('[data-tab="tab-overview"]').click()
                     expect(page.locator("#tab-overview")).to_be_visible()
+                    expect(page.locator('#overviewHeroChart svg[role="img"]')).to_be_visible()
+                    expect(page.locator('#overviewHeroChart svg[role="img"] path')).to_have_count(3)
+                    expect(page.locator("#appSidebar")).to_be_visible()
                     for sel in ["#btnPoolDomestic", "#btnPoolGlobal", "#btnProductCodeBuddy", "#btnProductWorkBuddy", "#updateCheck"]:
                         box = page.locator(sel).bounding_box()
                         assert box and box["height"] <= 36, f"control wrapped vertically ({sel}): {box}"
@@ -247,6 +282,7 @@ def run(binary, output):
                     page.locator('button[aria-label="切换至深色模式"]').click()
                     page.screenshot(path=str(output / "overview-dark.png"), full_page=True)
                     page.locator('button[aria-label="切换至浅色模式"]').click()
+                    page.unroute("**/api/usage*")
 
                     # Client & Usage desktop screenshots
                     page.locator('[data-tab="tab-client"]').click()
@@ -256,19 +292,19 @@ def run(binary, output):
                     expect(page.locator("#tab-usage")).to_be_visible()
                     page.screenshot(path=str(output / "usage-desktop.png"), full_page=True)
 
-                    # Real site toggle round-trip (domestic -> global -> domestic) + 1024px medium desktop check
+                    # Real site toggle round-trip + half-screen 840px persistent sidebar check
                     page.locator('[data-tab="tab-overview"]').click()
                     with page.expect_response(
                         lambda r: r.url.endswith("/direct-admin/api/pool-site") and r.request.method == "POST"
                     ):
                         page.locator("#btnPoolGlobal").click()
                     expect(page.locator("#btnPoolGlobal")).to_have_attribute("aria-pressed", "true")
-                    page.screenshot(path=str(output / "overview-global.png"), full_page=True)
-                    page.set_viewport_size({"width": 1024, "height": 768})
+                    page.set_viewport_size({"width": 840, "height": 768})
+                    expect(page.locator("#appSidebar")).to_be_visible()
                     for sel in ["#btnPoolDomestic", "#btnPoolGlobal", "#btnProductCodeBuddy", "#btnProductWorkBuddy"]:
                         box = page.locator(sel).bounding_box()
-                        assert box and box["height"] <= 36, f"control wrapped at 1024px ({sel}): {box}"
-                    page.screenshot(path=str(output / "overview-1024.png"), full_page=True)
+                        assert box and box["height"] <= 36, f"control wrapped at 840px ({sel}): {box}"
+                    page.screenshot(path=str(output / "overview-840.png"), full_page=True)
                     with page.expect_response(
                         lambda r: r.url.endswith("/direct-admin/api/pool-site") and r.request.method == "POST"
                     ):

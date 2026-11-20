@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Copy, RefreshCw } from 'lucide-react';
-import type { UsageChartPoint, UsageEntry, UsageViewPayload } from '@/types/api';
+import type { UsageEntry, UsageViewPayload } from '@/types/api';
 import { usageRowHitRate, usageRowTotalTokens } from '@/lib/domain';
 import {
   formatCompactNumber,
@@ -14,241 +14,13 @@ import { Button } from '@/components/ui/Button';
 import { Card, PageHeader, StatCard } from '@/components/ui/Card';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StatusBadge } from '@/components/ui/StatusBadge';
+import { UsageLineChart, type UsageChartRange } from '@/components/charts/UsageLineChart';
 
 interface UsagePageProps {
   active: boolean;
 }
 
-type RangeKey = 'day' | 'week' | 'month';
-
-function InteractiveUsageChart({
-  series,
-  totalRequests,
-}: {
-  series: UsageChartPoint[];
-  totalRequests: number;
-}) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-
-  const hasTokens = series.some((p) => (p.totalTokens || 0) > 0);
-  const hasRate = series.some((p) => p.cacheHitRate != null && p.cacheHitRate >= 0);
-
-  if (!series.length || (!hasTokens && !hasRate && !totalRequests)) {
-    return (
-      <div className="py-12 text-center text-xs text-[var(--fg-3)]">
-        当前周期与筛选条件下暂无趋势数据
-      </div>
-    );
-  }
-
-  const W = 780;
-  const H = 204;
-  const pad = { l: 54, r: 46, t: 18, b: 30 };
-  const iw = W - pad.l - pad.r;
-  const ih = H - pad.t - pad.b;
-  const n = series.length;
-  const maxTok = Math.max(
-    1,
-    series.reduce((m, p) => Math.max(m, p.totalTokens || 0), 0),
-  );
-  const slotW = iw / Math.max(1, n);
-  const barW = Math.max(6, Math.min(34, Math.floor(slotW * 0.48)));
-
-  const xAt = (i: number) => pad.l + (i + 0.5) * slotW;
-  const yTok = (v: number) => pad.t + ih - (v / maxTok) * ih;
-  const yHit = (r: number) => pad.t + ih - (Math.max(0, Math.min(100, r)) / 100) * ih;
-
-  const yTicks = [0, 0.33, 0.66, 1].map((frac) => Math.round(maxTok * frac));
-  const labelStep = n <= 9 ? 1 : Math.max(1, Math.ceil(n / 8));
-
-  let hitPath = '';
-  series.forEach((p, i) => {
-    if (p.cacheHitRate != null && p.cacheHitRate >= 0) {
-      hitPath += `${hitPath ? ' L' : 'M'}${xAt(i)} ${yHit(p.cacheHitRate)}`;
-    }
-  });
-
-  const hovered = hoverIdx != null ? series[hoverIdx] : null;
-
-  return (
-    <div className="space-y-2.5">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-        <div className="text-[var(--fg-2)]">
-          {hovered ? (
-            <span className="ds-mono">
-              <strong className="text-[var(--fg)]">{hovered.label}</strong>
-              {' · '}Tokens{' '}
-              <strong className="text-[var(--fg)]">
-                {formatCompactNumber(hovered.totalTokens)}
-              </strong>
-              {' · '}缓存命中率{' '}
-              <strong className="text-[var(--ok)]">
-                {formatHitRate(hovered.cacheHitRate)}
-              </strong>
-            </span>
-          ) : (
-            <span className="text-[var(--fg-3)]">鼠标悬停图表查看任意时段精确读数</span>
-          )}
-        </div>
-        <div className="flex items-center gap-4 text-[11px] text-[var(--fg-2)]">
-          <span className="inline-flex items-center gap-1.5">
-            <i className="w-3 h-2 rounded-[2px] inline-block bg-[var(--accent)] opacity-45" />
-            Token 消耗
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <i className="w-4 h-0 inline-block border-t-2 border-dashed border-[var(--ok)]" />
-            缓存命中率 %
-          </span>
-        </div>
-      </div>
-
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        role="img"
-        aria-label="Token 与缓存命中率趋势"
-        className="w-full h-auto block select-none"
-        onMouseLeave={() => setHoverIdx(null)}
-      >
-        {/* 水平虚线网格 + 左轴 Token 刻度 */}
-        {yTicks.map((val, idx) => {
-          const y = yTok(val);
-          return (
-            <g key={idx}>
-              <line
-                x1={pad.l}
-                y1={y}
-                x2={W - pad.r}
-                y2={y}
-                stroke="var(--border)"
-                strokeDasharray={idx === 0 ? undefined : '3 3'}
-              />
-              <text
-                x={pad.l - 8}
-                y={y + 3}
-                textAnchor="end"
-                fill="var(--fg-3)"
-                fontSize="10"
-                fontFamily="var(--font-mono)"
-              >
-                {val === 0 ? '0' : formatCompactNumber(val)}
-              </text>
-            </g>
-          );
-        })}
-
-        {/* 右轴命中率刻度 */}
-        <text
-          x={W - pad.r + 8}
-          y={pad.t + 4}
-          fill="var(--ok)"
-          fontSize="10"
-          fontFamily="var(--font-mono)"
-        >
-          100%
-        </text>
-        <text
-          x={W - pad.r + 8}
-          y={pad.t + ih / 2 + 3}
-          fill="var(--fg-3)"
-          fontSize="10"
-          fontFamily="var(--font-mono)"
-        >
-          50%
-        </text>
-        <text
-          x={W - pad.r + 8}
-          y={pad.t + ih + 3}
-          fill="var(--fg-3)"
-          fontSize="10"
-          fontFamily="var(--font-mono)"
-        >
-          0%
-        </text>
-
-        {/* Token 柱状图 */}
-        {series.map((p, i) => {
-          const cx = xAt(i);
-          const y = yTok(p.totalTokens || 0);
-          const h = Math.max(0, pad.t + ih - y);
-          const isHov = hoverIdx === i;
-          return (
-            <rect
-              key={i}
-              x={cx - barW / 2}
-              y={y}
-              width={barW}
-              height={h}
-              rx={3}
-              fill="var(--accent)"
-              opacity={hoverIdx == null ? 0.28 : isHov ? 0.72 : 0.14}
-              style={{ transition: 'opacity 140ms ease' }}
-            />
-          );
-        })}
-
-        {/* 缓存命中率折线 */}
-        {hitPath && (
-          <path
-            d={hitPath}
-            fill="none"
-            stroke="var(--ok)"
-            strokeWidth={2}
-            strokeDasharray="5 3"
-          />
-        )}
-
-        {/* 折线数据点 */}
-        {series.map((p, i) => {
-          if (p.cacheHitRate == null || p.cacheHitRate < 0) return null;
-          const isHov = hoverIdx === i;
-          return (
-            <circle
-              key={i}
-              cx={xAt(i)}
-              cy={yHit(p.cacheHitRate)}
-              r={isHov ? 5 : 3}
-              fill="var(--surface)"
-              stroke="var(--ok)"
-              strokeWidth={2}
-            />
-          );
-        })}
-
-        {/* X 轴标签 */}
-        {series.map((p, i) => {
-          if (i % labelStep !== 0 && i !== n - 1) return null;
-          return (
-            <text
-              key={i}
-              x={xAt(i)}
-              y={H - 8}
-              textAnchor="middle"
-              fill={hoverIdx === i ? 'var(--fg)' : 'var(--fg-3)'}
-              fontSize="10"
-              fontFamily="var(--font-mono)"
-            >
-              {p.label}
-            </text>
-          );
-        })}
-
-        {/* 透明悬停感应区 */}
-        {series.map((_, i) => (
-          <rect
-            key={i}
-            x={pad.l + i * slotW}
-            y={pad.t}
-            width={slotW}
-            height={ih}
-            fill="transparent"
-            className="cursor-crosshair"
-            onMouseEnter={() => setHoverIdx(i)}
-          />
-        ))}
-      </svg>
-    </div>
-  );
-}
+type RangeKey = UsageChartRange;
 
 export function UsagePage({ active }: UsagePageProps) {
   const { showToast } = useToast();
@@ -427,9 +199,12 @@ export function UsagePage({ active }: UsagePageProps) {
         <Card id="usageChartBox" className="xl:col-span-7 p-5">
           <div className="text-sm font-medium text-[var(--fg)] mb-3">消耗与缓存命中趋势</div>
           <div id="usageChart">
-            <InteractiveUsageChart
+            <UsageLineChart
               series={data?.series || []}
               totalRequests={sum?.requests || 0}
+              range={range}
+              height={220}
+              showModeToggle={false}
             />
           </div>
         </Card>

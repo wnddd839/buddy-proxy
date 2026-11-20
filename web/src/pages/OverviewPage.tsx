@@ -1,64 +1,84 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Activity,
-  AlertTriangle,
   ArrowRight,
   BookOpen,
   Code2,
   Copy,
   RefreshCw,
   ShieldAlert,
-  Sparkles,
 } from 'lucide-react';
 import type {
-  AccountSummary,
   AccountUsageItem,
   StatusPayload,
+  UsageViewPayload,
 } from '@/types/api';
 import {
   computeAccountStates,
   computeCreditLevel,
-  computeExpirySummary,
   type ConcurrencySummary,
 } from '@/lib/domain';
 import {
   formatCompactNumber,
+  formatHitRate,
   formatPercent,
   normalizeSite,
   siteLabel,
 } from '@/lib/format';
-import { copyToClipboard } from '@/lib/api';
+import { apiRequest, copyToClipboard } from '@/lib/api';
 import { useToast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/Button';
-import { Card, EmptyState, PageHeader, StatCard } from '@/components/ui/Card';
+import { Card, PageHeader } from '@/components/ui/Card';
+import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { SlideDrawer } from '@/components/ui/SlideDrawer';
 import { StatusBadge } from '@/components/ui/StatusBadge';
+import {
+  UsageLineChart,
+  type UsageChartRange,
+} from '@/components/charts/UsageLineChart';
 import type { TabId } from '@/components/layout/AppShell';
 
 interface OverviewPageProps {
+  active: boolean;
+  refreshTick: number;
   status: StatusPayload | null;
   activeSite: string;
   usageByAccount: Record<string, AccountUsageItem>;
   concurrency: ConcurrencySummary;
   onNavigate: (tab: TabId) => void;
-  onAccountAction: (
-    accountId: string,
-    action: 'test' | 'usage' | 'refresh' | 'disable',
-  ) => Promise<void>;
+  onNavigatePoolIssues: () => void;
 }
 
 export function OverviewPage({
+  active,
+  refreshTick,
   status,
   activeSite,
   usageByAccount,
   concurrency,
   onNavigate,
-  onAccountAction,
+  onNavigatePoolIssues,
 }: OverviewPageProps) {
   const { showToast } = useToast();
+  const [range, setRange] = useState<UsageChartRange>('day');
+  const [usageData, setUsageData] = useState<UsageViewPayload | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
-  const [busyKey, setBusyKey] = useState('');
+
+  const fetchUsageOverview = useCallback(async (r: UsageChartRange) => {
+    try {
+      const data = await apiRequest<UsageViewPayload>(
+        `/direct-admin/api/usage?range=${encodeURIComponent(r)}&limit=5&offset=0`,
+      );
+      setUsageData(data);
+    } catch {
+      // 首页统计图表加载失败时回退使用 status 汇总，不阻塞页面
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    fetchUsageOverview(range);
+  }, [active, range, refreshTick, fetchUsageOverview]);
 
   const allAccounts = status?.accounts?.accounts || [];
   const site = normalizeSite(activeSite);
@@ -67,529 +87,353 @@ export function OverviewPage({
     [allAccounts, site],
   );
 
-  // 汇总当前号池所有启用账号的 Credits 快照与 7 天内将过期积分
-  const poolCredits = useMemo(() => {
+  const poolSummary = useMemo(() => {
+    let healthy = 0;
+    let attention = 0;
+    let enabled = 0;
     let remaining = 0;
-    let total = 0;
     let unlimited = false;
     let withSnapshot = 0;
-    let expiring7d = 0;
 
     for (const a of siteAccounts) {
       if (!a.enabled) continue;
-      const u = usageByAccount[a.id];
-      if (u?.credits) {
+      enabled++;
+      const states = computeAccountStates(a);
+      const usage = usageByAccount[a.id];
+      const creditLvl = usage?.credits ? computeCreditLevel(usage) : 'good';
+      const hasIssue =
+        !(a.loggedIn && a.hasCredentials) ||
+        a.tokenExpired ||
+        !!a.lastError ||
+        states.length > 0 ||
+        creditLvl !== 'good';
+      if (hasIssue) attention++;
+      else healthy++;
+
+      if (usage?.credits) {
         withSnapshot++;
-        if (u.credits.unlimited) {
-          unlimited = true;
-        } else {
-          if (u.credits.remaining != null) remaining += Number(u.credits.remaining);
-          if (u.credits.total != null) total += Number(u.credits.total);
-        }
-        const exp = computeExpirySummary(u);
-        expiring7d += exp.expiringAmount7d;
+        if (usage.credits.unlimited) unlimited = true;
+        else if (usage.credits.remaining != null) remaining += Number(usage.credits.remaining);
       } else if (a.quotaRemaining != null) {
         withSnapshot++;
         remaining += Number(a.quotaRemaining);
       }
     }
-    return { remaining, total, unlimited, withSnapshot, expiring7d };
-  }, [siteAccounts, usageByAccount]);
-
-  // 账号健康度分类计数
-  const healthBreakdown = useMemo(() => {
-    let healthy = 0;
-    let cooling = 0;
-    let problem = 0;
-    let disabled = 0;
-    for (const a of siteAccounts) {
-      if (!a.enabled) {
-        disabled++;
-        continue;
-      }
-      const states = computeAccountStates(a);
-      if (!(a.loggedIn && a.hasCredentials) || a.tokenExpired || states.some((s) => s.tone === 'err')) {
-        problem++;
-      } else if (states.length > 0) {
-        cooling++;
-      } else {
-        healthy++;
-      }
-    }
-    return { healthy, cooling, problem, disabled, enabled: healthy + cooling + problem };
-  }, [siteAccounts]);
-
-  // 需要关注列表
-  const attentionRows = useMemo(() => {
-    return siteAccounts
-      .filter((a) => a.enabled)
-      .map((a) => {
-        const reasons = computeAccountStates(a);
-        if (!(a.loggedIn && a.hasCredentials)) {
-          reasons.unshift({ tone: 'err', text: '未登录' });
-        }
-        if (a.tokenExpired) {
-          reasons.unshift({ tone: 'err', text: 'Token 过期' });
-        }
-        const usage = usageByAccount[a.id];
-        if (usage?.credits) {
-          const lvl = computeCreditLevel(usage);
-          if (lvl !== 'good') {
-            reasons.push({
-              tone: lvl === 'bad' ? 'err' : 'warn',
-              text: lvl === 'bad' ? '余额告急' : '余额偏低',
-            });
-          }
-        }
-        if (a.lastError) {
-          reasons.push({ tone: 'neutral', text: '最近报错' });
-        }
-        return { account: a, reasons };
-      })
-      .filter((r) => r.reasons.length > 0);
+    return { healthy, attention, enabled, remaining, unlimited, withSnapshot };
   }, [siteAccounts, usageByAccount]);
 
   const stats = status?.stats || {};
   const watch = status?.watch;
-  const totalTokens = stats.totalTokens || 0;
-  const cachedTokens = stats.totalCachedTokens || 0;
-  const creditRatio =
-    poolCredits.total > 0
-      ? Math.min(100, Math.max(0, (poolCredits.remaining / poolCredits.total) * 100))
-      : 0;
-  const loggedIn = !!status?.accounts?.loggedIn;
+  const uSum = usageData?.summary;
 
-  const runQuick = async (
-    account: AccountSummary,
-    act: 'test' | 'usage' | 'refresh' | 'disable',
-  ) => {
-    const key = `${account.id}:${act}`;
-    setBusyKey(key);
-    try {
-      await onAccountAction(account.id, act);
-    } finally {
-      setBusyKey('');
-    }
-  };
+  const displayTokens = uSum?.totalTokens ?? stats.totalTokens ?? 0;
+  const displayRequests =
+    uSum?.requests ?? (stats.successRequests || 0) + (stats.failedRequests || 0);
+  const displayFailed = uSum?.failed ?? stats.failedRequests ?? 0;
+  const successRate =
+    displayRequests > 0 ? ((displayRequests - displayFailed) / displayRequests) * 100 : null;
+  const topModels = (usageData?.byModel || []).slice(0, 5);
+  const maxModelTokens = Math.max(
+    1,
+    topModels.reduce((m, row) => Math.max(m, row.totalTokens || 0), 0),
+  );
 
-  const totalBarDenom = Math.max(1, healthBreakdown.enabled);
+  const domesticCount =
+    status?.accounts?.domesticCount ??
+    allAccounts.filter((a) => normalizeSite(a.site) === 'domestic').length;
+  const globalCount =
+    status?.accounts?.globalCount ??
+    allAccounts.filter((a) => normalizeSite(a.site) === 'global').length;
+
+  const rangeLabel = range === 'day' ? '今日' : range === 'week' ? '近 7 日' : '近 30 日';
 
   return (
-    <div id="tab-overview" className="ds-page-enter space-y-5">
+    <div id="tab-overview" className="ds-page-enter space-y-6">
       <PageHeader
-        title="网关概览"
-        subtitle={`当前聚焦「${siteLabel(site)}站」号池 · 实时掌握账号健康、聚合余额、在途并发与待处理告警。`}
+        title="统计总览"
+        subtitle={`${rangeLabel}代理流量、缓存效率与实时运行态势 · 号池维护已整合至左侧「账号池」。`}
         actions={
           <>
-            <Button variant="ghost" size="sm" onClick={() => setDiagOpen(true)}>
-              <Code2 className="w-3.5 h-3.5" />
-              运行快照 JSON
+            <SegmentedControl<UsageChartRange>
+              id="overviewRangeSeg"
+              ariaLabel="首页统计周期"
+              size="xs"
+              value={range}
+              onChange={setRange}
+              options={[
+                { value: 'day', label: '今日' },
+                { value: 'week', label: '7 日' },
+                { value: 'month', label: '30 日' },
+              ]}
+            />
+            <Button variant="ghost" size="xs" onClick={() => setDiagOpen(true)}>
+              <Code2 className="w-3 h-3" />
+              快照
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setHelpOpen(true)}>
-              <BookOpen className="w-3.5 h-3.5" />
-              调度与熔断说明
+            <Button variant="ghost" size="xs" onClick={() => setHelpOpen(true)}>
+              <BookOpen className="w-3 h-3" />
+              说明
             </Button>
           </>
         }
       />
 
-      {/* 4 格核心 KPI */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
-        <StatCard
-          label="号池总剩余 Credits"
-          valueId="mCredits"
-          value={
-            poolCredits.unlimited
-              ? '不限量'
-              : poolCredits.withSnapshot > 0
-                ? formatCompactNumber(Math.round(poolCredits.remaining))
-                : loggedIn
-                  ? '待查询'
-                  : '—'
-          }
-          sub={
-            !poolCredits.unlimited && poolCredits.total > 0
-              ? `/ ${formatCompactNumber(Math.round(poolCredits.total))}`
-              : undefined
-          }
-          badge={
-            <StatusBadge
-              tone={
-                !loggedIn
-                  ? 'neutral'
-                  : poolCredits.unlimited || creditRatio >= 25 || poolCredits.total === 0
-                    ? 'ok'
-                    : creditRatio >= 10
-                      ? 'warn'
-                      : 'err'
-              }
-            >
-              {!loggedIn ? '未登录' : poolCredits.unlimited ? '不限量' : `${poolCredits.withSnapshot} 号快照`}
-            </StatusBadge>
-          }
-          footer={
-            <div>
-              <div className="h-1.5 w-full rounded-full overflow-hidden bg-[var(--surface-2)]">
-                <div
-                  className="h-full rounded-full transition-all duration-300"
-                  style={{
-                    width: `${poolCredits.unlimited ? 100 : creditRatio}%`,
-                    background:
-                      creditRatio < 10 && !poolCredits.unlimited && poolCredits.total > 0
-                        ? 'var(--err)'
-                        : creditRatio < 25 && !poolCredits.unlimited && poolCredits.total > 0
-                          ? 'var(--warn)'
-                          : 'var(--ok)',
-                  }}
-                />
-              </div>
-              <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--fg-3)]">
-                <span>
-                  {poolCredits.expiring7d > 0
-                    ? `7 日内到期 ${poolCredits.expiring7d.toFixed(0)} 分`
-                    : loggedIn
-                      ? '登录态正常'
-                      : '请先添加并授权账号'}
-                </span>
-                {poolCredits.total > 0 && !poolCredits.unlimited && (
-                  <span className="ds-mono">{creditRatio.toFixed(1)}%</span>
-                )}
-              </div>
-            </div>
-          }
-        />
-
-        <StatCard
-          label={`可用账号（${siteLabel(site)}站）`}
-          valueId="mEnabled"
-          value={healthBreakdown.healthy}
-          sub={`/ ${healthBreakdown.enabled} 启用${healthBreakdown.disabled ? ` · ${healthBreakdown.disabled} 禁用` : ''}`}
-          badge={
-            healthBreakdown.enabled === 0 ? (
-              <StatusBadge tone="neutral">暂无启用</StatusBadge>
-            ) : healthBreakdown.problem > 0 ? (
-              <StatusBadge tone="err">{healthBreakdown.problem} 异常</StatusBadge>
-            ) : healthBreakdown.cooling > 0 ? (
-              <StatusBadge tone="warn">{healthBreakdown.cooling} 冷却</StatusBadge>
-            ) : (
-              <StatusBadge tone="ok">全部健康</StatusBadge>
-            )
-          }
-          footer={
-            <div>
-              <div className="h-1.5 w-full rounded-full overflow-hidden bg-[var(--surface-2)] flex gap-0.5">
-                {healthBreakdown.healthy > 0 && (
-                  <div
-                    style={{
-                      width: `${(healthBreakdown.healthy / totalBarDenom) * 100}%`,
-                      background: 'var(--ok)',
-                    }}
-                  />
-                )}
-                {healthBreakdown.cooling > 0 && (
-                  <div
-                    style={{
-                      width: `${(healthBreakdown.cooling / totalBarDenom) * 100}%`,
-                      background: 'var(--warn)',
-                    }}
-                  />
-                )}
-                {healthBreakdown.problem > 0 && (
-                  <div
-                    style={{
-                      width: `${(healthBreakdown.problem / totalBarDenom) * 100}%`,
-                      background: 'var(--err)',
-                    }}
-                  />
-                )}
-              </div>
-              <div className="mt-2 flex items-center gap-3 text-[11px] text-[var(--fg-3)]">
-                <span className="inline-flex items-center gap-1">
-                  <i className="w-1.5 h-1.5 rounded-full bg-[var(--ok)]" />
-                  正常 {healthBreakdown.healthy}
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <i className="w-1.5 h-1.5 rounded-full bg-[var(--warn)]" />
-                  冷却 {healthBreakdown.cooling}
-                </span>
-                <span className="inline-flex items-center gap-1">
-                  <i className="w-1.5 h-1.5 rounded-full bg-[var(--err)]" />
-                  异常 {healthBreakdown.problem}
-                </span>
-              </div>
-            </div>
-          }
-        />
-
-        <StatCard
-          label="实时并发与限流"
-          valueId="ccInFlight"
-          value={concurrency.globalInFlight}
-          sub="全局在途"
-          badge={
-            <StatusBadge tone={concurrency.rateLimits > 0 ? 'warn' : 'info'}>
-              {concurrency.rateLimits > 0 ? `限流 ${concurrency.rateLimits}` : '平稳'}
-            </StatusBadge>
-          }
-          footer={
-            <div
-              id="concurrencyBar"
-              className="grid grid-cols-2 gap-2 pt-2.5 border-t border-[var(--border)] text-[11px]"
-            >
-              <div>
-                <span className="text-[var(--fg-3)]">1m 峰值</span>
-                <strong id="ccPeak" className="ds-mono text-[var(--fg)] ml-1.5">
-                  {concurrency.peakInFlight}
-                </strong>
-              </div>
-              <div>
-                <span className="text-[var(--fg-3)]">1h 限流</span>
-                <strong
-                  id="ccLimited"
-                  className={`ds-mono ml-1.5 ${
-                    concurrency.rateLimits > 0 ? 'text-[var(--warn)]' : 'text-[var(--fg)]'
-                  }`}
-                >
-                  {concurrency.rateLimits}
-                </strong>
-              </div>
-            </div>
-          }
-        />
-
-        <StatCard
-          label="累计流量与 Tokens"
-          valueId="mTokens"
-          value={formatCompactNumber(totalTokens)}
-          title={`精确总 Tokens：${totalTokens.toLocaleString()}，缓存命中：${cachedTokens.toLocaleString()}`}
-          sub="Tokens"
-          badge={
-            <StatusBadge tone={(stats.failedRequests || 0) > 0 ? 'warn' : 'ok'}>
-              {stats.successRequests || 0} / {stats.failedRequests || 0}
-            </StatusBadge>
-          }
-          footer={
-            <div className="grid grid-cols-2 gap-2 pt-2.5 border-t border-[var(--border)] text-[11px]">
-              <div>
-                <span className="text-[var(--fg-3)]">成功/失败</span>
-                <strong id="mSF" className="ds-mono text-[var(--fg)] ml-1.5">
-                  {stats.successRequests || 0}/{stats.failedRequests || 0}
-                </strong>
-              </div>
-              <div>
-                <span className="text-[var(--fg-3)]">缓存</span>
-                <strong className="ds-mono text-[var(--fg)] ml-1.5">
-                  {formatCompactNumber(cachedTokens)}
-                </strong>
-              </div>
-            </div>
-          }
-        />
-      </div>
-
-      {/* 主次双栏：左侧「需要关注（行内快捷处理）」 + 右侧「波动监测与号池分布」 */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        <Card className="lg:col-span-8 p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <div>
-              <h2 className="ds-heading text-base text-[var(--fg)] m-0 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-[var(--warn)]" />
-                需要关注
-              </h2>
-              <p className="text-xs text-[var(--fg-3)] mt-0.5">
-                汇总当前号池中未登录、Token 过期、冷却、余额告急或最近报错的启用账号，支持直接行内处置。
-              </p>
-            </div>
-            <Button
-              id="btnGoAccounts"
-              variant="ghost"
-              size="xs"
-              onClick={() => onNavigate('tab-pool')}
-            >
-              管理全部账号
-              <ArrowRight className="w-3 h-3" />
-            </Button>
+      {/* 扁平极简指标带（纯细线分割，彻底告别堆叠方块） */}
+      <div className="border-y border-[var(--border)] grid grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 lg:divide-x divide-[var(--border)]">
+        <div className="py-4 pr-4 lg:px-5 lg:first:pl-0">
+          <div className="text-[11px] text-[var(--fg-3)]">Token 消耗（{rangeLabel}）</div>
+          <div className="mt-1.5 flex items-baseline gap-2">
+            <span id="mTokens" className="ds-mono text-[26px] font-medium leading-none text-[var(--fg)]">
+              {formatCompactNumber(displayTokens)}
+            </span>
+            <span className="ds-mono text-xs text-[var(--ok)]">
+              {uSum?.cacheHitRate != null && uSum.cacheHitRate >= 0
+                ? `缓存 ${formatHitRate(uSum.cacheHitRate)}`
+                : `缓存 ${formatCompactNumber(stats.totalCachedTokens || 0)}`}
+            </span>
           </div>
+        </div>
 
-          <div id="attentionList">
-            {!allAccounts.length ? (
-              <EmptyState
-                title="号池为空"
-                description="尚未添加任何 CodeBuddy / WorkBuddy 账号，请前往账号池完成 OAuth 授权或批量导入。"
-                action={
-                  <Button variant="primary" size="sm" onClick={() => onNavigate('tab-pool')}>
-                    前往添加账号
-                  </Button>
-                }
-              />
-            ) : !attentionRows.length ? (
-              <EmptyState
-                title="当前号池一切正常"
-                description={`${siteLabel(site)}站所有已启用账号均处于健康可调度状态，无冷却、过期或余额预警。`}
-              />
+        <div className="py-4 pl-4 lg:px-5">
+          <div className="text-[11px] text-[var(--fg-3)]">请求与成功率</div>
+          <div className="mt-1.5 flex items-baseline gap-2">
+            <span id="mSF" className="ds-mono text-[26px] font-medium leading-none text-[var(--fg)]">
+              {displayRequests.toLocaleString()}
+            </span>
+            <span
+              className={`ds-mono text-xs ${
+                displayFailed > 0 ? 'text-[var(--warn)]' : 'text-[var(--fg-3)]'
+              }`}
+            >
+              {successRate != null
+                ? `${successRate.toFixed(1)}% 成功${displayFailed > 0 ? ` · ${displayFailed} 失败` : ''}`
+                : '暂无失败'}
+            </span>
+          </div>
+        </div>
+
+        <div className="py-4 pr-4 lg:px-5" id="concurrencyBar">
+          <div className="text-[11px] text-[var(--fg-3)]">实时并发与限流</div>
+          <div className="mt-1.5 flex items-baseline gap-2">
+            <span id="ccInFlight" className="ds-mono text-[26px] font-medium leading-none text-[var(--fg)]">
+              {concurrency.globalInFlight}
+            </span>
+            <span className="text-xs text-[var(--fg-3)]">
+              在途 · 峰值 <strong id="ccPeak" className="ds-mono text-[var(--fg-2)] font-medium">{concurrency.peakInFlight}</strong>
+              {concurrency.rateLimits > 0 && (
+                <>
+                  {' · '}
+                  <strong id="ccLimited" className="ds-mono text-[var(--warn)] font-medium">
+                    限流 {concurrency.rateLimits}
+                  </strong>
+                </>
+              )}
+            </span>
+          </div>
+        </div>
+
+        <div className="py-4 pl-4 lg:px-5 lg:last:pr-0">
+          <div className="text-[11px] text-[var(--fg-3)]">
+            活跃号池（{siteLabel(site)}站）
+          </div>
+          <div className="mt-1.5 flex items-baseline justify-between gap-2">
+            <div className="flex items-baseline gap-1.5 min-w-0">
+              <span id="mEnabled" className="ds-mono text-[26px] font-medium leading-none text-[var(--fg)]">
+                {poolSummary.healthy}
+              </span>
+              <span className="ds-mono text-xs text-[var(--fg-3)]">
+                / {poolSummary.enabled} 启用
+              </span>
+            </div>
+            {poolSummary.attention > 0 ? (
+              <button
+                type="button"
+                onClick={onNavigatePoolIssues}
+                className="text-[11px] text-[var(--warn)] hover:underline underline-offset-2 cursor-pointer whitespace-nowrap"
+              >
+                {poolSummary.attention} 需处理 →
+              </button>
             ) : (
-              <div className="divide-y divide-[var(--border)]">
-                {attentionRows.map(({ account, reasons }) => (
-                  <div
-                    key={account.id}
-                    className="py-3.5 first:pt-1 last:pb-1 flex flex-wrap items-center justify-between gap-3"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-medium text-sm text-[var(--fg)]">
-                          {account.label || account.id}
-                        </span>
-                        {reasons.map((r, idx) => (
-                          <StatusBadge key={idx} tone={r.tone} dot={r.tone === 'err' || r.tone === 'warn'}>
-                            {r.text}
-                          </StatusBadge>
-                        ))}
-                      </div>
-                      {account.lastError && (
-                        <p
-                          title={account.lastError}
-                          className="ds-mono text-[11px] text-[var(--fg-3)] mt-1 truncate m-0"
-                        >
-                          {account.lastError}
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {account.tokenExpired && (
-                        <Button
-                          variant="primary"
-                          size="xs"
-                          loading={busyKey === `${account.id}:refresh`}
-                          onClick={() => runQuick(account, 'refresh')}
-                        >
-                          刷新 Token
-                        </Button>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        loading={busyKey === `${account.id}:usage`}
-                        onClick={() => runQuick(account, 'usage')}
-                      >
-                        查余额
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        loading={busyKey === `${account.id}:test`}
-                        onClick={() => runQuick(account, 'test')}
-                      >
-                        测活
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <span id="mCredits" className="ds-mono text-xs text-[var(--fg-3)] truncate">
+                {poolSummary.unlimited
+                  ? '不限量'
+                  : poolSummary.withSnapshot > 0
+                    ? `${formatCompactNumber(Math.round(poolSummary.remaining))} 分`
+                    : '—'}
+              </span>
             )}
           </div>
-        </Card>
+        </div>
+      </div>
 
-        <div className="lg:col-span-4 space-y-4">
-          {/* 波动监测卡片 */}
-          <Card id="watchBar" className="p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="ds-heading text-base text-[var(--fg)] m-0 flex items-center gap-2">
-                <Activity className="w-4 h-4 text-[var(--info)]" />
-                波动监测
-              </h2>
-              {watch?.enabled ? (
-                <StatusBadge id="watchState" tone={watch.ok ? 'ok' : 'err'} dot>
-                  {watch.ok ? '基线正常' : watch.reason || '异常'}
-                </StatusBadge>
+      {/* 视觉主角：全宽大折线统计图 */}
+      <Card id="overviewHeroChart" className="p-5 sm:p-6">
+        <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+          <div>
+            <h2 className="ds-heading text-base text-[var(--fg)] m-0">
+              Token 消耗与缓存命中率趋势
+            </h2>
+          </div>
+          {uSum && (uSum.creditRows || 0) > 0 && (
+            <span className="ds-mono text-[11px] text-[var(--fg-3)]">
+              周期 Credits 累计 <strong className="text-[var(--fg)]">{(uSum.credits || 0).toFixed(4)}</strong>
+            </span>
+          )}
+        </div>
+        <UsageLineChart
+          series={usageData?.series || []}
+          totalRequests={displayRequests}
+          range={range}
+          height={310}
+          emptyAction={
+            <Button variant="ghost" size="xs" onClick={() => onNavigate('tab-client')}>
+              配置客户端接入
+              <ArrowRight className="w-3 h-3" />
+            </Button>
+          }
+        />
+      </Card>
+
+      {/* 底部极简双列纯分割线摘要（无卡片盒墙） */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 pt-1">
+        {/* 左 7 栏：按模型消耗分布 */}
+        <section className="lg:col-span-7 space-y-3">
+          <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
+            <h3 className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--fg-2)] m-0">
+              热门模型消耗（{rangeLabel}）
+            </h3>
+            <button
+              type="button"
+              onClick={() => onNavigate('tab-usage')}
+              className="text-xs text-[var(--fg-2)] hover:text-[var(--fg)] inline-flex items-center gap-1 cursor-pointer transition-colors"
+            >
+              全部请求明细
+              <ArrowRight className="w-3 h-3" />
+            </button>
+          </div>
+
+          {!topModels.length ? (
+            <div className="py-6 text-xs text-[var(--fg-3)]">
+              当前周期暂无按模型统计记录。
+            </div>
+          ) : (
+            <div className="divide-y divide-[var(--border)]">
+              {topModels.map((row) => {
+                const barPct = Math.max(4, Math.round(((row.totalTokens || 0) / maxModelTokens) * 100));
+                const hit = row.cacheHitRate ?? -1;
+                return (
+                  <div key={row.model} className="py-2.5 flex items-center gap-4 text-xs">
+                    <div className="w-40 sm:w-48 ds-mono text-[var(--fg)] truncate shrink-0" title={row.model}>
+                      {row.model}
+                    </div>
+                    <div className="flex-1 h-1.5 rounded-full bg-[var(--surface-2)] overflow-hidden min-w-[60px]">
+                      <div
+                        className="h-full rounded-full bg-[var(--accent)] opacity-60"
+                        style={{ width: `${barPct}%` }}
+                      />
+                    </div>
+                    <div className="ds-mono text-[var(--fg)] w-16 text-right shrink-0">
+                      {formatCompactNumber(row.totalTokens)}
+                    </div>
+                    <div className="ds-mono text-[11px] w-14 text-right shrink-0 text-[var(--fg-3)]">
+                      {hit >= 0 ? (
+                        <span className={hit >= 40 ? 'text-[var(--ok)]' : 'text-[var(--fg-2)]'}>
+                          {formatHitRate(hit)}
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* 右 5 栏：极简运行摘要（纯细线键值行） */}
+        <section className="lg:col-span-5 space-y-3">
+          <div className="flex items-center justify-between border-b border-[var(--border)] pb-2.5">
+            <h3 className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--fg-2)] m-0">
+              运行摘要
+            </h3>
+            <button
+              id="btnGoAccounts"
+              type="button"
+              onClick={() => onNavigate('tab-pool')}
+              className="text-xs text-[var(--fg-2)] hover:text-[var(--fg)] inline-flex items-center gap-1 cursor-pointer transition-colors"
+            >
+              管理账号池
+              <ArrowRight className="w-3 h-3" />
+            </button>
+          </div>
+
+          <div className="divide-y divide-[var(--border)] text-xs">
+            <div className="py-2.5 flex items-center justify-between gap-3">
+              <span className="text-[var(--fg-3)]">双区账号规模</span>
+              <span className="ds-mono text-[var(--fg)]">
+                国内 {domesticCount} · 国际 {globalCount}
+              </span>
+            </div>
+
+            <div className="py-2.5 flex items-center justify-between gap-3">
+              <span className="text-[var(--fg-3)]">号池健康</span>
+              {poolSummary.attention > 0 ? (
+                <button
+                  type="button"
+                  onClick={onNavigatePoolIssues}
+                  className="inline-flex items-center gap-1.5 text-[var(--warn)] font-medium hover:underline underline-offset-2 cursor-pointer"
+                >
+                  {poolSummary.attention} 个账号需关注
+                  <ArrowRight className="w-3 h-3" />
+                </button>
+              ) : poolSummary.enabled === 0 ? (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('tab-pool')}
+                  className="text-[var(--fg-2)] hover:text-[var(--fg)] underline underline-offset-2 cursor-pointer"
+                >
+                  尚未添加账号 · 前往授权
+                </button>
               ) : (
-                <StatusBadge tone="neutral">未启用</StatusBadge>
+                <span className="text-[var(--ok)]">全部启用账号运行正常</span>
               )}
             </div>
 
-            {watch?.enabled ? (
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between py-1.5 border-b border-[var(--border)]">
-                  <span className="text-[var(--fg-2)]">滚动错误率</span>
-                  <span id="watchErr" className="ds-mono font-medium text-[var(--fg)]">
-                    {formatPercent(watch.metrics?.errorRate)}
+            <div id="watchBar" className="py-2.5 flex items-center justify-between gap-3">
+              <span className="text-[var(--fg-3)]">基线波动监测</span>
+              {watch?.enabled ? (
+                <span className="inline-flex items-center gap-2">
+                  <span className="ds-mono text-[var(--fg-2)]">
+                    错率 {formatPercent(watch.metrics?.errorRate)} · P50 {watch.metrics?.latencyP50 || 0}ms
                   </span>
-                </div>
-                <div className="flex items-center justify-between py-1.5 border-b border-[var(--border)]">
-                  <span className="text-[var(--fg-2)]">推理 Token 占比</span>
-                  <span id="watchMiss" className="ds-mono font-medium text-[var(--fg)]">
-                    {(watch.metrics?.reasoningAsked || 0) > 0
-                      ? `${formatPercent(1 - (watch.metrics?.reasoningMissRate || 0))} · ${
-                          (watch.metrics?.reasoningAsked || 0) -
-                          (watch.metrics?.reasoningMissed || 0)
-                        }/${watch.metrics?.reasoningAsked}`
-                      : '无样本'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between py-1.5 border-b border-[var(--border)]">
-                  <span className="text-[var(--fg-2)]">延迟 P50</span>
-                  <span id="watchP50" className="ds-mono font-medium text-[var(--fg)]">
-                    {watch.metrics?.latencyP50 || 0}ms
-                  </span>
-                </div>
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-[var(--fg-2)]">统计样本</span>
-                  <span id="watchSamples" className="ds-mono font-medium text-[var(--fg)]">
-                    {watch.metrics?.samples || 0}
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-[var(--fg-3)] leading-relaxed m-0">
-                波动监测默认关闭。在 <code className="ds-mono text-[var(--fg-2)]">.env</code> 中设置{' '}
-                <code className="ds-mono text-[var(--fg-2)]">CODEBUDDY_PROXY_WATCH=true</code>{' '}
-                即可自动基线监测错误率、推理占比与 P50 耗时，并支持 Webhook / SMTP 告警。
-              </p>
-            )}
-          </Card>
-
-          {/* 站点号池分布总览 */}
-          <Card className="p-5">
-            <h2 className="ds-heading text-base text-[var(--fg)] m-0 mb-3 flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-[var(--fg-2)]" />
-              双区号池分布
-            </h2>
-            <div className="grid grid-cols-2 gap-2.5">
-              <div className="ds-surface-2 p-3">
-                <div className="text-[11px] text-[var(--fg-3)]">国内站账号</div>
-                <div className="ds-mono text-lg font-medium text-[var(--fg)] mt-1">
-                  {status?.accounts?.domesticCount ??
-                    allAccounts.filter((a) => normalizeSite(a.site) === 'domestic').length}
-                </div>
-              </div>
-              <div className="ds-surface-2 p-3">
-                <div className="text-[11px] text-[var(--fg-3)]">国际站账号</div>
-                <div className="ds-mono text-lg font-medium text-[var(--fg)] mt-1">
-                  {status?.accounts?.globalCount ??
-                    allAccounts.filter((a) => normalizeSite(a.site) === 'global').length}
-                </div>
-              </div>
+                  <StatusBadge id="watchState" tone={watch.ok ? 'ok' : 'err'} dot>
+                    {watch.ok ? '正常' : watch.reason || '异常'}
+                  </StatusBadge>
+                </span>
+              ) : (
+                <span
+                  className="text-[var(--fg-3)]"
+                  title="在 .env 设置 CODEBUDDY_PROXY_WATCH=true 开启基线监测"
+                >
+                  未启用
+                </span>
+              )}
             </div>
-            <div className="mt-3 text-[11px] text-[var(--fg-3)] flex items-center justify-between">
-              <span id="mLogin" className="truncate">
-                {loggedIn
-                  ? `已登录 · ${
-                      status?.accounts?.primary?.userNickname ||
-                      status?.accounts?.primary?.userName ||
-                      status?.accounts?.primary?.label ||
-                      '号池就绪'
-                    }`
-                  : '未登录'}
-              </span>
+
+            <div className="py-2.5 flex items-center justify-between gap-3">
+              <span className="text-[var(--fg-3)]">客户端接入</span>
               <button
                 type="button"
                 onClick={() => onNavigate('tab-client')}
-                className="text-[var(--fg)] underline underline-offset-2 cursor-pointer shrink-0 ml-2"
+                className="text-[var(--fg-2)] hover:text-[var(--fg)] inline-flex items-center gap-1 cursor-pointer transition-colors"
               >
-                接入客户端
+                复制 Base URL 与 Key
+                <ArrowRight className="w-3 h-3" />
               </button>
             </div>
-          </Card>
-        </div>
+          </div>
+        </section>
       </div>
 
       {/* 右侧滑出：调度与熔断机制说明（不占首屏） */}
@@ -622,7 +466,7 @@ export function OverviewPage({
             </div>
             <p className="m-0">
               每次请求结束后会按上游返回的实际 <code className="ds-mono">credit</code>{' '}
-              在本地实时扣减余额快照，使选号门槛（Quota Floor）即时生效；点击顶栏「刷新状态」可随时向官网拉取精确最新余额并解除已恢复账号的额度冷却。
+              在本地实时扣减余额快照，使选号门槛（Quota Floor）即时生效；点击顶栏「刷新」可随时向官网拉取精确最新余额并解除已恢复账号的额度冷却。
             </p>
           </div>
           <div className="ds-surface-2 p-4 space-y-2">

@@ -54,8 +54,6 @@ interface AppShellProps {
   switchingProduct: boolean;
   onRefreshStatus: () => void;
   refreshing: boolean;
-  inFlight: number;
-  peakInFlight: number;
   attentionCount: number;
   poolCountLabel: string;
   checkinAutoEnabled: boolean;
@@ -84,8 +82,6 @@ export function AppShell({
   switchingProduct,
   onRefreshStatus,
   refreshing,
-  inFlight,
-  peakInFlight,
   attentionCount,
   poolCountLabel,
   checkinAutoEnabled,
@@ -107,18 +103,12 @@ export function AppShell({
       items: [
         {
           id: 'tab-overview',
-          label: '概览大盘',
+          label: '统计总览',
           icon: LayoutDashboard,
-          badge:
-            attentionCount > 0 ? (
-              <StatusBadge tone="warn" className="!px-1.5 !py-0 !text-[10px]">
-                {attentionCount}
-              </StatusBadge>
-            ) : null,
         },
         {
           id: 'tab-usage',
-          label: '用量与明细',
+          label: '请求明细',
           icon: Activity,
         },
       ],
@@ -128,11 +118,16 @@ export function AppShell({
       items: [
         {
           id: 'tab-pool',
-          label: '账号池与授权',
+          label: '账号池',
           icon: Users,
-          badge: poolCountLabel ? (
-            <span className="ds-mono text-[11px] text-[var(--fg-3)]">{poolCountLabel}</span>
-          ) : null,
+          badge:
+            attentionCount > 0 ? (
+              <StatusBadge tone="warn" className="!px-1.5 !py-0 !text-[10px]">
+                {attentionCount}
+              </StatusBadge>
+            ) : poolCountLabel ? (
+              <span className="ds-mono text-[11px] text-[var(--fg-3)]">{poolCountLabel}</span>
+            ) : null,
         },
         {
           id: 'tab-checkin',
@@ -185,12 +180,12 @@ export function AppShell({
     <div className="flex flex-col justify-between h-full">
       <div>
         {/* 品牌头 */}
-        <div className="h-14 px-4 flex items-center justify-between gap-2.5 border-b border-[var(--border)]">
+        <div className="h-12 px-4 flex items-center justify-between gap-2.5 border-b border-[var(--border)]">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-7 h-7 rounded-[5px] bg-[var(--surface)] border border-[var(--border-strong)] flex items-center justify-center shrink-0 shadow-[var(--shadow)]">
+            <div className="w-6 h-6 rounded-[5px] bg-[var(--surface)] border border-[var(--border-strong)] flex items-center justify-center shrink-0">
               <svg
-                width="16"
-                height="16"
+                width="14"
+                height="14"
                 viewBox="0 0 256 256"
                 fill="none"
                 stroke="currentColor"
@@ -205,12 +200,12 @@ export function AppShell({
               </svg>
             </div>
             <div className="leading-tight min-w-0">
-              <div className="ds-heading text-[15px] text-[var(--fg)] truncate">
+              <div className="ds-heading text-[14px] text-[var(--fg)] truncate">
                 Buddy Proxy
               </div>
               <div
                 id="pillTransport"
-                className="ds-mono text-[10px] tracking-wider uppercase text-[var(--fg-3)] truncate"
+                className="ds-mono text-[9px] tracking-wider uppercase text-[var(--fg-3)] truncate"
               >
                 {transport || 'protocol_direct'}
               </div>
@@ -220,7 +215,7 @@ export function AppShell({
             type="button"
             aria-label="关闭导航菜单"
             onClick={() => setMobileMenuOpen(false)}
-            className="lg:hidden p-1.5 rounded-[var(--radius-sm)] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
+            className="md:hidden p-1.5 rounded-[var(--radius-sm)] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -230,7 +225,7 @@ export function AppShell({
         <nav className="tabs-nav p-3 space-y-5" role="tablist" aria-label="控制台导航">
           {navGroups.map((group) => (
             <div key={group.title}>
-              <div className="px-2.5 mb-1.5 text-[10px] font-medium tracking-[0.14em] uppercase text-[var(--fg-3)]">
+              <div className="px-2.5 mb-1.5 text-[10px] font-medium tracking-[0.12em] uppercase text-[var(--fg-3)]">
                 {group.title}
               </div>
               <div className="space-y-0.5">
@@ -248,7 +243,7 @@ export function AppShell({
                       aria-controls={item.id}
                       onClick={() => handleNavClick(item.id)}
                       className={[
-                        'tab-link w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-[var(--radius-sm)] text-[13px] transition-all duration-150 cursor-pointer text-left',
+                        'tab-link w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-[13px] transition-colors duration-150 cursor-pointer text-left',
                         active
                           ? 'active bg-[var(--surface)] text-[var(--fg)] font-medium border border-[var(--border)] shadow-[var(--shadow)]'
                           : 'text-[var(--fg-2)] border border-transparent hover:bg-[var(--surface-hover)] hover:text-[var(--fg)]',
@@ -256,7 +251,7 @@ export function AppShell({
                     >
                       <span className="flex items-center gap-2.5 min-w-0">
                         <Icon
-                          className={`w-4 h-4 shrink-0 ${active ? 'text-[var(--fg)]' : 'opacity-70'}`}
+                          className={`w-3.5 h-3.5 shrink-0 ${active ? 'text-[var(--fg)]' : 'opacity-65'}`}
                         />
                         <span className="truncate">{item.label}</span>
                       </span>
@@ -271,7 +266,7 @@ export function AppShell({
       </div>
 
       {/* 底部：主题快速切换 + 手动自更新 */}
-      <div className="p-3 border-t border-[var(--border)] space-y-2.5">
+      <div className="p-3 border-t border-[var(--border)] space-y-2">
         <div className="relative">
           <button
             type="button"
@@ -325,36 +320,39 @@ export function AppShell({
   );
 
   return (
-    <div className="min-h-screen flex bg-[var(--canvas)] text-[var(--fg)]">
-      {/* 桌面端固定侧边栏 */}
-      <aside className="hidden lg:block w-[240px] shrink-0 bg-[var(--sidebar)] border-r border-[var(--border)] sticky top-0 h-screen overflow-y-auto">
+    <div className="min-h-screen md:h-screen md:overflow-hidden flex bg-[var(--canvas)] text-[var(--fg)]">
+      {/* 常驻固定左侧边栏（md >= 768px 始终常驻） */}
+      <aside
+        id="appSidebar"
+        className="hidden md:flex md:flex-col w-[220px] shrink-0 bg-[var(--sidebar)] border-r border-[var(--border)] h-screen overflow-y-auto"
+      >
         {sidebarContent}
       </aside>
 
-      {/* 移动端滑出侧边栏 */}
+      {/* 小屏移动端滑出侧边栏（< 768px） */}
       {mobileMenuOpen && (
         <div
-          className="lg:hidden fixed inset-0 z-50 flex bg-black/45 backdrop-blur-[2px]"
+          className="md:hidden fixed inset-0 z-50 flex bg-black/45 backdrop-blur-[2px]"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) setMobileMenuOpen(false);
           }}
         >
-          <aside className="w-[260px] max-w-[82vw] h-full bg-[var(--sidebar)] border-r border-[var(--border)] shadow-[var(--shadow-lg)] overflow-y-auto">
+          <aside className="w-[248px] max-w-[82vw] h-full bg-[var(--sidebar)] border-r border-[var(--border)] shadow-[var(--shadow-lg)] overflow-y-auto">
             {sidebarContent}
           </aside>
         </div>
       )}
 
-      {/* 右侧主区域 */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* 极简全局顶栏 */}
-        <header className="sticky top-0 z-30 min-h-14 px-4 sm:px-6 py-2 bg-[var(--canvas)]/92 backdrop-blur-md border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2.5">
+      {/* 右侧独立滚动主区域 */}
+      <div className="flex-1 flex flex-col min-w-0 md:h-screen md:overflow-hidden">
+        {/* 极简轻量化全局顶栏（48px） */}
+        <header className="sticky top-0 md:static z-30 min-h-12 px-4 sm:px-7 py-1.5 bg-[var(--canvas)]/92 backdrop-blur-md border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
             <button
               type="button"
               aria-label="打开导航菜单"
               onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-1.5 rounded-[var(--radius-sm)] border border-[var(--border-strong)] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
+              className="md:hidden p-1.5 rounded-[var(--radius-sm)] border border-[var(--border-strong)] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
             >
               <Menu className="w-4 h-4" />
             </button>
@@ -371,14 +369,17 @@ export function AppShell({
               </span>
             </span>
 
-            <span className="hidden sm:inline-block h-4 w-px bg-[var(--border-strong)] shrink-0" aria-hidden="true" />
+            <span
+              className="hidden sm:inline-block h-3.5 w-px bg-[var(--border-strong)] shrink-0"
+              aria-hidden="true"
+            />
 
             {/* 全局站点 & 产品快捷切换 */}
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <SegmentedControl<Site>
                 id="poolSiteSeg"
                 ariaLabel="号池区域"
-                size="sm"
+                size="xs"
                 disabled={switchingSite}
                 value={poolSite}
                 onChange={(s) => {
@@ -406,7 +407,7 @@ export function AppShell({
               <SegmentedControl<Product>
                 id="poolProductSeg"
                 ariaLabel="上游产品"
-                size="sm"
+                size="xs"
                 disabled={switchingProduct}
                 value={poolProduct}
                 onChange={(p) => {
@@ -430,42 +431,35 @@ export function AppShell({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="pill hidden xl:inline-flex px-2.5 h-8 rounded-[var(--radius-sm)] bg-[var(--surface-2)] border border-[var(--border)] text-xs text-[var(--fg-2)]">
-              <span className="w-1.5 h-1.5 rounded-full bg-[var(--info)]" />
-              在途 <strong className="ds-mono text-[var(--fg)]">{inFlight}</strong>
-              <span className="text-[var(--fg-3)]">·</span>
-              峰值 <strong className="ds-mono text-[var(--fg)]">{peakInFlight}</strong>
-            </span>
-
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
               aria-label={isDark ? '切换至浅色模式' : '切换至深色模式'}
               title={isDark ? '切换至浅色模式' : '切换至深色模式'}
               onClick={onToggleDark}
-              className="h-8 w-8 inline-flex items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-strong)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] transition cursor-pointer shrink-0"
+              className="h-7 w-7 inline-flex items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border-strong)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] transition cursor-pointer shrink-0"
             >
               {isDark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
             </button>
 
             <Button
               id="btnRefresh"
-              variant="primary"
-              size="sm"
+              variant="ghost"
+              size="xs"
               loading={refreshing}
               onClick={onRefreshStatus}
-              className="h-8"
+              className="h-7"
               title="重新拉取每个号的余额；有恢复证据时解除额度冷却，真实限流保持不变"
             >
-              <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${refreshing ? 'animate-spin' : ''}`} />
-              <span>刷新状态</span>
+              <RefreshCw className={`w-3 h-3 shrink-0 ${refreshing ? 'animate-spin' : ''}`} />
+              <span>刷新</span>
             </Button>
           </div>
         </header>
 
-        {/* 主内容视口 */}
-        <main className="flex-1 px-4 sm:px-6 py-6">
-          <div className="max-w-[1380px] mx-auto">{children}</div>
+        {/* 主内容视口（独立滚动） */}
+        <main className="flex-1 md:overflow-y-auto px-5 sm:px-8 py-6 sm:py-7">
+          <div className="max-w-[1200px] mx-auto">{children}</div>
         </main>
       </div>
     </div>

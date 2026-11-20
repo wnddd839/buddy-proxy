@@ -78,6 +78,8 @@ function ConsoleApp() {
   const [poolInitialModal, setPoolInitialModal] = useState<
     'oauth' | 'import' | 'strategy' | null
   >(initialRoute.poolModal);
+  const [poolInitialFilter, setPoolInitialFilter] = useState<'all' | 'ok' | 'issue' | 'disabled' | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [statusError, setStatusError] = useState('');
@@ -224,6 +226,7 @@ function ConsoleApp() {
         );
         if (seq !== statusSeqRef.current) return;
         applyStatusPayload(data);
+        setRefreshTick((t) => t + 1);
         if (fresh && data.creditsRefreshed) {
           showToast('额度已从上游刷新', 'success');
         }
@@ -343,54 +346,6 @@ function ConsoleApp() {
     }
   };
 
-  // 概览页行内快速处置账号
-  const handleOverviewAccountAction = async (
-    accountId: string,
-    action: 'test' | 'usage' | 'refresh' | 'disable',
-  ) => {
-    try {
-      if (action === 'usage') {
-        await fetchAccountUsage(accountId, false);
-        await refreshStatus(false);
-        return;
-      }
-      if (action === 'test') {
-        const res = await apiRequest<{
-          ok?: boolean;
-          label?: string;
-          latencyMs?: number;
-          model?: string;
-          message?: string;
-        }>(`/direct-admin/api/codebuddy/accounts/${encodeURIComponent(accountId)}/test`, {
-          method: 'POST',
-          body: '{}',
-        });
-        if (res.ok) {
-          showToast(`${res.label || accountId} · ${res.latencyMs || 0}ms · ${res.model || ''}`, 'success');
-        } else {
-          showToast(`探测失败：${res.message || 'unknown'}`, 'error');
-        }
-        return;
-      }
-      if (action === 'refresh') {
-        await apiRequest(
-          `/direct-admin/api/codebuddy/accounts/${encodeURIComponent(accountId)}/refresh-token`,
-          { method: 'POST', body: '{}' },
-        );
-        showToast('Token 刷新成功', 'success');
-      } else if (action === 'disable') {
-        await apiRequest(
-          `/direct-admin/api/codebuddy/accounts/${encodeURIComponent(accountId)}/disable`,
-          { method: 'POST', body: '{}' },
-        );
-        showToast('账号已禁用');
-      }
-      await refreshStatus(false);
-    } catch (e: unknown) {
-      showToast(e instanceof Error ? e.message : String(e), 'error');
-    }
-  };
-
   // 派生全局顶部展示态
   const poolSite = normalizeSite(
     status?.poolSite || status?.config?.poolSite || status?.config?.site || 'global',
@@ -457,8 +412,6 @@ function ConsoleApp() {
         switchingProduct={switchingProduct}
         onRefreshStatus={() => refreshStatus(true)}
         refreshing={refreshing}
-        inFlight={concurrency.globalInFlight}
-        peakInFlight={concurrency.peakInFlight}
         attentionCount={attentionCount}
         poolCountLabel={siteAccountsCount ? `${siteEnabledCount}/${siteAccountsCount}` : ''}
         checkinAutoEnabled={!!checkinConfig?.auto}
@@ -472,12 +425,17 @@ function ConsoleApp() {
       >
         {activeTab === 'tab-overview' && (
           <OverviewPage
+            active={activeTab === 'tab-overview'}
+            refreshTick={refreshTick}
             status={status}
             activeSite={poolSite}
             usageByAccount={usageByAccount}
             concurrency={concurrency}
             onNavigate={(t) => selectTab(t, true)}
-            onAccountAction={handleOverviewAccountAction}
+            onNavigatePoolIssues={() => {
+              setPoolInitialFilter('issue');
+              selectTab('tab-pool', true);
+            }}
           />
         )}
 
@@ -498,8 +456,11 @@ function ConsoleApp() {
               await refreshStatus(false);
             }}
             onNavigate={(t) => selectTab(t, true)}
+            onSwitchSite={handleSwitchSite}
             initialModal={poolInitialModal}
             onClearInitialModal={() => setPoolInitialModal(null)}
+            initialFilter={poolInitialFilter}
+            onClearInitialFilter={() => setPoolInitialFilter(null)}
           />
         )}
 
