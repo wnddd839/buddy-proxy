@@ -245,7 +245,13 @@ func TestPoolSelectSkipsQuotaExhausted(t *testing.T) {
 	}
 }
 
-func TestMarkResultSuccessClearsQuotaBlock(t *testing.T) {
+// 免费模型（credit=0）的成功**不能**清空额度快照。
+//
+// 为什么：免费模型只能证明「这个模型不花钱」，完全不能证明「账号余额恢复了」。
+// 旧的实现不区分 credit，于是免费模型成了清空额度快照的稳定钥匙 ——
+// 而清空会把 QuotaRemaining 变成 nil，既绕过下限判断，
+// 又让 deductQuotaLocked 因为 nil 早退而不再记账。
+func TestMarkResultFreeModelKeepsQuotaBlock(t *testing.T) {
 	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
 	defer pool.Close()
 	zero := 0.0
@@ -264,7 +270,54 @@ func TestMarkResultSuccessClearsQuotaBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	sel.BypassedCooldown = true
+	// credit=0：免费模型
 	if err := pool.MarkResult(sel, true, "", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	store, err := pool.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated accounts.Account
+	for _, item := range store.Accounts {
+		if item.ID == one.ID {
+			updated = item
+			break
+		}
+	}
+	if updated.QuotaRemaining == nil {
+		t.Fatal("免费模型的成功不应清空额度快照（会让账号永久绕过下限且不再记账）")
+	}
+	if *updated.QuotaRemaining != 0 {
+		t.Fatalf("额度应保持 0，实际 %v", *updated.QuotaRemaining)
+	}
+	if !accounts.QuotaBlocked(updated, time.Now().UnixMilli()) {
+		t.Fatal("额度耗尽的账号在免费模型成功之后，仍应被判定为额度阻塞")
+	}
+}
+
+// 真实扣费（credit>0）的成功才说明旧快照过期，可以清空。
+func TestMarkResultPaidSuccessClearsQuotaBlock(t *testing.T) {
+	pool := accounts.NewPool(filepath.Join(t.TempDir(), "accounts.json"))
+	defer pool.Close()
+	zero := 0.0
+	resetAt := time.Now().Add(5 * time.Hour).UnixMilli()
+	one, _, err := pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Label: "one", BearerToken: "token-one", Site: "domestic",
+		QuotaRemaining: &zero,
+		QuotaResetAt:   resetAt,
+		QuotaCheckedAt: time.Now().UnixMilli(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel, err := pool.Select(accounts.SelectOptions{Site: "domestic", AccountID: one.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel.BypassedCooldown = true
+	// credit=1.0：真实扣费成功 ⇒ 上游确实扣了钱还允许继续 ⇒ 旧快照确实过期
+	if err := pool.MarkResult(sel, true, "", 0, 1.0); err != nil {
 		t.Fatal(err)
 	}
 	store, err := pool.Read()
@@ -282,7 +335,7 @@ func TestMarkResultSuccessClearsQuotaBlock(t *testing.T) {
 		t.Fatalf("expected quota block cleared, got remaining=%v resetAt=%d", updated.QuotaRemaining, updated.QuotaResetAt)
 	}
 	if accounts.QuotaBlocked(updated, time.Now().UnixMilli()) {
-		t.Fatal("account should not be quota-blocked after successful request")
+		t.Fatal("account should not be quota-blocked after successful paid request")
 	}
 }
 

@@ -633,6 +633,9 @@ func QuotaBlocked(account Account, nowMillis int64) bool {
 // 低于阈值 = 不再参与选号，即使还没到 0——避免把号打到负数或触发上游风控。
 // 与 QuotaBlocked 同一数据源（缓存的 billing credits）与同一时效约束。
 func QuotaBelowFloor(account Account, nowMillis int64, floor float64) bool {
+	// 额度未知（nil）按设计放行：新导入的号还没探测过，拦下来就永远用不了。
+	// 真正的保护在写入侧 —— 见 MarkResult 里 clearQuotaCache 的 credit>0 条件，
+	// 以及 selectFloor 对 QuotaBlocked 的硬排除。
 	if floor <= 0 || account.QuotaUnlimited || account.QuotaRemaining == nil {
 		return false
 	}
@@ -715,6 +718,11 @@ func (p *Pool) deductQuotaLocked(account *Account, credit float64) {
 	}
 }
 
+// clearQuotaCache 清空额度快照。
+//
+// 只在「真实扣费成功 + 全冷却兜底 + 原本额度阻塞」时触发（见 MarkResult）。
+// 清空后该号会短暂处于「未知」状态并放行，靠下一次 billing 探测重建数字；
+// 这条路径罕见，且已排除免费模型（credit=0 不清空）。
 func clearQuotaCache(account *Account) {
 	account.QuotaRemaining = nil
 	account.QuotaUnlimited = false
@@ -806,7 +814,12 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			continue
 		}
 		// The floor is a hard exclusion, never an all-cooling fallback candidate.
-		if QuotaBelowFloor(account, now, floor) {
+		//
+		// QuotaBlocked 也要算进来：它判的是「上游已明确说余额耗尽、且重置未到」。
+		// 这类号成为「全冷却兜底」候选的唯一后果就是白打一次上游换 429，
+		// 更糟的是它一旦侥幸成功（免费模型）就会触发 clearQuotaCache，
+		// 把「额度耗尽」这个事实抹掉。
+		if QuotaBelowFloor(account, now, floor) || QuotaBlocked(account, now) {
 			continue
 		}
 		if blockedUntil := unavailableUntil(account, now, opts.Model); blockedUntil > now {
@@ -943,7 +956,11 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 			// 全冷却降级打成功且原本是「额度耗尽阻塞」快照时，说明旧快照已过期，清空它；
 			// 普通 upstream 冷却降级恢复时必须保留有效正余额并正常扣减，否则会抹掉积分下限保护。
 			wasQuotaBlocked := QuotaBlocked(p.mem.Accounts[i], now)
-			if selection.BypassedCooldown && wasQuotaBlocked {
+			// credit > 0 是必须的：免费模型（credit=0）打成功只能证明
+			// 「这个模型不花钱」，**不能证明余额恢复了**。只有真实扣费
+			// 成功（说明上游真的扣了钱还允许继续）才说明旧快照过期。
+			// 不加这一条，免费模型就是清空额度快照的稳定钥匙。
+			if selection.BypassedCooldown && wasQuotaBlocked && credit > 0 {
 				clearQuotaCache(&p.mem.Accounts[i])
 			} else {
 				p.deductQuotaLocked(&p.mem.Accounts[i], credit)
