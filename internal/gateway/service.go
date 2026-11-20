@@ -626,6 +626,9 @@ type CompleteResult struct {
 	provider.Result
 	Account   accounts.Summary `json:"account"`
 	AccountID string           `json:"accountId"`
+	// RoutedModel 是实际发给上游的模型名（被模型路由/标题改写改过时才有值）。
+	// 空表示与客户端请求的模型一致。
+	RoutedModel string `json:"routedModel,omitempty"`
 }
 
 func (s *Service) requestSite(opts CompleteOptions) string {
@@ -698,10 +701,9 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	// 宿主改了文案就自动停止识别 —— 失败方向是安全的。
 	if s.ModelRoutes != nil && !opts.FixedAccount && opts.RetryDepth == 0 && opts.RoutedFrom == "" {
 		if store, err := s.ModelRoutes.Read(); err == nil && store.TitleRoute != nil && store.TitleRoute.Enabled {
-			// 目标按请求实际所在站点取：两个站点各配一个，留空的站点不改写。
 			requestSite := config.NormalizeSite(s.requestSite(opts))
-			if target := store.TitleRoute.TargetFor(requestSite); target != "" &&
-				modelroute.IsSessionTitleRequest(opts.Messages) {
+			target := store.TitleRoute.TargetFor(requestSite)
+			if target != "" && modelroute.IsSessionTitleRequest(opts.Messages) {
 				orig := opts.Model
 				opts.Model = target
 				opts.RoutedFrom = orig
@@ -710,7 +712,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				// 留着会让逐模型档位逻辑去收敛一个对目标无意义的档位。
 				opts.ReasoningEffort = ""
 				opts.Reasoning = nil
-				s.Log.Info("session title request routed to lightweight model",
+				s.Log.Warn("session title request routed to lightweight model",
 					"from", orig, "to", target, "site", requestSite)
 			}
 		}
@@ -833,7 +835,14 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		if result.Turn.Delivered {
 			_ = s.Pool.MarkResult(selection, false, err.Error(), 0, 0)
 			s.recordSystemPromptAttempt(opts, account, site, att, err, false)
-			return CompleteResult{Result: result, Account: accounts.SummarizeAccount(account), AccountID: account.ID}, err
+			routed := ""
+			if opts.RoutedFrom != "" {
+				routed = opts.Model
+			}
+			return CompleteResult{
+				Result: result, Account: accounts.SummarizeAccount(account),
+				AccountID: account.ID, RoutedModel: routed,
+			}, err
 		}
 		// system 原样优先（auto / strip 模式）：上游以 11128 拒收时，把 system
 		// 折叠进 <client_instructions> 用**同一账号**重试一次。折叠后不再命中竞品
@@ -947,10 +956,17 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		s.Pins.Remember(pinKey, account.ID)
 	}
 	s.recordSystemPromptAttempt(opts, account, site, att, nil, false)
+	// 实际发给上游的模型：opts.Model 此时已是改写后的值（模型路由 / 标题改写）。
+	// 与客户端请求的模型不同时才有意义，Server 层据此记 routedModel。
+	routed := ""
+	if opts.RoutedFrom != "" {
+		routed = opts.Model
+	}
 	return CompleteResult{
-		Result:    result,
-		Account:   accounts.SummarizeAccount(account),
-		AccountID: account.ID,
+		Result:      result,
+		Account:     accounts.SummarizeAccount(account),
+		AccountID:   account.ID,
+		RoutedModel: routed,
 	}, nil
 }
 
@@ -1577,7 +1593,7 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 	cacheKey := strings.Join([]string{activeSite, product, account.ID, site, baseURL, internet, account.Proxy}, "|")
 	if !fresh {
 		if cached, ok := s.cachedModels(cacheKey); ok {
-			return cached, nil
+			return withLiteModel(cached), nil
 		}
 	}
 
@@ -1612,7 +1628,18 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 	if listed.OK && len(listed.Models) > 0 {
 		s.noteModelEfforts(site, listed)
 	}
-	return listed, err
+	return withLiteModel(listed), err
+}
+
+// withLiteModel 把上游隐藏的 wb-lite 补进编目。
+//
+// 统一收口在 listModelsForSite 的所有出口：缓存命中路径会提前 return，
+// 若只在「真的拉了上游」的分支注入，缓存一热 wb-lite 就消失（实测过）。
+func withLiteModel(listed models.ListResult) models.ListResult {
+	if listed.OK {
+		listed.Models = models.WithLiteModel(listed.Models)
+	}
+	return listed
 }
 
 func (s *Service) cachedModels(key string) (models.ListResult, bool) {

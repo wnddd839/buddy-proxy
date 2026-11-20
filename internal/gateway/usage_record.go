@@ -17,11 +17,15 @@ type ChatRecordInput struct {
 	SessionKey     string
 	SessionLabel   string
 	Model          string
-	Stream         bool
-	Ok             bool
-	Canceled       bool
-	ErrMsg         string
-	Usage          provider.Usage
+	// RoutedModel 是实际发给上游的模型名（被模型路由或标题改写改过时才有值）。
+	// 与 Model 并列而不是覆盖它：前者回答「客户端要了什么」，后者回答
+	// 「真正跑的是哪个」—— 改写是否生效只有并排才看得出来。
+	RoutedModel string
+	Stream      bool
+	Ok          bool
+	Canceled    bool
+	ErrMsg      string
+	Usage       provider.Usage
 	// ReasoningRequested 表示客户端显式要求了推理（reasoning_effort / reasoning / thinking）。
 	// 只有为 true 时，缺失推理 token 才说明上游掉了思考能力。
 	ReasoningRequested bool
@@ -73,6 +77,7 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		SessionKey:                    input.SessionKey,
 		SessionLabel:                  input.SessionLabel,
 		Model:                         input.Model,
+		RoutedModel:                   input.RoutedModel,
 		Stream:                        input.Stream,
 		Ok:                            input.Ok,
 		Error:                         input.ErrMsg,

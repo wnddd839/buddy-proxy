@@ -33,8 +33,15 @@ func (s *Server) recordChatJournal(
 		SessionKey:     opts.SessionKey,
 		SessionLabel:   opts.SessionLabel,
 		Model:          strutil.First(publicModel, opts.Model, "auto"),
-		Stream:         stream,
-		Ok:             ok,
+		// 实际发给上游的模型：与客户端请求的不同时才有意义（标题改写 / 模型路由）。
+		RoutedModel: func() string {
+			if opts.RoutedFrom != "" && opts.Model != "" {
+				return opts.Model
+			}
+			return ""
+		}(),
+		Stream: stream,
+		Ok:     ok,
 		// 成功但没有结果的记录来自客户端取消，仍记账，但不作为完成样本监测。
 		Canceled: ok && result == nil,
 		ErrMsg:   strings.TrimSpace(errMsg),
@@ -51,6 +58,7 @@ func (s *Server) recordChatJournal(
 		input.Trace = result.Trace
 		input.Account = result.Account
 		input.AccountID = result.AccountID
+		input.RoutedModel = result.RoutedModel
 	}
 	// system 形态由 CompleteFromPool 回填到共享指针里；同一行用量明细能显示
 	// keep / fold / fold(降级)，与 06 面板按 ProxyRequestID 互查。

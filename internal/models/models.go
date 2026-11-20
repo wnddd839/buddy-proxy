@@ -103,6 +103,57 @@ func PublicModelID(upstreamID string) string {
 	return cleaned
 }
 
+// 上游的隐藏轻量模型。
+//
+// 它不在 /models 编目里（2026-11-20 实测：国内 37 个、国际 54 个都没有），
+// 但直接调用返回 200，且对标题请求计 0 积分。不补进列表的话，客户端和
+// 管理台都看不到它，只能手输名字。
+const LiteModelID = "wb-lite"
+
+// liteModel 是补进编目的那条常驻记录。
+//
+// 字段刻意保守：不声明 tools / images（未实测），声明 reasoning 为单档
+// high（它接受 reasoning_effort，但标题场景下我们会把该字段删掉）。
+func liteModel() Model {
+	free := true
+	zero := 0.0
+	return Model{
+		ID:                LiteModelID,
+		ModelID:           LiteModelID,
+		UpstreamID:        LiteModelID,
+		Name:              LiteModelID,
+		DisplayName:       "wb-lite（隐藏轻量模型）",
+		Object:            "model",
+		OwnedBy:           "codebuddy",
+		SupportsReasoning: true,
+		Reasoning:         map[string]any{"supportedEfforts": []any{"high"}, "defaultEffort": "high"},
+		Credits:           "x0.00",
+		CreditMultiplier:  &zero,
+		Free:              &free,
+		Description:       "上游隐藏的轻量模型，不在官方编目里，标题类短任务计 0 积分。",
+		MaxInputTokens:    32000,
+		MaxOutputTokens:   4096,
+		Verified:          true,
+		Source:            "builtin",
+	}
+}
+
+// WithLiteModel 把 wb-lite 补进编目（已存在则不动）。
+//
+// 调用点放在编目返回给调用方之前：这样 GET /v1/models、管理台下拉、
+// OpenCode 导出都能看到它，且不影响上游真实编目的其他条目。
+func WithLiteModel(list []Model) []Model {
+	for _, m := range list {
+		if m.ModelID == LiteModelID || m.ID == LiteModelID {
+			return list
+		}
+	}
+	out := make([]Model, 0, len(list)+1)
+	out = append(out, liteModel())
+	out = append(out, list...)
+	return out
+}
+
 func ToAdminModels(rows []map[string]any, source string) []Model {
 	out := make([]Model, 0, len(rows))
 	allVerified := source == "upstream" || source == "v3_config" || source == "console" || source == "probe"

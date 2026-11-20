@@ -40,15 +40,23 @@ type TitleRoute struct {
 // wb-lite at 0 credits for exactly these requests」。
 const LiteModel = "wb-lite"
 
-// TargetFor 返回该站点的目标模型；空串表示这个站点不改写。
+// TargetFor 返回该站点的目标模型。
+//
+// 已启用时，未配置的站点回落到 LiteModel（wb-lite）：这是产品默认值 ——
+// 打开开关就该省钱，而 wb-lite 对标题请求实测计 0 积分。
+// 想彻底不改写就把 Enabled 关掉，而不是「开着但不配目标」。
 func (r *TitleRoute) TargetFor(site string) string {
 	if r == nil || !r.Enabled {
 		return ""
 	}
+	configured := r.Domestic
 	if strings.EqualFold(strings.TrimSpace(site), "global") {
-		return strings.TrimSpace(r.Global)
+		configured = r.Global
 	}
-	return strings.TrimSpace(r.Domestic)
+	if target := strings.TrimSpace(configured); target != "" {
+		return target
+	}
+	return LiteModel
 }
 
 // Normalize 归一站点键（旧配置的 site 字段不再使用，这里只做空白裁剪）。

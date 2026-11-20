@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.20-v0.7.14-title-wblite"
+const UIRevision = "2026.11.20-v0.7.16-lite-routed"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -1095,7 +1095,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
               <span class="title-route-hint" id="titleRouteGlobalHint"></span>
             </div>
           </div>
-          <p class="title-route-note">两个站点各配一个：请求落在哪个站就用哪个目标。<strong>留空 = 沿用请求的模型（不改写）</strong>，这是默认值。想省钱就选免费模型，或选上游的隐藏轻量模型 <code>wb-lite</code>（实测对标题请求计 0 积分，且专为此类短任务设计）。改写时还会删掉 <code>reasoning_effort</code> / <code>reasoning</code> —— 标题生成不需要思考预算。</p>
+          <p class="title-route-note">两个站点各配一个：请求落在哪个站就用哪个目标。<strong>默认 <code>wb-lite</code></strong>（上游隐藏轻量模型，实测对标题请求计 0 积分，且专为此类短任务设计）。想用编目里的免费模型也可以换。改写时会删掉 <code>reasoning_effort</code> / <code>reasoning</code> —— 标题生成不需要思考预算。想完全不改写就关掉上面的开关。</p>
         </div>
         <p class="config-state" id="titleRouteState" role="status" aria-live="polite">—</p>
       </div>
@@ -3476,6 +3476,8 @@ const TITLE_LITE_MODEL = 'wb-lite';
 
 function titleSelectOptions(site, selected){
   const list = titleFreeModels[site] || [];
+  // 「沿用请求模型」仍保留为可选项：想完全不改写可以关掉总开关，
+  // 也可以在这里显式选它（后端会因 Enabled=false 而不改写）。
   let html = '<option value="">沿用请求模型</option>';
   html += '<option value="' + TITLE_LITE_MODEL + '"' +
           (selected === TITLE_LITE_MODEL ? ' selected' : '') + '>' +
@@ -3515,11 +3517,10 @@ function paintTitleRoute(){
   $('titleRouteGlobalHint').textContent = gloList.length
     ? '可选 ' + gloList.length + ' 个免费模型' : '该站点没有免费模型';
 
-  const anyTarget = (cfg.domestic || cfg.global) ? true : false;
   configState('titleRouteState',
     cfg.enabled ? 'saved' : 'idle',
     !cfg.enabled ? '未启用（会话标题按原模型计费）'
-      : anyTarget ? '已启用' : '已启用，两站都沿用请求的模型（不产生改写）');
+      : '已启用：两站标题请求改写到 ' + TITLE_LITE_MODEL + '（0 积分）');
 }
 
 // collectTitleRoute 从界面读回配置。
@@ -3545,8 +3546,13 @@ if ($('titleRouteEnabled')) $('titleRouteEnabled').onchange = function(){
     domestic: cfg.domestic || '',
     global: cfg.global || ''
   };
-  // 默认仍是「沿用请求的模型」。只有用户主动在下拉里选目标才会改写 ——
-  // 打开开关本身不代表要换模型。
+  // 首次启用时把两站默认填成 wb-lite：它与后端 TargetFor 的回落值一致，
+  // 让界面显示的就是实际生效的目标（否则下拉显示「沿用请求模型」，
+  // 后端却按 wb-lite 改写，用户看到的和实际不符）。
+  if (next.enabled) {
+    if (!next.domestic) next.domestic = TITLE_LITE_MODEL;
+    if (!next.global) next.global = TITLE_LITE_MODEL;
+  }
   titleRoute = next;
   paintTitleRoute();
   markTitleDirty();

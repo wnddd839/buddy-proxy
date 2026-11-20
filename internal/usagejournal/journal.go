@@ -28,8 +28,11 @@ type Entry struct {
 	SessionKey   string `json:"sessionKey,omitempty"`
 	SessionLabel string `json:"sessionLabel,omitempty"`
 
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
+	Model string `json:"model"`
+	// RoutedModel 是实际发给上游的模型名（被模型路由/标题改写改过时才有值）。
+	// 与 Model 并列：前者是客户端要的，后者是真正跑的。
+	RoutedModel string `json:"routedModel,omitempty"`
+	Stream      bool   `json:"stream"`
 
 	Ok    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
