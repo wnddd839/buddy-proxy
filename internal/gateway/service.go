@@ -132,7 +132,11 @@ type Service struct {
 	modelsCacheMu sync.Mutex
 	modelsCache   map[string]modelsCacheEntry
 	modelsFlight  modelsFlight
-	Pins          *sessionpin.Table
+	// efforts 是「站点|模型 → 档位画像」的只读快照，由编目刷新时写入。
+	// 请求路径只读它，绝不在请求上触发编目拉取（那会把上游调用塞进热路径）。
+	effortsMu sync.RWMutex
+	efforts   map[string]provider.EffortProfile
+	Pins      *sessionpin.Table
 	// Conversations 让钉住的会话在账号不变时复用上游 X-Conversation-ID。
 	Conversations *sessionpin.ConversationTable
 	Journal       *usagejournal.Journal
@@ -203,6 +207,7 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 	}
 	// 并发观测始终启用：只做计数，成本可忽略。
 	svc.modelsCache = map[string]modelsCacheEntry{}
+	svc.efforts = map[string]provider.EffortProfile{}
 	svc.probeCache = map[string]provider.Reachability{}
 	svc.storeConfig(cfg)
 	return svc
@@ -305,6 +310,13 @@ func (s *Service) SetBehaviorSwitches(next BehaviorSwitches) config.Config {
 }
 
 // SetSystemPromptMode 仅原子更新运行中的 system 提示词策略，不覆写并发修改的其他行为开关。
+// SetReasoningReplayDisabled 切换「历史 thinking 回传」。
+func (s *Service) SetReasoningReplayDisabled(disabled bool) config.Config {
+	return s.updateConfig(func(cfg *config.Config) {
+		cfg.ReasoningReplayDisabled = disabled
+	})
+}
+
 func (s *Service) SetSystemPromptMode(mode string) config.Config {
 	normalized := config.NormalizeSystemPromptMode(mode)
 	return s.updateConfig(func(c *config.Config) {
@@ -494,6 +506,58 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		DeliverToolDeltas:  opts.DeliverToolDeltas,
 		// system 策略：fold 永远折叠；auto/keep/strip 原样透传；已降级过的重试强制折叠。
 		KeepSystem: s.keepSystemFor(opts),
+		// 历史 thinking 回传：默认开（DeepSeek 规范要求带 tools 时回传）。
+		ReasoningReplay: !s.Config().ReasoningReplayDisabled,
+		// 该模型的档位画像（快照里没有时 Known=false，退回全局三档）。
+		EffortProfile: s.effortProfileFor(site, opts.Model),
+	}
+}
+
+// effortProfileFor 从只读快照里取该模型的思考档位画像。
+//
+// 这是一次 map 查找，不发任何请求：请求路径绝不能因为「缓存过期」而
+// 阻塞在编目拉取上。取不到时返回零值（Known=false），调用方退回全局三档。
+func (s *Service) effortProfileFor(site, model string) provider.EffortProfile {
+	if model == "" {
+		return provider.EffortProfile{}
+	}
+	key := config.NormalizeSite(site) + "|" + model
+	s.effortsMu.RLock()
+	defer s.effortsMu.RUnlock()
+	return s.efforts[key]
+}
+
+// noteModelEfforts 把一次成功编目的档位画像写进快照。
+//
+// 同时写 ModelID / ID / UpstreamID 三个键：请求里的模型名可能来自其中任意一个。
+func (s *Service) noteModelEfforts(site string, listed models.ListResult) {
+	if len(listed.Models) == 0 {
+		return
+	}
+	normalizedSite := config.NormalizeSite(site)
+	next := make(map[string]provider.EffortProfile, len(listed.Models)*3)
+	for _, m := range listed.Models {
+		profile := provider.ProfileFromReasoning(m.Reasoning)
+		if !profile.Known {
+			continue
+		}
+		for _, name := range []string{m.ModelID, m.ID, m.UpstreamID} {
+			if name == "" {
+				continue
+			}
+			next[normalizedSite+"|"+name] = profile
+		}
+	}
+	if len(next) == 0 {
+		return
+	}
+	s.effortsMu.Lock()
+	defer s.effortsMu.Unlock()
+	if s.efforts == nil {
+		s.efforts = map[string]provider.EffortProfile{}
+	}
+	for k, v := range next {
+		s.efforts[k] = v
 	}
 }
 
@@ -623,6 +687,26 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				opts.RoutedFrom = orig
 				s.Log.Info("model route applied",
 					"fromSite", from, "match", orig, "toSite", opts.Site, "target", opts.Model)
+			}
+		}
+	}
+	// 会话标题请求改写：dsh 宿主每新建一个会话就发一次标题请求，走当前
+	// 选中的付费模型。把它改写到轻量模型上，每个新会话省一次主模型计费。
+	//
+	// 只改模型名与站点，messages / stream / max_tokens / header 全部不动。
+	// 触发条件是请求体形状（IsSessionTitleRequest，fail-closed），
+	// 宿主改了文案就自动停止识别 —— 失败方向是安全的。
+	if s.ModelRoutes != nil && !opts.FixedAccount && opts.RetryDepth == 0 && opts.RoutedFrom == "" {
+		if store, err := s.ModelRoutes.Read(); err == nil && store.TitleRoute != nil && store.TitleRoute.Enabled {
+			// 目标按请求实际所在站点取：两个站点各配一个，留空的站点不改写。
+			requestSite := config.NormalizeSite(s.requestSite(opts))
+			if target := store.TitleRoute.TargetFor(requestSite); target != "" &&
+				modelroute.IsSessionTitleRequest(opts.Messages) {
+				orig := opts.Model
+				opts.Model = target
+				opts.RoutedFrom = orig
+				s.Log.Info("session title request routed to lightweight model",
+					"from", orig, "to", target, "site", requestSite)
 			}
 		}
 	}
@@ -1515,9 +1599,14 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 		})
 		if out.OK && len(out.Models) > 0 {
 			s.storeModelsCache(cacheKey, out)
+			s.noteModelEfforts(site, out)
 		}
 		return out, nil
 	})
+	// 缓存命中路径也要写一次：进程刚启动时快照为空，而缓存可能已在。
+	if listed.OK && len(listed.Models) > 0 {
+		s.noteModelEfforts(site, listed)
+	}
 	return listed, err
 }
 
@@ -2185,6 +2274,11 @@ func (s *Service) RefreshHTTPFor(account accounts.Account) *http.Client {
 // 只认额度/限流：换号确实有用；其余错误换号只是烧配额。
 func isQuotaExhausted(err error) bool {
 	if err == nil {
+		return false
+	}
+	// 排队类不是「额度耗尽」：换号只会换一个同样排队的账号再排一次。
+	// 交给上面的 429 + Retry-After 路径，让客户端按标准退避。
+	if billing.IsQueueError(err) {
 		return false
 	}
 	if billing.IsQuotaExhaustedError(err) || billing.IsModelRateLimitError(err) {

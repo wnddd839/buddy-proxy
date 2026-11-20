@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
+	"github.com/wnddd839/codebuddy-proxy/internal/billing"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 	"github.com/wnddd839/codebuddy-proxy/internal/strutil"
 )
@@ -58,6 +59,12 @@ func ClassifyUpstream(err error) (typ string, code any) {
 		return "invalid_request_error", 14401
 	case strings.Contains(msg, "11140"), strings.Contains(strings.ToLower(msg), "request illegal"):
 		return "invalid_request_error", 11140
+	// 排队类：请求本身没问题，只是上游还没轮到。单独的 type 让客户端
+	// 能和「限流」区分开（排队该等待，限流该退避或换模型）。
+	case strings.Contains(msg, billing.CodeQueueWaiting),
+		strings.Contains(msg, billing.CodeQueueFull),
+		strings.Contains(msg, billing.CodeQueueLimitHit):
+		return "model_queue", billing.QueueCode(err)
 	default:
 		return "upstream_error", nil
 	}

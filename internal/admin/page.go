@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.18-v0.7.10-effort-canon"
+const UIRevision = "2026.11.20-v0.7.12-title-persite"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -169,6 +169,17 @@ h1{
 .route-priority .em{color:var(--fg)}
 .route-hop{display:inline-block;margin-left:6px;padding:0 6px;border:1px solid var(--fg-40);font-size:var(--fs-xs);letter-spacing:.02em}
 .checkin-detail{margin:12px 0 0;padding:10px 12px;border:1px solid var(--fg-10);font-family:var(--mono);font-size:var(--fs-xs);line-height:1.5;color:var(--fg-80);white-space:pre-wrap}
+/* 会话标题改写：两站点各一个目标 */
+.title-route{margin-top:14px}
+.title-route-head{display:flex;align-items:center;gap:8px;font-size:var(--fs-sm);cursor:pointer}
+.title-route-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px}
+@media(max-width:720px){.title-route-grid{grid-template-columns:1fr}}
+.title-route-cell{display:flex;flex-direction:column;gap:6px}
+.title-route-cell>label{font-size:var(--fs-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--fg-40)}
+.title-route-cell select{width:100%;padding:7px 9px;border:1px solid var(--fg-20);background:transparent;color:var(--fg);font:inherit;font-size:var(--fs-sm)}
+.title-route-cell select:disabled{opacity:.45}
+.title-route-hint{font-size:var(--fs-xs);color:var(--fg-40);min-height:1em}
+.title-route-note{margin:10px 0 0;font-size:var(--fs-xs);line-height:1.55;color:var(--fg-40);max-width:64ch}
 /* 账号导入与出口设置弹窗 */
 .modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(28,28,28,.45)}
 .modal[hidden]{display:none}
@@ -1056,6 +1067,37 @@ button:disabled{opacity:.4;cursor:not-allowed}
         </div>
         <p class="config-state" id="routeSaveState" role="status" aria-live="polite">配置加载中…</p><div class="bound-keys" id="routeRules"></div>
         <p class="checkin-hint" id="routeHint" style="margin-top:10px">左侧选哪个区，右侧模型下拉就只列那个区真实存在的模型（来自上方模型编目）；也可以手输编目里没有的名字。同一「源区 + 源模型」再加一条 = 备用链，本站没号时按顺序串下去。</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-inner">
+        <div class="section-head">
+          <div>
+            <h2>会话标题改写</h2>
+            <p>dsh 宿主每新建一个会话，会额外发一次「生成会话标题」的请求，走当前选中的付费模型。打开这一项后，这类请求会被改写到<strong>免费模型</strong>上，每个新会话省一次主模型计费。<br>识别是 fail-closed 的：只有<strong>一条 user 消息、没有 assistant/tool、且以标题模板开头</strong>才改写；模板改了就自动停止识别，不会误伤正常对话。请求里的 messages、stream、max_tokens、任何 header 都不动，只改模型名。</p>
+          </div>
+        </div>
+        <div class="title-route" id="titleRouteRow">
+          <label class="title-route-head">
+            <input type="checkbox" id="titleRouteEnabled"/>
+            <span>启用标题请求改写</span>
+          </label>
+          <div class="title-route-grid">
+            <div class="title-route-cell">
+              <label for="titleRouteDomestic">国内站</label>
+              <select id="titleRouteDomestic" title="国内站的标题请求改写到这个模型"></select>
+              <span class="title-route-hint" id="titleRouteDomesticHint"></span>
+            </div>
+            <div class="title-route-cell">
+              <label for="titleRouteGlobal">国际站</label>
+              <select id="titleRouteGlobal" title="国际站的标题请求改写到这个模型"></select>
+              <span class="title-route-hint" id="titleRouteGlobalHint"></span>
+            </div>
+          </div>
+          <p class="title-route-note">两个站点各配一个：请求落在哪个站就用哪个目标。<strong>留空 = 该站点不改写</strong>。下拉只列该站点的免费模型。</p>
+        </div>
+        <p class="config-state" id="titleRouteState" role="status" aria-live="polite">—</p>
       </div>
     </section>
 
@@ -3401,6 +3443,9 @@ if ($('btnPoolTest')) $('btnPoolTest').onclick = function(){ runPoolChatTest().c
 let routeRules = [];
 let routeCatalog = {domestic: [], global: []};
 let routeSaved = '', routeSaving = false;
+// 标题改写：与 rules 一起提交，但独立控件（它不参与 routeRules 的脏检查）。
+let titleRoute = null;
+let titleFreeModels = {domestic: [], global: []};
 function routeChanged(){
   if (routeSaving) return;
   const dirty = JSON.stringify(routeRules) !== routeSaved;
@@ -3411,11 +3456,114 @@ async function refreshModelRoutes(){
   const data = await api('/direct-admin/api/model-routes');
   routeRules = (data && data.rules) || [];
   routeCatalog = (data && data.catalog) || {domestic: [], global: []};
+  titleRoute = (data && data.titleRoute) || null;
+  titleFreeModels = (data && data.freeModels) || {domestic: [], global: []};
+  paintTitleRoute();
   routeSaved = JSON.stringify(routeRules);
   $('btnRouteAdd').disabled = false; $('btnRouteSave').disabled = false;
   paintRouteRules();
   routeChanged();
 }
+
+// paintTitleRoute 渲染标题改写控件（两站点各一个目标）。
+//
+// 下拉只列该站点的免费模型（creditMultiplier==0）：这个功能的全部收益
+// 来自「不花积分」，让用户选一个付费模型就失去意义。
+function titleSelectOptions(site, selected){
+  const list = titleFreeModels[site] || [];
+  let html = '<option value="">（不改写）</option>';
+  list.forEach(function(name){
+    html += '<option value="' + escapeHtml(name) + '"' +
+            (name === selected ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
+  });
+  // 已配置的值不在免费列表里时不静默丢掉，而是显式列出来提醒
+  if (selected && list.indexOf(selected) < 0) {
+    html += '<option value="' + escapeHtml(selected) + '" selected>' +
+            escapeHtml(selected) + '（不在免费列表）</option>';
+  }
+  return html;
+}
+
+function paintTitleRoute(){
+  const enabled = $('titleRouteEnabled');
+  if (!enabled) return;
+  const cfg = titleRoute || {};
+  enabled.checked = !!cfg.enabled;
+
+  const domSel = $('titleRouteDomestic');
+  const gloSel = $('titleRouteGlobal');
+  domSel.innerHTML = titleSelectOptions('domestic', cfg.domestic || '');
+  gloSel.innerHTML = titleSelectOptions('global', cfg.global || '');
+  domSel.value = cfg.domestic || '';
+  gloSel.value = cfg.global || '';
+
+  domSel.disabled = !enabled.checked;
+  gloSel.disabled = !enabled.checked;
+
+  const domList = titleFreeModels.domestic || [];
+  const gloList = titleFreeModels.global || [];
+  $('titleRouteDomesticHint').textContent = domList.length
+    ? '可选 ' + domList.length + ' 个免费模型' : '该站点没有免费模型';
+  $('titleRouteGlobalHint').textContent = gloList.length
+    ? '可选 ' + gloList.length + ' 个免费模型' : '该站点没有免费模型';
+
+  const anyTarget = (cfg.domestic || cfg.global) ? true : false;
+  configState('titleRouteState',
+    cfg.enabled ? 'saved' : 'idle',
+    !cfg.enabled ? '未启用（会话标题按原模型计费）'
+      : anyTarget ? '已启用' : '已启用但两个站点都没选目标，保存会被拒绝');
+}
+
+// titleDefaultFor 给出该站点的推荐默认目标：取免费列表里第一个。
+// 国内站只有 hy4flash-free，国际站列表里 deepseek-v4.1-flash 通常排第一。
+function titleDefaultFor(site){
+  const list = titleFreeModels[site] || [];
+  return list.length ? list[0] : '';
+}
+
+// collectTitleRoute 从界面读回配置。
+function collectTitleRoute(){
+  const enabled = $('titleRouteEnabled');
+  if (!enabled || !enabled.checked) return null;
+  const out = {enabled: true};
+  const dom = ($('titleRouteDomestic') || {}).value || '';
+  const glo = ($('titleRouteGlobal') || {}).value || '';
+  if (dom) out.domestic = dom;
+  if (glo) out.global = glo;
+  return out;
+}
+
+function markTitleDirty(){
+  configState('titleRouteState','dirty','有未保存的标题改写配置');
+}
+
+if ($('titleRouteEnabled')) $('titleRouteEnabled').onchange = function(){
+  const cfg = titleRoute || {};
+  const next = {
+    enabled: this.checked,
+    domestic: cfg.domestic || '',
+    global: cfg.global || ''
+  };
+  // 首次启用时自动补上两站的推荐默认值：两个站点的最优选择不同，
+  // 让用户自己填很容易漏掉一个站点。
+  if (next.enabled) {
+    if (!next.domestic) next.domestic = titleDefaultFor('domestic');
+    if (!next.global) next.global = titleDefaultFor('global');
+  }
+  titleRoute = next;
+  paintTitleRoute();
+  markTitleDirty();
+};
+if ($('titleRouteDomestic')) $('titleRouteDomestic').onchange = function(){
+  const cfg = titleRoute || {};
+  titleRoute = {enabled: !!(cfg.enabled), domestic: this.value, global: cfg.global || ''};
+  markTitleDirty();
+};
+if ($('titleRouteGlobal')) $('titleRouteGlobal').onchange = function(){
+  const cfg = titleRoute || {};
+  titleRoute = {enabled: !!(cfg.enabled), domestic: cfg.domestic || '', global: this.value};
+  markTitleDirty();
+};
 
 // routeSiteOptions 生成「国内 / 国际」两个选项。
 function routeSiteOptions(selected){
@@ -3605,7 +3753,8 @@ if ($('btnRouteSave')) $('btnRouteSave').onclick = function(){
   const controls = Array.from(document.querySelectorAll('#routeRules input,#routeRules select,#routeRules button,#btnRouteAdd,#btnRouteSave'));
   controls.forEach(function(el){ el.disabled = true; });
   configState('routeSaveState','saving','正在保存路由规则…');
-  api('/direct-admin/api/model-routes', {method:'POST', body: JSON.stringify({rules: routeRules})})
+  const payload = {rules: routeRules, titleRoute: collectTitleRoute()};
+  api('/direct-admin/api/model-routes', {method:'POST', body: JSON.stringify(payload)})
     .then(function(){ routeSaved = JSON.stringify(routeRules); configState('routeSaveState','saved','路由规则已保存并生效'); showToast('模型路由已保存并生效'); })
     .catch(function(e){ configState('routeSaveState','error','保存失败，草稿已保留：' + e.message); showToast(e.message,'error'); })
     .finally(function(){ routeSaving = false; controls.forEach(function(el){ el.disabled = false; }); });

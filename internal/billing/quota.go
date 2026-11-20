@@ -105,6 +105,12 @@ func IsModelRateLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// 排队类（6020/6021/6022）不算模型限流：模型限流的正确回应是
+	// 「换个账号可能就行」，而排队是因为上游队列/并发上限，换号只会
+	// 换一个同样排队的账号再排一次。见 queue.go。
+	if IsQueueError(err) {
+		return false
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "6004") || strings.Contains(msg, "rate-model") || strings.Contains(msg, "rate model")
 }

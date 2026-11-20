@@ -155,6 +155,67 @@ func scanNormalizeBounded(s string, maxNormBytes int) (string, []int) {
 	return string(norm), offsets
 }
 
+// normalizeOnly 只产出归一化串，不构建偏移映射。
+//
+// 单独提供它的理由见 mapNormIndex：偏移表是 []int，8 字节/归一化字节，
+// 在超长正文上会把内存放大 8 倍。任何只需要「找命中位置」的场景都该用它。
+func normalizeOnly(s string, maxNormBytes int) string {
+	if s == "" || maxNormBytes <= 0 {
+		return ""
+	}
+	initCap := min(len(s), maxNormBytes+8)
+	norm := make([]byte, 0, initCap)
+	for i := 0; i < len(s) && len(norm) < maxNormBytes; {
+		r, size := decodeRune(s[i:])
+		if normalizedSpace(r) {
+			i += size
+			continue
+		}
+		norm = append(norm, toLowerRune(r)...)
+		i += size
+	}
+	return string(norm)
+}
+
+// mapNormIndex 把「归一化串的下标区间 [start, end)」映射回原串的 byte 区间。
+//
+// 只在确认命中后调用：它重新遍历一遍原串，用与 normalizeOnly 完全相同的
+// 归一化规则计数，因此不需要预先保存整张偏移表。无额外分配。
+//
+// 返回 ok=false 表示下标越界（调用方应当跳过这条规则）或归一化串为空。
+func mapNormIndex(s string, maxNormBytes, start, end int) (int, int, bool) {
+	if s == "" || start < 0 || end <= start || maxNormBytes <= 0 {
+		return 0, 0, false
+	}
+	origStart, origEnd := -1, -1
+	normPos := 0
+	for i := 0; i < len(s) && normPos < maxNormBytes; {
+		r, size := decodeRune(s[i:])
+		if normalizedSpace(r) {
+			i += size
+			continue
+		}
+		width := len(toLowerRune(r))
+		if origStart < 0 && normPos >= start {
+			origStart = i
+		}
+		// end 是开区间：归一化位置达到 end 时，本 rune 已经出界
+		if normPos >= end {
+			break
+		}
+		normPos += width
+		if normPos >= end {
+			origEnd = i + size
+			break
+		}
+		i += size
+	}
+	if origStart < 0 || origEnd <= origStart {
+		return 0, 0, false
+	}
+	return origStart, origEnd, true
+}
+
 // stripBlockedIdentity 循环剥离 system 内容开头命中的身份句。
 //
 // 返回剥离后的内容、删除的字节数、是否发生过剥离。
@@ -204,8 +265,10 @@ func stripBlockedContains(s string, rules []string) (string, int, bool) {
 	}
 	original := s
 	for pass := 0; pass < maxContainsStripPasses; pass++ {
-		norm, offsets := scanNormalize(s)
-		if norm == "" || len(offsets) != len(norm) {
+		// 只产出归一化串（1 字节/字符），不再同时建 []int 偏移表（8 字节/字符）。
+		// 偏移只在命中后才用 mapNormIndex 现算 —— 未命中时完全不产生映射开销。
+		norm := normalizeOnly(s, len(s))
+		if norm == "" {
 			break
 		}
 		cut := false
@@ -217,11 +280,8 @@ func stripBlockedContains(s string, rules []string) (string, int, bool) {
 			if idx < 0 {
 				continue
 			}
-			start := offsets[idx]
-			last := offsets[idx+len(rule)-1]
-			_, size := decodeRune(s[last:])
-			end := last + size
-			if start < 0 || end > len(s) || start >= end {
+			start, end, ok := mapNormIndex(s, len(s), idx, idx+len(rule))
+			if !ok {
 				continue
 			}
 			s = s[:start] + s[end:]
@@ -271,19 +331,21 @@ func cutBlockedPrefix(s string, rules []string) (string, bool) {
 	if maxRuleLen == 0 {
 		return s, false
 	}
-	norm, offsets := scanNormalizeBounded(s, maxRuleLen)
-	if norm == "" || len(offsets) != len(norm) {
+	norm := normalizeOnly(s, maxRuleLen)
+	if norm == "" {
 		return s, false
 	}
 	for _, rule := range rules {
 		if rule == "" || !strings.HasPrefix(norm, rule) {
 			continue
 		}
-		// 规则在归一化串里的最后一个 byte 下标 → 原串中该字符的起始偏移
-		last := offsets[len(rule)-1]
-		// 原串中该字符的结束偏移：取下一个 rune 的起点（或串尾）
-		_, size := decodeRune(s[last:])
-		end := last + size
+		// 前缀剥离用不到「起始偏移」，只需要规则末字节在原串中的结束位置。
+		start, prefixEnd, ok := mapNormIndex(s, maxRuleLen, 0, len(rule))
+		_ = start
+		if !ok {
+			continue
+		}
+		end := prefixEnd
 		// 跳过句末标点前允许的句内空白（不跨换行，避免误吞下一段首字符）
 		for end < len(s) {
 			r, sz := decodeRune(s[end:])

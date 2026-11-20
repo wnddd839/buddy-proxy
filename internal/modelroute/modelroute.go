@@ -69,6 +69,9 @@ func (r Rule) OnExhausted() bool { return r.ModeOrDefault() == ModeOnExhausted }
 type Store struct {
 	Version int    `json:"version"`
 	Rules   []Rule `json:"rules"`
+	// TitleRoute 把 dsh 宿主的「会话标题生成」请求改写到轻量模型。
+	// nil 表示未配置（行为与旧版一致：不改写）。
+	TitleRoute *TitleRoute `json:"titleRoute,omitempty"`
 }
 
 // File 是带锁的路由表文件。文件不存在视为空表。
@@ -116,6 +119,9 @@ func (f *File) Write(store Store) error {
 	if err := Validate(store.Rules); err != nil {
 		return err
 	}
+	if err := ValidateTitleRoute(store.TitleRoute); err != nil {
+		return err
+	}
 	store.Version = 1
 	if store.Rules == nil {
 		store.Rules = []Rule{}
@@ -130,6 +136,22 @@ func (f *File) Write(store Store) error {
 		return err
 	}
 	return atomicwrite.Write(f.path, append(raw, '\n'), 0o600)
+}
+
+// ValidateTitleRoute 校验标题改写配置。
+//
+// 规则：启用时至少要配一个站点的目标模型。两个都空着等于「打开了开关
+// 但什么都不做」，那是配置错误，应当拒绝保存而不是静默无效。
+func ValidateTitleRoute(route *TitleRoute) error {
+	if route == nil || !route.Enabled {
+		return nil
+	}
+	domestic := strings.TrimSpace(route.Domestic)
+	global := strings.TrimSpace(route.Global)
+	if domestic == "" && global == "" {
+		return fmt.Errorf("modelroute: 标题请求改写已启用，但两个站点都没有配目标模型")
+	}
+	return nil
 }
 
 // Validate 校验规则集：源站点/目标站点必须合法、match 非空、target 非空，

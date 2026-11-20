@@ -1031,20 +1031,40 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 				catalog[site] = names
 			}
 		}
+		// 标题改写可选的「免费模型」：creditMultiplier==0 的那些。
+		// 只列免费模型是刻意的：这个功能的全部收益来自「不花积分」，
+		// 选一个付费模型就失去意义。
+		freeModels := map[string][]string{}
+		for _, site := range []string{"domestic", "global"} {
+			if listed, err := s.Svc.ListModelsForSite(r.Context(), site, false); err == nil {
+				names := make([]string, 0, 4)
+				for _, m := range listed.Models {
+					if m.CreditMultiplier != nil && *m.CreditMultiplier == 0 {
+						names = append(names, m.ModelID)
+					}
+				}
+				freeModels[site] = names
+			}
+		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
-			"ok": true, "rules": store.Rules, "path": s.ModelRoutes.Path(), "catalog": catalog,
+			"ok": true, "rules": store.Rules, "path": s.ModelRoutes.Path(),
+			"catalog": catalog, "titleRoute": store.TitleRoute, "freeModels": freeModels,
 		})
 		return
 	case path == "/direct-admin/api/model-routes" && r.Method == http.MethodPost:
 		var body struct {
-			Rules []modelroute.Rule `json:"rules"`
+			Rules      []modelroute.Rule      `json:"rules"`
+			TitleRoute *modelroute.TitleRoute `json:"titleRoute,omitempty"`
 		}
 		if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
 			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		before, _ := s.ModelRoutes.Read()
-		if err := s.ModelRoutes.Write(modelroute.Store{Rules: body.Rules}); err != nil {
+		if err := s.ModelRoutes.Write(modelroute.Store{
+			Rules:      body.Rules,
+			TitleRoute: body.TitleRoute,
+		}); err != nil {
 			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}

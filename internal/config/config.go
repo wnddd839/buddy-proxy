@@ -125,6 +125,10 @@ type Config struct {
 	// 零值 = 连 assistant 一起剥。assistant 也是上游 11128 的扫描面：
 	// 历史里带指纹会让整段会话永久 502，且折叠 system 救不了。
 	SystemStripAssistantDisabled bool
+	// ReasoningReplayDisabled 关掉「历史 thinking 回传」（跳过式）。
+	// 零值 = 回传。DeepSeek 规范要求带 tools 时回传 reasoning_content，
+	// LiteLLM / OpenRouter / vLLM 也都回传；置 true 才退回旧的「一律删除」。
+	ReasoningReplayDisabled bool
 	// QuotaFloorCredits 是账号积分低于该值时不再参与选号（0 = 不启用）。
 	// 数据源是缓存的 billing credits（QuotaRemaining），与配额耗尽同一口径。
 	QuotaFloorCredits float64
@@ -171,6 +175,7 @@ func Load() Config {
 		CheckinRetryMax:            envInt("CODEBUDDY_PROXY_CHECKIN_RETRY_MAX", "", DefaultCheckinRetryMax),
 		QuotaFloorCredits:          envFloat("CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS", 0),
 		SystemPromptMode:           NormalizeSystemPromptMode(firstEnv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE")),
+		ReasoningReplayDisabled:    envBool("CODEBUDDY_PROXY_REASONING_REPLAY_OFF", "", false),
 		// 两个都是「跳过式」开关：只有显式写 0/false 才关闭剥离。
 		// 不配置 = 开启，与 v0.7.7 行为一致。
 		SystemStripDisabled:          envBool("CODEBUDDY_PROXY_SYSTEM_STRIP_OFF", "", false),

@@ -165,6 +165,12 @@ type ChatOptions struct {
 	// Strip 非 nil 且 Enabled 时，对 system 做上游 11128 身份句剥离。
 	// 只在 KeepSystem=true 时生效；fold 模式本就改写 system，无需剥离。
 	Strip *StripConfig
+	// ReasoningReplay 为 true 时把历史 assistant 消息的 reasoning_content
+	// 原样回传（DeepSeek 规范：带 tools 时必须回传，否则 400）。
+	ReasoningReplay bool
+	// EffortProfile 是该模型声明的思考档位（来自 /models 的 reasoning 字段）。
+	// Known=false 时档位收敛退回全局三档逻辑，与旧行为一致。
+	EffortProfile EffortProfile
 	// StripReport 是剥离结果的回填指针（可为 nil）。成功/失败路径都会写入，
 	// 供网关记事件与面板展示「已剥离」。
 	StripReport *StripReport
@@ -602,14 +608,23 @@ func ApplyReasoningFields(body map[string]any, opts ChatOptions) {
 			}
 		}
 	}
-	// 收敛到上游真实档位（low/high/max）。
+	// 收敛到该模型真实支持的档位。
 	//
 	// 必须收敛而不是原样透传：上游对未知值是静默接受的，但结果是完全不思考
 	// ——实测 bogus-xyz 连续 3 次 reasoning_tokens=0 且正文 0 字，同期 max 是 6172。
 	// 也就是说一个拼错的档位能把思考悄悄关掉，且没有任何报错可循。
 	// 原始档位仍会经 usage journal 落盘，事后能查到「谁传了什么」。
-	if wire, _ := canonicalEffort(effort); wire != "" {
-		body["reasoning_effort"] = wire
+	//
+	// 有该模型的档位画像时按画像收敛（每模型档位表不同：glm-5.2 只有
+	// high/xhigh，deepseek 有 low/high/max）；没有画像时退回全局三档。
+	//
+	// off 拒绝表：部分模型对 reasoning_effort:"off" 返回 400（编目却声明
+	// canDisableThinking:true）。命中时整个字段不发 —— 等价于「客户端没指定」，
+	// 而「发一个被拒的 off」会让该模型的每个请求都挂。
+	if wire, _ := canonicalEffortForProfile(effort, opts.EffortProfile); wire != "" {
+		if !shouldDropDisableEffort(opts.Model, wire) {
+			body["reasoning_effort"] = wire
+		}
 	}
 	if opts.Thinking != nil {
 		body["thinking"] = opts.Thinking
@@ -784,6 +799,24 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 // 不会被这里丢弃 —— 实测上游接受空 system，且保留它可避免 global 站补
 // canonical 的兜底注入。
 func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, strip *StripConfig, report *StripReport) []map[string]any {
+	return EnsureUpstreamMessagesWithReplay(messages, keepSystem, strip, report, true)
+}
+
+// EnsureUpstreamMessagesWithReplay 同上，但可以显式控制是否回传历史 thinking。
+//
+// reasoningReplay 为 true 时，assistant 消息上的 reasoning_content 原样带上。
+//
+// 为什么默认必须回传（DeepSeek Thinking Mode 规范原文）：
+//   - 请求带 tools：所有历史轮次的 reasoning_content 必须回传，否则 API 返回 400；
+//   - 请求不带 tools：不必回传，传了也会被忽略。
+//
+// 我们是工具调用密集的网关（单请求常见 200+ 条 message、13+ 个 tool），
+// 此前一律删掉这个字段。实测 CodeBuddy 上游没有因此报 400，但那是它的
+// 宽松实现，不是规范 —— 一旦收紧就会全线失败，所以按规范做。
+//
+// 只透传 reasoning_content：OpenRouter 的 reasoning / reasoning_details
+// 是不同形态的结构化字段，混进来会把命名空间搞乱。
+func EnsureUpstreamMessagesWithReplay(messages []map[string]any, keepSystem bool, strip *StripConfig, report *StripReport, reasoningReplay bool) []map[string]any {
 	var (
 		instructions []string
 		rest         []map[string]any
@@ -816,6 +849,17 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, stri
 		if role == "assistant" && strip != nil && strip.Enabled && !strip.SkipAssistant {
 			if stripped, changed := stripContent(item["content"], strip, report, false); changed {
 				item["content"] = stripped
+			}
+		}
+		// 历史 thinking 原样回传（见函数开头关于 DeepSeek 规范的说明）。
+		//
+		// 位置在剥离之后：thinking 不在上游 11128 的扫描面上（实弹只扫
+		// system 与 assistant 正文），所以它既不参与剥离，也不该被剥离影响。
+		if reasoningReplay && role == "assistant" {
+			if thinking, ok := message["reasoning_content"]; ok {
+				if text, ok := thinking.(string); ok && text != "" {
+					item["reasoning_content"] = text
+				}
 			}
 		}
 		hasToolCalls := len(asAnySlice(item["tool_calls"])) > 0
@@ -957,7 +1001,7 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	}
 	// CodeBuddy protocol_direct 拒绝非流式 chat（11101）。始终上游流式；
 	// 需要 JSON 的调用方仍通过 readSSE 聚合成 Turn。
-	messages := EnsureUpstreamMessagesWith(opts.Messages, opts.KeepSystem, opts.Strip, opts.StripReport)
+	messages := EnsureUpstreamMessagesWithReplay(opts.Messages, opts.KeepSystem, opts.Strip, opts.StripReport, opts.ReasoningReplay)
 	// global 要求首条必须是 system；显式 domestic 保持既有 payload 不变。
 	// 空 site 按 global 处理（config.NormalizeSite("") 默认归 global）。
 	if config.NormalizeSite(opts.Site) == "global" && len(messages) > 0 &&
