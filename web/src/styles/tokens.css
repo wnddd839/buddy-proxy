@@ -1,0 +1,304 @@
+@import "tailwindcss";
+
+/* ============================================================================
+   Buddy Proxy Design System Tokens
+   4 themes = 2 aesthetic families (Atelier / Swiss) × 2 modes (Light / Dark)
+   100% local system font stack (zero Web Font CDN requests).
+   ============================================================================ */
+
+:root {
+  --font-serif: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino,
+    "Songti SC", "Noto Serif SC", serif;
+  --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* 1. Atelier Light — 温润纸刊（默认主视觉） */
+:root,
+[data-theme="atelier-light"] {
+  --canvas: #f5f2eb;
+  --sidebar: #efece3;
+  --surface: #fcfbf8;
+  --surface-2: #f3efe6;
+  --surface-hover: #eae5d9;
+  --border: rgba(32, 28, 24, 0.1);
+  --border-strong: rgba(32, 28, 24, 0.22);
+  --fg: #1d1a17;
+  --fg-2: #575049;
+  --fg-3: #8c8378;
+  --accent: #1d1a17;
+  --accent-fg: #fcfbf8;
+  --accent-soft: rgba(29, 26, 23, 0.08);
+  --ok: #1e7a56;
+  --ok-bg: rgba(30, 122, 86, 0.1);
+  --warn: #b86814;
+  --warn-bg: rgba(184, 104, 20, 0.11);
+  --err: #b83a3a;
+  --err-bg: rgba(184, 58, 58, 0.1);
+  --info: #2c5b8a;
+  --info-bg: rgba(44, 91, 138, 0.1);
+  --radius: 6px;
+  --radius-sm: 4px;
+  --shadow: 0 1px 2px rgba(32, 28, 24, 0.04);
+  --shadow-lg: 0 16px 40px rgba(32, 28, 24, 0.14);
+  --seg-track: #e7e2d6;
+  --seg-active: #fcfbf8;
+  --seg-active-border: rgba(32, 28, 24, 0.14);
+  --seg-shadow: 0 1px 3px rgba(32, 28, 24, 0.1), 0 1px 1px rgba(32, 28, 24, 0.05);
+  --heading-font: var(--font-serif);
+  --heading-weight: 400;
+  color-scheme: light;
+}
+
+/* 2. Atelier Dark — 暗墨工坊 */
+[data-theme="atelier-dark"] {
+  --canvas: #141311;
+  --sidebar: #191815;
+  --surface: #1e1d1a;
+  --surface-2: #262420;
+  --surface-hover: #2e2b26;
+  --border: rgba(242, 236, 225, 0.09);
+  --border-strong: rgba(242, 236, 225, 0.2);
+  --fg: #efece5;
+  --fg-2: #aba396;
+  --fg-3: #756e64;
+  --accent: #eae3d5;
+  --accent-fg: #161513;
+  --accent-soft: rgba(234, 227, 213, 0.1);
+  --ok: #4dc492;
+  --ok-bg: rgba(77, 196, 146, 0.14);
+  --warn: #e8a64c;
+  --warn-bg: rgba(232, 166, 76, 0.14);
+  --err: #e66c6c;
+  --err-bg: rgba(230, 108, 108, 0.14);
+  --info: #6ea8de;
+  --info-bg: rgba(110, 168, 222, 0.14);
+  --radius: 6px;
+  --radius-sm: 4px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.55);
+  --seg-track: #100f0d;
+  --seg-active: #2c2924;
+  --seg-active-border: rgba(242, 236, 225, 0.16);
+  --seg-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --heading-font: var(--font-serif);
+  --heading-weight: 400;
+  color-scheme: dark;
+}
+
+/* 3. Swiss Light — 精密冷白 */
+[data-theme="swiss-light"] {
+  --canvas: #f7f8fa;
+  --sidebar: #f1f3f6;
+  --surface: #ffffff;
+  --surface-2: #f4f6f9;
+  --surface-hover: #ebeef4;
+  --border: rgba(15, 23, 42, 0.09);
+  --border-strong: rgba(15, 23, 42, 0.18);
+  --fg: #0f172a;
+  --fg-2: #475569;
+  --fg-3: #8391a5;
+  --accent: #3b5bdb;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(59, 91, 219, 0.1);
+  --ok: #12805c;
+  --ok-bg: rgba(18, 128, 92, 0.1);
+  --warn: #c27803;
+  --warn-bg: rgba(194, 120, 3, 0.11);
+  --err: #d13438;
+  --err-bg: rgba(209, 52, 56, 0.1);
+  --info: #3b5bdb;
+  --info-bg: rgba(59, 91, 219, 0.1);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.02);
+  --shadow-lg: 0 18px 44px rgba(15, 23, 42, 0.14);
+  --seg-track: #e8ecf2;
+  --seg-active: #ffffff;
+  --seg-active-border: rgba(15, 23, 42, 0.12);
+  --seg-shadow: 0 1px 3px rgba(15, 23, 42, 0.09), 0 1px 1px rgba(15, 23, 42, 0.04);
+  --heading-font: var(--font-sans);
+  --heading-weight: 600;
+  color-scheme: light;
+}
+
+/* 4. Swiss Dark — 深邃黑曜 */
+[data-theme="swiss-dark"] {
+  --canvas: #0b0d12;
+  --sidebar: #0f1219;
+  --surface: #141821;
+  --surface-2: #1b202c;
+  --surface-hover: #232a39;
+  --border: rgba(226, 232, 240, 0.09);
+  --border-strong: rgba(226, 232, 240, 0.18);
+  --fg: #f1f5f9;
+  --fg-2: #94a3b8;
+  --fg-3: #64748b;
+  --accent: #6c8cff;
+  --accent-fg: #090c14;
+  --accent-soft: rgba(108, 140, 255, 0.14);
+  --ok: #34d399;
+  --ok-bg: rgba(52, 211, 153, 0.13);
+  --warn: #fbbf24;
+  --warn-bg: rgba(251, 191, 36, 0.14);
+  --err: #f87171;
+  --err-bg: rgba(248, 113, 113, 0.14);
+  --info: #6c8cff;
+  --info-bg: rgba(108, 140, 255, 0.14);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.55);
+  --seg-track: #080a0f;
+  --seg-active: #1e2433;
+  --seg-active-border: rgba(226, 232, 240, 0.15);
+  --seg-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --heading-font: var(--font-sans);
+  --heading-weight: 600;
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background-color: var(--canvas);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+@layer components {
+  .ds-heading {
+    font-family: var(--heading-font);
+    font-weight: var(--heading-weight);
+    letter-spacing: -0.02em;
+  }
+
+  .ds-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ds-tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ds-surface {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  .ds-surface-2 {
+    background-color: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .ds-input {
+    background-color: var(--surface);
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    transition: border-color 150ms ease, box-shadow 150ms ease;
+  }
+  .ds-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  .ds-input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .ds-select {
+    background-color: var(--surface);
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    transition: border-color 150ms ease;
+  }
+  .ds-select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .ds-select:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  /* Status pills — non-wrapping invariant */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}
+
+@keyframes dsFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ds-page-enter {
+  animation: dsFadeIn 170ms ease-out;
+}
+
+@keyframes dsPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(30, 122, 86, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(30, 122, 86, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(30, 122, 86, 0);
+  }
+}
+.ds-pulse-ok {
+  animation: dsPulse 2.4s ease-out infinite;
+}
+
+/* System Prompt 11128 拦截与重放关联行 */
+tr.sp-replay-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+tr.sp-blocked-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--err);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

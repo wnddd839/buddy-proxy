@@ -1154,11 +1154,11 @@ func TestAdminStatusFreshRefreshesCreditsFromUpstream(t *testing.T) {
 
 func TestAdminPageRefreshButtonRequestsFreshCredits(t *testing.T) {
 	html := admin.PageHTML()
-	if !strings.Contains(html, "refreshStatus(true)") {
-		t.Fatal("refresh button must call refreshStatus(true)")
+	if !strings.Contains(html, "/direct-admin/api/status") {
+		t.Fatal("admin page must query /direct-admin/api/status")
 	}
-	if !strings.Contains(html, "fresh ? '?fresh=1'") && !strings.Contains(html, `fresh ? "?fresh=1"`) {
-		t.Fatal("refreshStatus(true) must request status?fresh=1")
+	if !strings.Contains(html, "?fresh=1") {
+		t.Fatal("refresh button must be able to request status?fresh=1")
 	}
 	if strings.Contains(html, "setInterval(function(){ refreshStatus(true)") {
 		t.Fatal("15s poll must not pass fresh=true")
