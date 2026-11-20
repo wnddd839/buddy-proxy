@@ -2,7 +2,7 @@ import { useId, useMemo, useState } from 'react';
 import type { UsageChartPoint } from '@/types/api';
 import { formatCompactNumber, formatHitRate } from '@/lib/format';
 
-export type UsageChartRange = 'day' | 'week' | 'month';
+export type UsageChartRange = 'day' | 'week' | 'month' | 'all';
 type ChartSeriesMode = 'both' | 'tokens' | 'cache';
 
 interface UsageLineChartProps {
@@ -70,6 +70,7 @@ const EMPTY_AXIS_LABELS: Record<UsageChartRange, string[]> = {
   day: ['00:00', '06:00', '12:00', '18:00', '24:00'],
   week: ['6 天前', '4 天前', '2 天前', '昨日', '今日'],
   month: ['30 天前', '21 天前', '14 天前', '7 天前', '今日'],
+  all: ['最早', '', '', '', '今日'],
 };
 
 export function UsageLineChart({

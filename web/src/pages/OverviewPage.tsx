@@ -145,7 +145,8 @@ export function OverviewPage({
     status?.accounts?.globalCount ??
     allAccounts.filter((a) => normalizeSite(a.site) === 'global').length;
 
-  const rangeLabel = range === 'day' ? '今日' : range === 'week' ? '近 7 日' : '近 30 日';
+  const rangeLabel =
+    range === 'day' ? '今日' : range === 'week' ? '近 7 日' : range === 'month' ? '近 30 日' : '全部历史';
 
   return (
     <div id="tab-overview" className="ds-page-enter space-y-6">
@@ -164,6 +165,7 @@ export function OverviewPage({
                 { value: 'day', label: '今日' },
                 { value: 'week', label: '7 日' },
                 { value: 'month', label: '30 日' },
+                { value: 'all', label: '全部' },
               ]}
             />
             <Button variant="ghost" size="xs" onClick={() => setDiagOpen(true)}>

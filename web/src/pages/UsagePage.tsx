@@ -113,6 +113,7 @@ export function UsagePage({ active }: UsagePageProps) {
             { value: 'day', label: '今日', dataAttrs: { 'data-range': 'day' } },
             { value: 'week', label: '7 日', dataAttrs: { 'data-range': 'week' } },
             { value: 'month', label: '30 日', dataAttrs: { 'data-range': 'month' } },
+            { value: 'all', label: '全部', dataAttrs: { 'data-range': 'all' } },
           ]}
         />
 

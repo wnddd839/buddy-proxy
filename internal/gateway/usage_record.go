@@ -114,7 +114,7 @@ func (s *Service) UsageQuery(q usagejournal.Query) usagejournal.View {
 		return usagejournal.View{Summary: usagejournal.Summary{Range: q.Range}, Limit: q.Limit, Offset: q.Offset}
 	}
 	switch strings.ToLower(strings.TrimSpace(q.Range)) {
-	case "week", "month":
+	case "week", "month", "all":
 		return s.Journal.Query(q)
 	default:
 		q.Range = "day"
