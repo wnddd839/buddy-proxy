@@ -705,6 +705,11 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				orig := opts.Model
 				opts.Model = target
 				opts.RoutedFrom = orig
+				// 标题生成不需要思考预算，而且轻量模型不接受这些字段
+				// （竞品 rewriteSessionTitleModel 同样删掉这两项）。
+				// 留着会让逐模型档位逻辑去收敛一个对目标无意义的档位。
+				opts.ReasoningEffort = ""
+				opts.Reasoning = nil
 				s.Log.Info("session title request routed to lightweight model",
 					"from", orig, "to", target, "site", requestSite)
 			}

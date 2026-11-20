@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.20-v0.7.13-title-keep-request"
+const UIRevision = "2026.11.20-v0.7.14-title-wblite"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -1095,7 +1095,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
               <span class="title-route-hint" id="titleRouteGlobalHint"></span>
             </div>
           </div>
-          <p class="title-route-note">两个站点各配一个：请求落在哪个站就用哪个目标。<strong>留空 = 沿用请求的模型（不改写）</strong>，这是默认值。想省钱就在该站点选一个免费模型。</p>
+          <p class="title-route-note">两个站点各配一个：请求落在哪个站就用哪个目标。<strong>留空 = 沿用请求的模型（不改写）</strong>，这是默认值。想省钱就选免费模型，或选上游的隐藏轻量模型 <code>wb-lite</code>（实测对标题请求计 0 积分，且专为此类短任务设计）。改写时还会删掉 <code>reasoning_effort</code> / <code>reasoning</code> —— 标题生成不需要思考预算。</p>
         </div>
         <p class="config-state" id="titleRouteState" role="status" aria-live="polite">—</p>
       </div>
@@ -3469,15 +3469,23 @@ async function refreshModelRoutes(){
 //
 // 下拉只列该站点的免费模型（creditMultiplier==0）：这个功能的全部收益
 // 来自「不花积分」，让用户选一个付费模型就失去意义。
+// WBLITE 是上游的隐藏轻量模型：不在 /models 编目里，但可直接调用且对
+// 标题请求计 0 积分（2026-11-20 实测）。它不出现在「免费模型」列表里，
+// 所以要在这里显式置顶。
+const TITLE_LITE_MODEL = 'wb-lite';
+
 function titleSelectOptions(site, selected){
   const list = titleFreeModels[site] || [];
   let html = '<option value="">沿用请求模型</option>';
+  html += '<option value="' + TITLE_LITE_MODEL + '"' +
+          (selected === TITLE_LITE_MODEL ? ' selected' : '') + '>' +
+          TITLE_LITE_MODEL + '（隐藏轻量模型 · 0 积分）</option>';
   list.forEach(function(name){
     html += '<option value="' + escapeHtml(name) + '"' +
             (name === selected ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
   });
-  // 已配置的值不在免费列表里时不静默丢掉，而是显式列出来提醒
-  if (selected && list.indexOf(selected) < 0) {
+  // 已配置的值不在可选列表里时不静默丢掉，而是显式列出来提醒
+  if (selected && selected !== TITLE_LITE_MODEL && list.indexOf(selected) < 0) {
     html += '<option value="' + escapeHtml(selected) + '" selected>' +
             escapeHtml(selected) + '（不在免费列表）</option>';
   }
@@ -3537,8 +3545,8 @@ if ($('titleRouteEnabled')) $('titleRouteEnabled').onchange = function(){
     domestic: cfg.domestic || '',
     global: cfg.global || ''
   };
-  // 不做自动填充：默认就是「沿用请求的模型」。
-  // 自动填免费模型等于一打开开关就悄悄换了模型，用户并没有要求改写。
+  // 默认仍是「沿用请求的模型」。只有用户主动在下拉里选目标才会改写 ——
+  // 打开开关本身不代表要换模型。
   titleRoute = next;
   paintTitleRoute();
   markTitleDirty();

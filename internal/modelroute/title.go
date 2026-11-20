@@ -32,6 +32,14 @@ type TitleRoute struct {
 	Global   string `json:"global,omitempty"`
 }
 
+// LiteModel 是上游的隐藏轻量模型：不在 /models 编目里，但可直接调用，
+// 且对标题请求计 0 积分（2026-11-20 线上实测：credit=0，能正常产出标题）。
+//
+// 竞品 dsh-connect-workbuddy 的 rewriteSessionTitleModel 也用它作为默认目标
+// （src/upstream.ts:3928），注释写明「reporter measured the upstream's hidden
+// wb-lite at 0 credits for exactly these requests」。
+const LiteModel = "wb-lite"
+
 // TargetFor 返回该站点的目标模型；空串表示这个站点不改写。
 func (r *TitleRoute) TargetFor(site string) string {
 	if r == nil || !r.Enabled {
