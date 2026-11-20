@@ -140,16 +140,12 @@ func (f *File) Write(store Store) error {
 
 // ValidateTitleRoute 校验标题改写配置。
 //
-// 规则：启用时至少要配一个站点的目标模型。两个都空着等于「打开了开关
-// 但什么都不做」，那是配置错误，应当拒绝保存而不是静默无效。
+// 启用但两站都留空是**合法**配置：语义是「两个站点都沿用请求的模型」，
+// 也就是不产生任何改写。这是默认状态 —— 打开开关本身不代表要换模型，
+// 只有明确选了目标模型才会改写。
 func ValidateTitleRoute(route *TitleRoute) error {
 	if route == nil || !route.Enabled {
 		return nil
-	}
-	domestic := strings.TrimSpace(route.Domestic)
-	global := strings.TrimSpace(route.Global)
-	if domestic == "" && global == "" {
-		return fmt.Errorf("modelroute: 标题请求改写已启用，但两个站点都没有配目标模型")
 	}
 	return nil
 }

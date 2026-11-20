@@ -8,7 +8,7 @@ import (
 // UIRevision is the admin console markup/script stamp. Bump it on every
 // meaningful change to PageHTML so operators can tell the rebuilt binary
 // carries the new UI (independent of the release tag injected via ldflags).
-const UIRevision = "2026.11.20-v0.7.12-title-persite"
+const UIRevision = "2026.11.20-v0.7.13-title-keep-request"
 
 func PageHTML() string {
 	return `<!doctype html>
@@ -1095,7 +1095,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
               <span class="title-route-hint" id="titleRouteGlobalHint"></span>
             </div>
           </div>
-          <p class="title-route-note">两个站点各配一个：请求落在哪个站就用哪个目标。<strong>留空 = 该站点不改写</strong>。下拉只列该站点的免费模型。</p>
+          <p class="title-route-note">两个站点各配一个：请求落在哪个站就用哪个目标。<strong>留空 = 沿用请求的模型（不改写）</strong>，这是默认值。想省钱就在该站点选一个免费模型。</p>
         </div>
         <p class="config-state" id="titleRouteState" role="status" aria-live="polite">—</p>
       </div>
@@ -3471,7 +3471,7 @@ async function refreshModelRoutes(){
 // 来自「不花积分」，让用户选一个付费模型就失去意义。
 function titleSelectOptions(site, selected){
   const list = titleFreeModels[site] || [];
-  let html = '<option value="">（不改写）</option>';
+  let html = '<option value="">沿用请求模型</option>';
   list.forEach(function(name){
     html += '<option value="' + escapeHtml(name) + '"' +
             (name === selected ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
@@ -3511,14 +3511,7 @@ function paintTitleRoute(){
   configState('titleRouteState',
     cfg.enabled ? 'saved' : 'idle',
     !cfg.enabled ? '未启用（会话标题按原模型计费）'
-      : anyTarget ? '已启用' : '已启用但两个站点都没选目标，保存会被拒绝');
-}
-
-// titleDefaultFor 给出该站点的推荐默认目标：取免费列表里第一个。
-// 国内站只有 hy4flash-free，国际站列表里 deepseek-v4.1-flash 通常排第一。
-function titleDefaultFor(site){
-  const list = titleFreeModels[site] || [];
-  return list.length ? list[0] : '';
+      : anyTarget ? '已启用' : '已启用，两站都沿用请求的模型（不产生改写）');
 }
 
 // collectTitleRoute 从界面读回配置。
@@ -3544,12 +3537,8 @@ if ($('titleRouteEnabled')) $('titleRouteEnabled').onchange = function(){
     domestic: cfg.domestic || '',
     global: cfg.global || ''
   };
-  // 首次启用时自动补上两站的推荐默认值：两个站点的最优选择不同，
-  // 让用户自己填很容易漏掉一个站点。
-  if (next.enabled) {
-    if (!next.domestic) next.domestic = titleDefaultFor('domestic');
-    if (!next.global) next.global = titleDefaultFor('global');
-  }
+  // 不做自动填充：默认就是「沿用请求的模型」。
+  // 自动填免费模型等于一打开开关就悄悄换了模型，用户并没有要求改写。
   titleRoute = next;
   paintTitleRoute();
   markTitleDirty();

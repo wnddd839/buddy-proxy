@@ -10,9 +10,9 @@ func TestValidateTitleRoute(t *testing.T) {
 	if err := ValidateTitleRoute(&TitleRoute{Enabled: false}); err != nil {
 		t.Fatalf("未启用应放行：%v", err)
 	}
-	// 启用但两站都没配 → 拒绝
-	if err := ValidateTitleRoute(&TitleRoute{Enabled: true}); err == nil {
-		t.Fatal("启用但两站都没目标时应报错")
+	// 启用但两站都留空也放行：语义 = 两站都沿用请求的模型（不产生改写）
+	if err := ValidateTitleRoute(&TitleRoute{Enabled: true}); err != nil {
+		t.Fatalf("启用但无目标应放行：%v", err)
 	}
 	// 只配一个站点 → 通过（另一个站点不改写是合法配置）
 	if err := ValidateTitleRoute(&TitleRoute{Enabled: true, Domestic: "hy4flash-free"}); err != nil {

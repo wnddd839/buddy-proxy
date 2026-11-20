@@ -35,21 +35,32 @@ func TestTitleRouteDisabledByDefault(t *testing.T) {
 	}
 }
 
-// 启用但两站都没目标必须被拒。
-func TestTitleRouteRequiresAtLeastOneTarget(t *testing.T) {
-	if err := modelroute.ValidateTitleRoute(&modelroute.TitleRoute{Enabled: true}); err == nil {
-		t.Fatal("启用但无目标时必须报错")
+// 启用但两站都留空是合法配置：语义 = 两站都沿用请求的模型（不产生改写）。
+// 打开开关本身不代表要换模型，只有明确选了目标才会改写。
+func TestTitleRouteEnabledWithNoTargetMeansKeepRequestModel(t *testing.T) {
+	route := &modelroute.TitleRoute{Enabled: true}
+	if err := modelroute.ValidateTitleRoute(route); err != nil {
+		t.Fatalf("启用但无目标应合法：%v", err)
+	}
+	if got := route.TargetFor("domestic"); got != "" {
+		t.Fatalf("国内站应沿用请求模型，实际 %q", got)
+	}
+	if got := route.TargetFor("global"); got != "" {
+		t.Fatalf("国际站应沿用请求模型，实际 %q", got)
 	}
 }
 
-// 只配一个站点是合法的：另一个站点保持原模型。
+// 只配一个站点：另一个站点沿用请求模型。
 func TestTitleRouteAllowsSingleSite(t *testing.T) {
 	route := &modelroute.TitleRoute{Enabled: true, Domestic: "hy4flash-free"}
 	if err := modelroute.ValidateTitleRoute(route); err != nil {
 		t.Fatalf("只配国内站应合法：%v", err)
 	}
+	if got := route.TargetFor("domestic"); got != "hy4flash-free" {
+		t.Fatalf("国内站目标错：%q", got)
+	}
 	if got := route.TargetFor("global"); got != "" {
-		t.Fatalf("未配置的国际站应不改写，实际 %q", got)
+		t.Fatalf("未配置的国际站应沿用请求模型，实际 %q", got)
 	}
 }
 
