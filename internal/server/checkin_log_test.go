@@ -32,6 +32,10 @@ func checkinTestServer(t *testing.T, accts []accounts.Account) (*Server, *checki
 
 	cfg := config.Config{AccountsPath: accountsPath}
 	svc := gateway.New(cfg, slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})))
+	// 必须收尾：gateway.New 会启动不变量执行器的写协程，它按 1s 粒度
+	// 往账号目录写决策日志。不 Close 的话测试结束后协程仍活着，
+	// TempDir 清理时会撞上「directory not empty」（-race 下必现）。
+	t.Cleanup(func() { _ = svc.Close() })
 	srv := New(cfg, svc)
 	logStore := srv.Checkin.Log()
 	if logStore == nil {
