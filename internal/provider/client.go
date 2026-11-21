@@ -174,6 +174,15 @@ type ChatOptions struct {
 	// StripReport 是剥离结果的回填指针（可为 nil）。成功/失败路径都会写入，
 	// 供网关记事件与面板展示「已剥离」。
 	StripReport *StripReport
+	// EchoSystemToUser 为 true 时，在**保持 system 原样**的前提下，
+	// 把同一份 system 内容再复制一份到第一条 user 开头（<client_instructions> 包裹）。
+	//
+	// 用途：对照实验 —— 有些模型对 system 位的指令权重偏低，把同样内容放到
+	// user 开头会显著提高遵循度。这里复制而非搬走（区别于 fold），因此
+	// system 位仍完整，两条注入路径同时存在，可直接对比行为差异。
+	//
+	// 默认关闭（CODEBUDDY_PROXY_SYSTEM_ECHO_USER=1 才开），属临时调试开关。
+	EchoSystemToUser bool
 }
 
 type Event struct {
@@ -1096,6 +1105,12 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	// CodeBuddy protocol_direct 拒绝非流式 chat（11101）。始终上游流式；
 	// 需要 JSON 的调用方仍通过 readSSE 聚合成 Turn。
 	messages := EnsureUpstreamMessagesWithReplay(opts.Messages, opts.KeepSystem, opts.Strip, opts.StripReport, opts.ReasoningReplay)
+	// 临时开关：system 原样保留，同时复制一份进第一条 user。
+	// 放在剥离之后 —— 确保复制的是已剥离干净的版本，否则 user 副本
+	// 会带上刚删掉的指纹，等于让剥离白做。
+	if opts.EchoSystemToUser && opts.KeepSystem {
+		messages = echoSystemIntoFirstUser(messages)
+	}
 	// global 要求首条必须是 system；显式 domestic 保持既有 payload 不变。
 	// 空 site 按 global 处理（config.NormalizeSite("") 默认归 global）。
 	if config.NormalizeSite(opts.Site) == "global" && len(messages) > 0 &&

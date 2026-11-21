@@ -505,7 +505,8 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		OnEvent:            opts.OnEvent,
 		DeliverToolDeltas:  opts.DeliverToolDeltas,
 		// system 策略：fold 永远折叠；auto/keep/strip 原样透传；已降级过的重试强制折叠。
-		KeepSystem: s.keepSystemFor(opts),
+		KeepSystem:       s.keepSystemFor(opts),
+		EchoSystemToUser: s.Config().SystemEchoUser,
 		// 历史 thinking 回传：默认开（DeepSeek 规范要求带 tools 时回传）。
 		ReasoningReplay: !s.Config().ReasoningReplayDisabled,
 		// 该模型的档位画像（快照里没有时 Known=false，退回全局三档）。

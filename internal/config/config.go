@@ -132,6 +132,13 @@ type Config struct {
 	// QuotaFloorCredits 是账号积分低于该值时不再参与选号（0 = 不启用）。
 	// 数据源是缓存的 billing credits（QuotaRemaining），与配额耗尽同一口径。
 	QuotaFloorCredits float64
+	// SystemEchoUser 为 true 时，在透传 system 的同时把同一份内容复制一份
+	// 到第一条 user 开头（<client_instructions> 包裹）。
+	//
+	// 临时调试开关（CODEBUDDY_PROXY_SYSTEM_ECHO_USER=1），用于对照实验：
+	// 验证模型是靠 system 位还是 user 里的副本更能遵循指令。
+	// 只在 keep / auto / strip 模式生效（fold 模式本就搬 system 进 user）。
+	SystemEchoUser bool
 }
 
 func Load() Config {
@@ -174,6 +181,7 @@ func Load() Config {
 		CheckinRetryInterval:       envDuration("CODEBUDDY_PROXY_CHECKIN_RETRY_INTERVAL_MS", "", DefaultCheckinRetryInterval),
 		CheckinRetryMax:            envInt("CODEBUDDY_PROXY_CHECKIN_RETRY_MAX", "", DefaultCheckinRetryMax),
 		QuotaFloorCredits:          envFloat("CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS", 0),
+		SystemEchoUser:             envBool("CODEBUDDY_PROXY_SYSTEM_ECHO_USER", "", false),
 		SystemPromptMode:           NormalizeSystemPromptMode(firstEnv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE")),
 		ReasoningReplayDisabled:    envBool("CODEBUDDY_PROXY_REASONING_REPLAY_OFF", "", false),
 		// 两个都是「跳过式」开关：只有显式写 0/false 才关闭剥离。
