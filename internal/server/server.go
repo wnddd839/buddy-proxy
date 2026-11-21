@@ -26,6 +26,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/gateway"
 	"github.com/wnddd839/codebuddy-proxy/internal/httputil"
+	"github.com/wnddd839/codebuddy-proxy/internal/invariant"
 	"github.com/wnddd839/codebuddy-proxy/internal/modelroute"
 	modelspkg "github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
@@ -1158,6 +1159,12 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 	// 积分下限：独立端点，配独立的保存按钮。
 	// 单独拆出来的原因：这是选号门槛，改错会让整池号瞬间不可用，
 	// 放在签到表单里跟「保存签到」混在一起容易被误改、又不知道该不该点保存。
+	// 静默失效体检：只读，无写接口。
+	// 返回三类东西：命中的断言（附带 why 供 tooltip）、按断言聚合的计数、
+	// 以及「这份数据从什么时候开始」—— 没有覆盖说明的仪表盘会被误读成「没发生」。
+	case path == "/direct-admin/api/invariants" && r.Method == http.MethodGet:
+		s.handleInvariants(w, r)
+		return
 	case path == "/direct-admin/api/quota-floor" && r.Method == http.MethodGet:
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "quotaFloor": s.Svc.Config().QuotaFloorCredits,
@@ -1943,6 +1950,38 @@ func (s *Server) handleSystemPromptEvents(w http.ResponseWriter, r *http.Request
 //   - stripAssistant：只控制 assistant 正文这一路，system 仍照剥。
 //
 // 指针字段 = 「没传就不动」，这样只改模式不会把开关顺手重置。
+// handleInvariants 返回静默失效体检数据。
+func (s *Server) handleInvariants(w http.ResponseWriter, r *http.Request) {
+	sink := s.Svc.InvariantSink()
+	if sink == nil {
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"enabled":  false,
+			"findings": []any{},
+			"counts":   map[string]int{},
+			"coverage": "未启用（需要账号目录可写）",
+		})
+		return
+	}
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	now := time.Now()
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"enabled":    true,
+		"findings":   sink.Findings(limit),
+		"counts":     sink.Counts(now),
+		"dropped":    sink.Dropped(),
+		"suppressed": sink.Suppressed(),
+		"coverage":   "自 " + time.UnixMilli(sink.StartedAt()).Format("2006-01-02 15:04") + " 起（含回扫的近 24h）",
+		"specs":      invariant.DefaultRegistry().Specs(),
+	})
+}
+
 func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Mode           string `json:"mode"`

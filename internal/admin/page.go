@@ -649,6 +649,28 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <span class="num">1m 峰值<b id="ccPeak">—</b></span>
           <span class="num">1h 限流<b id="ccLimited">—</b></span>
         </div>
+        <section class="panel" style="margin-top:16px">
+          <div class="panel-inner">
+            <div class="section-head" style="border:none;padding:0">
+              <div>
+                <div class="eyebrow">Silent Failure Watch</div>
+                <h2 style="margin:4px 0 2px">静默失效体检</h2>
+                <p class="lede" style="margin:0">请求返回 200、但数据里出现了不该出现的变化。这里只做断言，不自动修复。</p>
+              </div>
+              <div class="actions">
+                <span class="sp-check" style="text-transform:none;letter-spacing:0" id="invCoverage">—</span>
+                <button class="ghost" id="btnRefreshInv" type="button">刷新</button>
+              </div>
+            </div>
+            <div class="watchbar" style="margin-top:12px">
+              <span class="state">近 24h</span>
+              <span class="num">命中<b id="invHits">—</b></span>
+              <span class="num">去重压掉<b id="invSuppressed">—</b></span>
+              <span class="num">队列丢弃<b id="invDropped">—</b></span>
+            </div>
+            <div id="invList" style="margin-top:12px"></div>
+          </div>
+        </section>
         <div class="watchbar" id="watchBar" hidden>
           <span class="state" id="watchState">波动监测</span>
           <span class="num">错误率<b id="watchErr">—</b></span>
@@ -2342,6 +2364,42 @@ if ($('spEchoUser')) $('spEchoUser').addEventListener('change', function(){
     showToast(e.message,'error'); paintSpStrip();
   });
 });
+async function refreshInvariants(){
+  const data = await api('/direct-admin/api/invariants?limit=20');
+  const hits = $('invHits'), sup = $('invSuppressed'), drop = $('invDropped'), cov = $('invCoverage'), list = $('invList');
+  if (cov) cov.textContent = data.coverage || '—';
+  if (!data.enabled){
+    if (hits) hits.textContent = '—';
+    if (list) list.innerHTML = '<p class="lede" style="margin:0">未启用：账号目录不可写，决策日志无法落盘。</p>';
+    return;
+  }
+  const counts = data.counts || {};
+  let total = 0;
+  Object.keys(counts).forEach(function(k){ total += counts[k]; });
+  if (hits) hits.textContent = String(total);
+  if (sup) sup.textContent = String(data.suppressed || 0);
+  if (drop) drop.textContent = String(data.dropped || 0);
+  if (!list) return;
+  const rows = data.findings || [];
+  if (!rows.length){
+    list.innerHTML = '<p class="lede" style="margin:0">当前窗口内没有命中。</p>';
+    return;
+  }
+  list.innerHTML = rows.map(function(f){
+    const when = new Date(f.at || 0).toLocaleString();
+    const sev = f.severity === 'info' ? '观测' : '违规';
+    const supN = f.suppressed ? ('（另有 ' + f.suppressed + ' 次同类被去重）') : '';
+    return '<div class="kv" style="padding:6px 0;border-bottom:1px solid rgba(127,127,127,.15)">'
+      + '<div><b>' + escapeHtml(f.invariant) + '</b> · ' + escapeHtml(sev)
+      + ' · <code>' + escapeHtml(String(f.subject || '—')) + '</code></div>'
+      + '<div class="lede" style="margin:2px 0 0">' + escapeHtml(f.detail || '') + supN + '</div>'
+      + '<div class="lede" style="margin:2px 0 0;opacity:.7">' + escapeHtml(when) + '</div></div>';
+  }).join('');
+}
+if ($('btnRefreshInv')) $('btnRefreshInv').addEventListener('click', function(){
+  refreshInvariants().catch(function(e){ showToast(e.message,'error'); });
+});
+if ($('tab-overview')) { refreshInvariants().catch(function(){}); }
 if ($('btnRefreshSp')) $('btnRefreshSp').addEventListener('click', function(){
   refreshSystemPrompt().then(function(){ return refreshSpHistory(); }).catch(function(e){ showToast(e.message,'error'); });
 });
