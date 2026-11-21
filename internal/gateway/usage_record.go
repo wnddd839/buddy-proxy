@@ -160,7 +160,38 @@ func (s *Service) submitInvariantRecord(input ChatRecordInput) {
 		rec.InSystemLen = input.IO.InSystemLen
 		rec.OutSystemLen = input.IO.OutSystemLen
 	}
+	// 错误码必须在这里补齐：留空会让 I5 把所有失败都当成「未分类」，
+	// 包括分类器明明认得的那一类（11128 / 14018 …）。
+	code, kind := classifyForDecision(input.Ok, input.Canceled, input.ErrMsg, input.ErrorCode)
+	rec.ErrorCode = code
+	rec.ErrorKind = kind
 	sink.Submit(rec)
+}
+
+// classifyForDecision 给失败请求补上错误码与粗分类。
+//
+// kind 的用途是把「不该算进未分类」的几种情形摘出去：
+//   - canceled     客户端主动断开（不是故障）
+//   - coded        有数字码（分类器认得）
+//   - empty        没有任何错误原文（上游空回包之类，单独一类）
+//   - unclassified 有原文但没有码 —— 只有这一类才进 I5
+func classifyForDecision(ok, canceled bool, errMsg, provided string) (code, kind string) {
+	if ok {
+		return "", ""
+	}
+	if canceled || strings.Contains(strings.ToLower(errMsg), "context canceled") {
+		return "", "canceled"
+	}
+	if provided != "" {
+		return provided, "coded"
+	}
+	if c := upstreamErrorCode(errMsg); c != "" {
+		return c, "coded"
+	}
+	if strings.TrimSpace(errMsg) == "" {
+		return "", "empty"
+	}
+	return "", "unclassified"
 }
 
 // ioSystemLen 取出站 system 的字节数（未观测时 0）。

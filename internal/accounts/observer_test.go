@@ -55,10 +55,14 @@ func TestDeductEmitsQuotaEvent(t *testing.T) {
 	if e.Before == nil || *e.Before != 100 || e.After == nil || *e.After != 98.7 {
 		t.Fatalf("before/after 不对：%+v", e)
 	}
+	if e.Skipped != "" {
+		t.Fatalf("正常扣减不该带 skipped：%q", e.Skipped)
+	}
 }
 
-// 免费模型（credit=0）不扣减，因此也不该发 deduct 事件。
-func TestZeroCreditEmitsNothing(t *testing.T) {
+// 免费模型（credit=0）不扣减，但**仍要发事件并标明原因** ——
+// 否则 I2a 无法区分「免费所以没扣」与「该扣却没扣」。
+func TestZeroCreditEmitsSkippedEvent(t *testing.T) {
 	pool := newObserverPool(t)
 	remaining := 100.0
 	acc := CreateAccount(Account{Label: "one", BearerToken: "tok", Site: "domestic", QuotaRemaining: &remaining})
@@ -75,17 +79,41 @@ func TestZeroCreditEmitsNothing(t *testing.T) {
 	if err := pool.MarkResult(sel, true, "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if len(obs.quota) != 0 {
-		t.Fatalf("credit=0 不该发事件：%+v", obs.quota)
+	if len(obs.quota) != 1 {
+		t.Fatalf("应发 1 条事件（标明跳过原因），实际 %d", len(obs.quota))
+	}
+	e := obs.quota[0]
+	if e.Op != QuotaOpDeduct || e.Skipped != DeductSkipNoCredit {
+		t.Fatalf("应标 no_credit：%+v", e)
+	}
+	if e.Before == nil || e.After == nil || *e.Before != *e.After {
+		t.Fatalf("跳过扣减时额度不该变：%+v", e)
+	}
+}
+
+// 额度未知（nil）时同样跳过并标记，供 I2a 豁免。
+func TestUnknownQuotaEmitsSkippedEvent(t *testing.T) {
+	pool := newObserverPool(t)
+	acc := CreateAccount(Account{Label: "one", BearerToken: "tok", Site: "domestic"})
+	if _, _, err := pool.Upsert(acc); err != nil {
+		t.Fatal(err)
+	}
+	obs := &fakeObserver{}
+	pool.SetObserver(obs)
+
+	sel, err := pool.Select(SelectOptions{Site: "domestic", RequestID: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.MarkResult(sel, true, "", 0, 2.0); err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.quota) != 1 || obs.quota[0].Skipped != DeductSkipQuotaUnknown {
+		t.Fatalf("应标 quota_unknown：%+v", obs.quota)
 	}
 }
 
 // 额度被清空时必须带理由 —— I1 靠它区分「有据清空」与「无声抹掉」。
-//
-// 真实路径（也是「免费模型是清空钥匙」那个后门的形态）：
-// 选号时号处于 upstream 冷却、额度正常 ⇒ 走全冷却兜底（BypassedCooldown）；
-// **请求进行中**并发探针把额度刷成 0 并打上 quota 冷却；
-// 请求成功且真实扣费（credit>0）⇒ 旧快照被证明过期 ⇒ 清空并附理由。
 func TestClearEmitsReason(t *testing.T) {
 	pool := newObserverPool(t)
 
@@ -95,7 +123,6 @@ func TestClearEmitsReason(t *testing.T) {
 		QuotaRemaining: &healthy,
 		QuotaCheckedAt: time.Now().UnixMilli(),
 		QuotaResetAt:   time.Now().Add(time.Hour).UnixMilli(),
-		// 只处于 upstream 冷却：额度仍可用，所以选号会走全冷却兜底。
 		CooldownUntil:  time.Now().Add(time.Hour).UnixMilli(),
 		CooldownSource: CooldownSourceUpstream,
 	})
@@ -113,14 +140,11 @@ func TestClearEmitsReason(t *testing.T) {
 		t.Fatalf("应走全冷却兜底：%+v", sel)
 	}
 
-	// 请求进行中，探针把余额刷成 0 并打上 quota 冷却。
 	drained := 0.0
 	if _, err := pool.ApplyQuotaProbe(sel.Account.ID, 0, &drained, false,
 		time.Now().Add(time.Hour).UnixMilli(), time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-
-	// 付费成功（credit>0）才允许清空。
 	if err := pool.MarkResult(sel, true, "", 0, 2.5); err != nil {
 		t.Fatal(err)
 	}
@@ -138,13 +162,12 @@ func TestClearEmitsReason(t *testing.T) {
 	if clear.Before == nil || clear.After != nil {
 		t.Fatalf("clear 的 before/after 不对：%+v", clear)
 	}
-	if clear.Reason == "" {
-		t.Fatal("clear 必须带 reason")
+	if clear.Reason != ClearReasonQuotaRecovered {
+		t.Fatalf("理由应为 %q，实际 %q", ClearReasonQuotaRecovered, clear.Reason)
 	}
 }
 
-// 对照：同样路径但免费模型（credit=0）⇒ **不得**清空。
-// 这是 2026-11 那个后门的直接症状，必须有测试钉住。
+// 对照：免费模型（credit=0）不得清空额度。
 func TestFreeModelDoesNotClearQuota(t *testing.T) {
 	pool := newObserverPool(t)
 	healthy := 50.0
@@ -181,7 +204,7 @@ func TestFreeModelDoesNotClearQuota(t *testing.T) {
 	}
 }
 
-// 探针刷新也要发事件，且带刷新前的本地累计消耗（I2b 靠它做漂移对账）。
+// 探针刷新要带刷新前的本地累计消耗，且 After 必须已经扣掉在途消耗。
 func TestProbeEmitsRefreshWithPreviousSpent(t *testing.T) {
 	pool := newObserverPool(t)
 	remaining := 100.0
@@ -195,7 +218,6 @@ func TestProbeEmitsRefreshWithPreviousSpent(t *testing.T) {
 	obs := &fakeObserver{}
 	pool.SetObserver(obs)
 
-	// 先记一笔真实消耗，让 QuotaSpentSinceCheck 非零。
 	sel, err := pool.Select(SelectOptions{Site: "domestic", RequestID: "r3"})
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +226,7 @@ func TestProbeEmitsRefreshWithPreviousSpent(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// baseline=0 且已有 4 的累计消耗 ⇒ in-flight 校正应扣掉 4。
 	fresh := 96.0
 	if _, err := pool.ApplyQuotaProbe(sel.Account.ID, 0, &fresh, false,
 		time.Now().Add(time.Hour).UnixMilli(), time.Now().UnixMilli()); err != nil {
@@ -222,6 +245,10 @@ func TestProbeEmitsRefreshWithPreviousSpent(t *testing.T) {
 	}
 	if refresh.SpentSinceCheck != 4 {
 		t.Fatalf("SpentSinceCheck 应为刷新前的累计值 4，实际 %v", refresh.SpentSinceCheck)
+	}
+	// After 必须是「余额 - 在途消耗」，这样 I2b 的 drift 才为 0。
+	if refresh.After == nil || *refresh.After != 92 {
+		t.Fatalf("After 应已扣除在途消耗 4（96-4=92），实际 %v", refresh.After)
 	}
 }
 

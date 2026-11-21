@@ -5,44 +5,69 @@ import (
 	"sync"
 )
 
-// defaultSessionCap / defaultErrorCap 是生产默认上限。
-// 512 个会话足够覆盖并发会话；超过就淘汰最旧的 —— 宁可少记，
-// 不可让「观测」变成内存泄漏。
+// 生产默认上限。512 个会话足够覆盖并发会话；超过就淘汰最旧的 ——
+// 观测数据不允许无界增长。
 const (
 	defaultSessionCap = 512
 	defaultErrorCap   = 256
+	defaultDeductCap  = 4096
 )
+
+// deductRec 是一条「本次请求扣了多少」的记录。
+//
+// Skipped 非空表示**没有扣**，值说明为什么。必须分开记：
+// I2a 要能区分「额度未知，扣不了（设计内）」与「上游收费了，
+// 扣减路径却没跑（真 bug）」—— 只看金额分不出这两者。
+type deductRec struct {
+	Amount  float64
+	Skipped string
+}
 
 // State 是断言需要的跨记录状态。
 //
 // 全部带上限且 FIFO 淘汰：这是观测用的旁路数据，不允许无界增长。
 // cap 传 0 表示不限制（离线回放用：一次跑完一整段历史，不需要淘汰）。
+//
+// 锁序：Pool.mu → State.mu。反向获取必死锁（观察者在 Pool 锁内调 State）。
 type State struct {
 	mu sync.Mutex
 
 	sessionCap int
-	// prompt 记每个会话上一次的 promptTokens（I3b）。
 	prompt     map[string]int64
 	promptRing []string
 
-	errCap int
-	// errCount 记「某条错误文案出现过几次」（I5 的阈值升级）。
+	errCap   int
 	errCount map[string]int
 	errRing  []string
 
-	// deduct 记「某请求实际扣了多少额度」，等 request 记录到达时对账（I2a）。
-	deduct map[string]float64
+	// deduct 只在「请求结束 → 记录写入」这段窗口内有值，窗口远小于
+	// 一次请求的生命周期。仍然设上限：一旦某个入口的 RequestID 与
+	// ProxyRequestID 不同源，没有上限就会变成慢性内存泄漏。
+	deductCap  int
+	deduct     map[string]deductRec
+	deductRing []string
 }
 
-// NewState 建状态。sessionCap / errCap 为 0 表示不限制。
+// NewState 建状态。任一 cap 为 0 表示该项不限制。
 func NewState(sessionCap, errCap int) *State {
 	return &State{
 		sessionCap: sessionCap,
 		errCap:     errCap,
+		deductCap:  defaultDeductCap,
 		prompt:     make(map[string]int64),
 		errCount:   make(map[string]int),
-		deduct:     make(map[string]float64),
+		deduct:     make(map[string]deductRec),
 	}
+}
+
+// SetDeductCap 调整扣减记录的容量上限（0 = 不限制，离线回放用）。
+func (s *State) SetDeductCap(n int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.deductCap = n
+	s.mu.Unlock()
 }
 
 // PrevPrompt 返回该会话上一次的 promptTokens。
@@ -74,20 +99,28 @@ func (s *State) SetPrompt(key string, tokens int64) {
 	s.prompt[key] = tokens
 }
 
-// PutDeduct 记一条额度扣减，供 I2a 与请求记录对账。
-func (s *State) PutDeduct(requestID string, credit float64) {
+// PutDeduct 记一条扣减结果（amount 是**实际扣减量**，skipped 说明为何没扣）。
+func (s *State) PutDeduct(requestID string, amount float64, skipped string) {
 	if s == nil || requestID == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.deduct[requestID] = credit
+	if _, exists := s.deduct[requestID]; !exists && s.deductCap > 0 {
+		for len(s.deductRing) >= s.deductCap {
+			oldest := s.deductRing[0]
+			s.deductRing = s.deductRing[1:]
+			delete(s.deduct, oldest)
+		}
+		s.deductRing = append(s.deductRing, requestID)
+	}
+	s.deduct[requestID] = deductRec{Amount: amount, Skipped: skipped}
 }
 
 // TakeDeduct 取出并删除该请求的扣减记录。
-func (s *State) TakeDeduct(requestID string) (float64, bool) {
+func (s *State) TakeDeduct(requestID string) (deductRec, bool) {
 	if s == nil || requestID == "" {
-		return 0, false
+		return deductRec{}, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

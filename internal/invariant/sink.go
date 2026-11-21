@@ -13,12 +13,14 @@ import (
 // 永久吞掉。
 const dedupeWindow = 10 * time.Minute
 
-// Sink 是在线执行器：同步跑断言，异步落盘 + 面板环形缓冲。
+// Sink 是在线执行器：同步跑断言、异步落盘、面板环形缓冲。
 //
 // 三条硬约束：
 //  1. Submit 绝不做 I/O，也绝不阻塞 —— 队列满就丢，只计数
-//  2. 断言 panic 已被 Registry 兜住，这里再包一层 defer 保底
-//  3. 去重与 ring 都在锁内，但临界区只有 map 操作
+//  2. 输入记录（request/selection/quota）与命中的 finding **都**落盘：
+//     只落 finding 的话，离线回放永远没有输入，本机制就废了
+//  3. 日志在写协程里发，不在 Submit 路径上发 —— 后者常常运行在
+//     Pool 的锁里，一次卡住的 journald 写入会串行阻塞整个选号
 type Sink struct {
 	store *decision.Store
 	reg   *Registry
@@ -28,14 +30,18 @@ type Sink struct {
 
 	ringSize int
 
-	mu         sync.Mutex
-	ring       []decision.Finding
-	dedupe     map[string]*dedupeEntry
-	supCount   int64
-	startedAt  int64
-	backfilled bool
+	mu        sync.Mutex
+	ring      []decision.Finding
+	dedupe    map[string]*dedupeEntry
+	supCount  int64
+	startedAt int64
 
-	dropped atomic.Int64
+	dropped   atomic.Int64
+	writeErrs atomic.Int64
+	persisted atomic.Int64
+
+	started atomic.Bool
+	stopped atomic.Bool
 
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -43,6 +49,7 @@ type Sink struct {
 	stopCh    chan struct{}
 
 	// logf 由调用方注入，避免 invariant 包依赖具体日志库。
+	// 只在写协程里调用。
 	logf func(msg string, fields map[string]any)
 }
 
@@ -73,7 +80,8 @@ func NewSink(store *decision.Store, reg *Registry, st *State, ringSize, queueSiz
 	}
 }
 
-// SetLogger 注入日志函数（可选）。
+// SetLogger 注入日志函数（可选）。函数会被写在写协程里调用，
+// 因此可以安全地做 I/O。
 func (s *Sink) SetLogger(fn func(msg string, fields map[string]any)) {
 	if s == nil {
 		return
@@ -87,16 +95,25 @@ func (s *Sink) Start() {
 		return
 	}
 	s.startOnce.Do(func() {
+		s.started.Store(true)
 		go s.loop()
 	})
 }
 
 // Stop 关闭写协程并等待退出（幂等）。
+//
+// 未 Start 过时立即返回：否则每次都会白等 2 秒（测试里大量
+// 「构造但不 Start」的用法会因此变慢）。
 func (s *Sink) Stop() {
 	if s == nil {
 		return
 	}
+	if !s.started.Load() {
+		s.stopOnce.Do(func() { close(s.stopCh) })
+		return
+	}
 	s.stopOnce.Do(func() {
+		s.stopped.Store(true)
 		close(s.stopCh)
 	})
 	select {
@@ -110,13 +127,13 @@ func (s *Sink) loop() {
 	for {
 		select {
 		case rec := <-s.queue:
-			s.persist(rec)
+			s.handle(rec)
 		case <-s.stopCh:
 			// 尽力把队列里剩下的写完，但不无限等。
 			for {
 				select {
 				case rec := <-s.queue:
-					s.persist(rec)
+					s.handle(rec)
 				default:
 					return
 				}
@@ -125,43 +142,83 @@ func (s *Sink) loop() {
 	}
 }
 
+// handle 在写协程里执行：先发日志（去重后的 finding 才发），再落盘。
+func (s *Sink) handle(rec decision.Record) {
+	if rec.Kind == decision.KindFinding && rec.Finding != nil && s.logf != nil {
+		f := rec.Finding
+		s.logf("invariant hit", map[string]any{
+			"invariant": f.Invariant, "severity": f.Severity,
+			"subject": f.Subject, "detail": f.Detail,
+		})
+	}
+	s.persist(rec)
+}
+
 func (s *Sink) persist(rec decision.Record) {
 	if s.store == nil {
 		return
 	}
-	defer func() { _ = recover() }() // 落盘失败绝不冒泡
-	_ = s.store.Append(rec)
+	err := func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = nil // panic 不冒泡，但计入 writeErrs 由下面统一处理
+			}
+		}()
+		return s.store.Append(rec)
+	}()
+	if err != nil {
+		s.writeErrs.Add(1)
+		return
+	}
+	s.persisted.Add(1)
 }
 
 // RememberDeduct 记一条「本次请求扣了多少」，供 I2a 与 request 记录对账。
 //
+// amount 是实际扣减量；skipped 非空表示没有扣减（值说明原因）。
 // 必须在 Submit(request) 之前调用：额度事件先发生（MarkResult），
 // 请求记录后写（RecordChat）。
-func (s *Sink) RememberDeduct(requestID string, credit float64) {
+func (s *Sink) RememberDeduct(requestID string, amount float64, skipped string) {
 	if s == nil || s.state == nil || requestID == "" {
 		return
 	}
-	s.state.PutDeduct(requestID, credit)
+	s.state.PutDeduct(requestID, amount, skipped)
 }
 
-// Submit 提交一条记录：同步跑断言（O(1) 内存操作），finding 入队。
-//
-// 记录本身不落盘 —— 落盘由调用方自己的 Decision 写入器负责，
-// Sink 只负责「跑断言 + 落 finding」，避免同一行写两遍。
+// Submit 提交一条记录：同步跑断言（O(1) 内存操作），
+// 输入记录与 finding 都投进队列落盘。
 func (s *Sink) Submit(rec decision.Record) {
 	if s == nil || s.reg == nil {
 		return
 	}
 	findings := s.reg.Run(rec, s.state)
+
+	// 输入记录本身也要落盘 —— 否则离线回放永远读不到 request/selection/quota，
+	// 只能看到稀疏的 finding，回放会输出「日志为空」。
+	if rec.Kind != decision.KindFinding {
+		if rec.At == 0 {
+			rec.At = time.Now().UnixMilli()
+		}
+		s.offer(rec)
+	}
 	for _, f := range findings {
 		s.enqueue(f)
 	}
 }
 
+// offer 把记录投进落盘队列；满则丢弃并计数（绝不阻塞请求）。
+func (s *Sink) offer(rec decision.Record) {
+	select {
+	case s.queue <- rec:
+	default:
+		s.dropped.Add(1)
+	}
+}
+
 func (s *Sink) enqueue(f decision.Finding) {
-	now := f.At
-	if now == 0 {
-		now = time.Now().UnixMilli()
+	now := time.Now().UnixMilli() // 去重时钟用「现在」，不用 f.At（长请求会让窗口失效）
+	if f.At == 0 {
+		f.At = now
 	}
 	key := f.Invariant + "\x00" + f.Subject
 
@@ -177,18 +234,14 @@ func (s *Sink) enqueue(f decision.Finding) {
 		return
 	}
 	entry := &dedupeEntry{lastAt: now, indexInRing: -1, seen: 1}
-	// 环形推进
 	if len(s.ring) < s.ringSize {
 		s.ring = append(s.ring, f)
 		entry.indexInRing = len(s.ring) - 1
 	} else {
-		// 覆盖最旧的那条（FIFO），并让它的去重项失效
 		s.ring = append(s.ring[1:], f)
 		entry.indexInRing = len(s.ring) - 1
 		for k, old := range s.dedupe {
-			if old.indexInRing >= 0 {
-				old.indexInRing--
-			}
+			old.indexInRing--
 			if old.indexInRing < 0 {
 				delete(s.dedupe, k)
 			}
@@ -197,18 +250,7 @@ func (s *Sink) enqueue(f decision.Finding) {
 	s.dedupe[key] = entry
 	s.mu.Unlock()
 
-	if s.logf != nil {
-		s.logf("invariant hit", map[string]any{
-			"invariant": f.Invariant, "severity": f.Severity,
-			"subject": f.Subject, "detail": f.Detail,
-		})
-	}
-
-	select {
-	case s.queue <- decision.Record{Kind: decision.KindFinding, At: now, Finding: &f}:
-	default:
-		s.dropped.Add(1)
-	}
+	s.offer(decision.Record{Kind: decision.KindFinding, At: f.At, Finding: &f})
 }
 
 // Findings 返回最近命中的副本（最新在前）。
@@ -228,12 +270,31 @@ func (s *Sink) Findings(limit int) []decision.Finding {
 	return out
 }
 
-// Dropped 返回因队列满被丢弃的 finding 数。
+// Dropped 返回因队列满被丢弃的记录数。
 func (s *Sink) Dropped() int64 {
 	if s == nil {
 		return 0
 	}
 	return s.dropped.Load()
+}
+
+// WriteErrors 返回落盘失败次数。
+//
+// 必须暴露：只丢不报的话，「面板显示有命中、磁盘上一条没有、重启后回扫为 0」
+// 就是观测系统自身的静默失效。
+func (s *Sink) WriteErrors() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.writeErrs.Load()
+}
+
+// Persisted 返回成功落盘的记录数（可与决策数对账）。
+func (s *Sink) Persisted() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.persisted.Load()
 }
 
 // Suppressed 返回因去重被压掉的条数。
@@ -272,21 +333,24 @@ func (s *Sink) Counts(now time.Time) map[string]int {
 	return out
 }
 
-// Backfill 回扫今天与昨天已经落盘的 finding，重建 ring 与去重表。
+// Backfill 回扫最近 24h 已落盘的 finding，重建 ring 与去重表。
 //
 // 必须做的原因：每次部署都要重启，而「重启后显示 0 命中」与
 // 「确实没发生」不可区分 —— 那正是本体系要消灭的那种静默。
+//
+// 只读 finding 行：使用 ReadKind 流式过滤，避免把几万条 request
+// 一次性读进内存（那是 80MB 预算里最容易被吃掉的部分）。
 func (s *Sink) Backfill(now time.Time) error {
 	if s == nil || s.store == nil {
 		return nil
 	}
 	from := now.Add(-24 * time.Hour)
-	recs, err := s.store.ReadRange(from, now)
+	recs, err := s.store.ReadKind(from, now, decision.KindFinding)
 	if err != nil {
 		return err
 	}
 	for _, rec := range recs {
-		if rec.Kind != decision.KindFinding || rec.Finding == nil {
+		if rec.Finding == nil {
 			continue
 		}
 		f := *rec.Finding
@@ -298,9 +362,6 @@ func (s *Sink) Backfill(now time.Time) error {
 		}
 		s.restore(f)
 	}
-	s.mu.Lock()
-	s.backfilled = true
-	s.mu.Unlock()
 	return nil
 }
 
@@ -311,6 +372,10 @@ func (s *Sink) restore(f decision.Finding) {
 	key := f.Invariant + "\x00" + f.Subject
 	entry, ok := s.dedupe[key]
 	if ok && entry.indexInRing >= 0 && entry.indexInRing < len(s.ring) {
+		if f.At < s.ring[entry.indexInRing].At {
+			return // 旧记录不得覆盖更新的那条
+		}
+		f.Suppressed = s.ring[entry.indexInRing].Suppressed
 		s.ring[entry.indexInRing] = f
 		entry.lastAt = f.At
 		return
@@ -328,4 +393,12 @@ func (s *Sink) restore(f decision.Finding) {
 		}
 	}
 	s.dedupe[key] = &dedupeEntry{lastAt: f.At, indexInRing: len(s.ring) - 1, seen: 1}
+}
+
+// Prune 清理过期的决策日志。由调用方按较低频率触发（例如每小时一次）。
+func (s *Sink) Prune(now time.Time) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	return s.store.Prune(now)
 }

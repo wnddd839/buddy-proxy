@@ -39,11 +39,11 @@ type ReplayGroup struct {
 func Replay(store *decision.Store, from, to time.Time, only []string) (ReplayReport, error) {
 	report := ReplayReport{From: from.UnixMilli(), To: to.UnixMilli()}
 	if store == nil {
-		report.Coverage = "无决策日志目录"
+		report.Coverage = "未指定决策日志目录；无法回放"
 		return report, nil
 	}
 
-	recs, err := store.ReadRange(from, to)
+	recs, err := store.ReadKind(from, to, "") // 空 kind = 全部
 	if err != nil {
 		return report, err
 	}
@@ -55,12 +55,10 @@ func Replay(store *decision.Store, from, to time.Time, only []string) (ReplayRep
 
 	// 离线用不限制容量的状态：一次跑完一整段历史，淘汰逻辑会让跨天状态断掉。
 	state := NewState(0, 0)
+	state.SetDeductCap(0)
 	reg := DefaultRegistry()
 
-	type agg struct {
-		group ReplayGroup
-	}
-	groups := make(map[string]*agg)
+	groups := make(map[string]*ReplayGroup)
 	var order []string
 
 	first, last := int64(0), int64(0)
@@ -84,27 +82,27 @@ func Replay(store *decision.Store, from, to time.Time, only []string) (ReplayRep
 			key := f.Invariant + "\x00" + f.Subject
 			g, ok := groups[key]
 			if !ok {
-				g = &agg{group: ReplayGroup{
+				g = &ReplayGroup{
 					Invariant: f.Invariant, Severity: f.Severity,
 					Subject: f.Subject, FirstAt: f.At, LastAt: f.At,
 					Detail: f.Detail, Why: f.Why,
-				}}
+				}
 				groups[key] = g
 				order = append(order, key)
 			}
-			g.group.Count++
-			if f.At < g.group.FirstAt {
-				g.group.FirstAt = f.At
+			g.Count++
+			if f.At < g.FirstAt {
+				g.FirstAt = f.At
 			}
-			if f.At > g.group.LastAt {
-				g.group.LastAt = f.At
+			if f.At > g.LastAt {
+				g.LastAt = f.At
+				g.Detail = f.Detail // 保留最近一条的说明
 			}
-			g.group.Detail = f.Detail // 保留最近一条的说明
 		}
 	}
 
 	for _, k := range order {
-		report.Groups = append(report.Groups, groups[k].group)
+		report.Groups = append(report.Groups, *groups[k])
 	}
 	sort.Slice(report.Groups, func(i, j int) bool {
 		if report.Groups[i].Count != report.Groups[j].Count {
@@ -113,19 +111,35 @@ func Replay(store *decision.Store, from, to time.Time, only []string) (ReplayRep
 		return report.Groups[i].Invariant < report.Groups[j].Invariant
 	})
 
-	report.Coverage = coverageText(report.Scanned, first, last)
+	report.Coverage = coverageText(report.Scanned, first, last, store)
 	return report, nil
 }
 
 // coverageText 说明这次回放实际能看见多少。
-// 必须打印：决策日志是本次上线才开始写的，更早的历史只能靠 usage.json
-// 的 400 条明细，不说明清楚会让人以为「以前真的没发生过」。
-func coverageText(scanned int, firstAt, lastAt int64) string {
-	if scanned == 0 {
-		return "决策日志为空（本功能刚上线？）；更早历史无法回放"
+//
+// 必须如实：决策日志是这套机制上线后才开始写的，更早的历史
+// **确实看不见** —— 声称覆盖了没读的东西，会让「以前没发生过」
+// 变成一句无法验证的话，正是本体系要消灭的那种误导。
+func coverageText(scanned int, firstAt, lastAt int64, store *decision.Store) string {
+	since := "(未知)"
+	if store != nil {
+		if d := store.EarliestDate(); d != "" {
+			since = d[:4] + "-" + d[4:6] + "-" + d[6:]
+		}
 	}
-	return fmt.Sprintf("已回放 %d 条决策记录（%s ~ %s）；更早历史只能看 usage.json 最近 400 条",
-		scanned, formatMillis(firstAt), formatMillis(lastAt))
+	if scanned == 0 {
+		return fmt.Sprintf("目录 %s 内没有可回放的决策记录（决策日志起于 %s）；更早历史无法回放",
+			dirOf(store), since)
+	}
+	return fmt.Sprintf("已回放 %d 条决策记录（%s ~ %s）；决策日志起于 %s，更早历史不在覆盖范围内",
+		scanned, formatMillis(firstAt), formatMillis(lastAt), since)
+}
+
+func dirOf(store *decision.Store) string {
+	if store == nil {
+		return "(无)"
+	}
+	return store.Dir()
 }
 
 func formatMillis(ms int64) string {

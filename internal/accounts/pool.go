@@ -194,10 +194,18 @@ const (
 	QuotaOpReset   = "reset"
 )
 
-// 允许把余额清成 nil 的理由。取值必须与 decision 的白名单一致。
+// 允许把余额清成 nil 的理由。取值必须与 decision 的白名单一致
+// （crosscheck_test.go 强制两套同步）。
 const (
 	ClearReasonQuotaRecovered  = "quota_recovered"  // 付费成功证明旧「耗尽」快照过期
 	ClearReasonInvalidSnapshot = "invalid_snapshot" // 上游回包 NaN/Inf，只能清空
+)
+
+// 扣减被跳过的原因。值必须与 decision 的 DeductSkip* 一致。
+const (
+	DeductSkipQuotaUnknown = "quota_unknown" // 从未核实过余额，凭空造值只会误导下限判断
+	DeductSkipUnlimited    = "unlimited"     // 不限量账号没有余额概念
+	DeductSkipNoCredit     = "no_credit"     // credit<=0：免费模型或上游没回扣费字段
 )
 
 // QuotaEvent 是一次额度状态变化。
@@ -213,6 +221,8 @@ type QuotaEvent struct {
 	CheckedAtBefore int64
 	CheckedAtAfter  int64
 	Reason          string
+	// Skipped 非空表示这次**没有扣减**，值说明原因（DeductSkip*）。
+	Skipped string
 }
 
 // 选号跳过原因。I7 只校验「有跳过就必须有原因」，不校验具体 key，
@@ -230,12 +240,19 @@ const (
 
 // SelectionEvent 是一次选号（成功或失败都记，失败时 Chosen 为空）。
 type SelectionEvent struct {
-	RequestID  string
-	Site       string
-	Model      string
+	RequestID string
+	Site      string
+	Model     string
+	// Candidates 是池里「同站点、已启用、有凭据」的账号总数（口径用于展示）。
 	Candidates int
-	Chosen     string
-	Skipped    map[string]int
+	// Examined 是本次选号**真正检查过**的账号数。
+	//
+	// 与 Candidates 必须分开：轮转选号在遇到第一个可用号就返回，
+	// 后面没被看的号既不算「跳过」也不该被要求交代。
+	// 只用一个数字会让 I7 在健康池上稳定误报。
+	Examined int
+	Chosen   string
+	Skipped  map[string]int
 }
 
 // Observer 接收额度与选号事件。
@@ -777,7 +794,20 @@ func UsableForModel(account Account, nowMillis int64, model string, floor float6
 // 允许扣成负数：宁可多算，不可少算。负数会让下限立刻拦住该账号，
 // 而「保守地不扣」会让账号继续被打穿。
 func (p *Pool) deductQuotaLocked(account *Account, credit float64, requestID string) {
-	if account == nil || math.IsNaN(credit) || math.IsInf(credit, 0) || credit <= 0 || account.QuotaUnlimited || account.QuotaRemaining == nil {
+	if account == nil {
+		return
+	}
+	// 跳过的三种情形都要发事件并带上原因：I2a 靠它区分
+	// 「设计内扣不了」与「上游收费了但扣减没跑」。
+	switch {
+	case math.IsNaN(credit) || math.IsInf(credit, 0) || credit <= 0:
+		p.emitDeductSkipped(account, requestID, DeductSkipNoCredit)
+		return
+	case account.QuotaUnlimited:
+		p.emitDeductSkipped(account, requestID, DeductSkipUnlimited)
+		return
+	case account.QuotaRemaining == nil:
+		p.emitDeductSkipped(account, requestID, DeductSkipQuotaUnknown)
 		return
 	}
 	before := *account.QuotaRemaining
@@ -800,6 +830,21 @@ func (p *Pool) deductQuotaLocked(account *Account, credit float64, requestID str
 		SpentSinceCheck: spent,
 		CheckedAtBefore: account.QuotaCheckedAt,
 		CheckedAtAfter:  account.QuotaCheckedAt,
+	})
+}
+
+// emitDeductSkipped 报告「这次请求没有扣减」及其原因。
+// Before/After 相同 ⇒ I1 不会误当成清空；Credit 保留上游值供 I2a 对账。
+func (p *Pool) emitDeductSkipped(account *Account, requestID, reason string) {
+	var remaining *float64
+	if account.QuotaRemaining != nil {
+		v := *account.QuotaRemaining
+		remaining = &v
+	}
+	p.emitQuota(QuotaEvent{
+		AccountID: account.ID, RequestID: requestID, Op: QuotaOpDeduct,
+		Before: remaining, After: remaining,
+		Skipped: reason,
 	})
 }
 
@@ -916,22 +961,19 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		// skipped 记每个「看过但没选」的号的原因。
 		// 成功时也要交（「成功了但跳过了 5 个号」正是某个号悄悄坏掉的唯一线索）。
 		skipped = map[string]int{}
+		// examined 记本次**真正检查过**几个号。轮转会在第一个可用号返回，
+		// 只用一个「总数」会让 I7 在健康池上稳定误报。
+		examined = 0
 	)
-	// candidates 是「同站点、已启用、有凭据」的候选总数，
-	// 比 len(store.Accounts) 更准确：别的站点的号本来就不该被算进来。
-	candidates := 0
-	for _, a := range store.Accounts {
-		if !a.Enabled || !HasCredentials(a) {
-			continue
-		}
-		if opts.Site != "" && config.NormalizeSite(a.Site) != config.NormalizeSite(opts.Site) {
-			continue
-		}
-		candidates++
-	}
+	// candidates 用**全部账号数**，与 skipped 的统计域必须一致：
+	// 主循环对所有账号逐条计数跳过原因（含禁用、无凭据、跨站点），
+	// 若这里过滤一遍，I7 的「原因总数 == 分母」就永远对不上。
+	// 对外的「同站点可用号」由面板另算。
+	candidates := len(store.Accounts)
 	for offset := 0; offset < len(store.Accounts); offset++ {
 		idx := (store.NextIndex + offset) % len(store.Accounts)
 		account := store.Accounts[idx]
+		examined++
 		if !account.Enabled {
 			skipped[SkipDisabled]++
 			continue
@@ -983,12 +1025,12 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		store.NextIndex = (idx + 1) % len(store.Accounts)
 		p.mem = store
 		p.markDirtyLocked()
-		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Chosen: store.Accounts[idx].ID, Skipped: cloneCounts(skipped)})
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Chosen: store.Accounts[idx].ID, Skipped: cloneCounts(skipped)})
 		return Selection{Source: "pool", Account: cloneAccount(store.Accounts[idx]), Index: idx, Store: cloneStore(store), Model: opts.Model, RequestID: opts.RequestID}, nil
 	}
 	// 全部候选都只是「这个模型」在限流窗口内 ⇒ 不降级、明确报错。
 	if modelResetAt > 0 && fallbackIdx < 0 {
-		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Skipped: cloneCounts(skipped)})
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Skipped: cloneCounts(skipped)})
 		return Selection{}, &ModelCooldownError{Model: opts.Model, Until: modelResetAt}
 	}
 	if fallbackIdx >= 0 {
@@ -996,7 +1038,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		store.NextIndex = (fallbackIdx + 1) % len(store.Accounts)
 		p.mem = store
 		p.markDirtyLocked()
-		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Chosen: store.Accounts[fallbackIdx].ID, Skipped: cloneCounts(skipped)})
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Chosen: store.Accounts[fallbackIdx].ID, Skipped: cloneCounts(skipped)})
 		return Selection{
 			Source:           "pool",
 			Account:          cloneAccount(store.Accounts[fallbackIdx]),
@@ -1007,7 +1049,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			RequestID:        opts.RequestID,
 		}, nil
 	}
-	p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Skipped: cloneCounts(skipped)})
+	p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Skipped: cloneCounts(skipped)})
 	// 报错带上计数：「真没配账号」与「全被额度/冷却拦住」必须能区分，
 	// 否则排查时会先怀疑配置而不是额度。errors.Is(ErrNoAccounts) 仍成立。
 	detail := formatSkipCounts(skipped)

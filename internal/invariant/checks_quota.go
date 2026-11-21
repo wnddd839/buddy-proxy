@@ -13,8 +13,8 @@ func registerQuota(r *Registry) {
 		"nil 语义是「未知 → 放行」，无理由清空等于撤销一切额度保护",
 		SeverityViolation, checkQuotaNoSilentUnknown)
 
-	r.Add("I2a", "扣减额必须等于上游实际扣费",
-		"上游收 1.3 而本地扣 0（或扣 2），就是漏记或多扣；两者都会让余额与真实脱节",
+	r.Add("I2a", "上游收费时本地必须记账",
+		"上游扣了钱而本地没动额度，余额就会与真实脱节，最终把号打穿",
 		SeverityViolation, checkQuotaDeductMismatch)
 
 	r.Add("I2b", "探针刷新与本地账本必须吻合",
@@ -48,12 +48,16 @@ func checkQuotaNoSilentUnknown(rec decision.Record, _ *State) []decision.Finding
 	}}
 }
 
-// I2a：本地扣减额必须与上游 credit 一致。
+// I2a：上游收费时，本地必须真的扣了账，且扣减量必须等于上游。
 //
 // 三种情形：
-//   - credit 缺失（nil）：上游没回扣费字段，无从对账 ⇒ 跳过
-//   - credit == 0（免费模型）：本地**不得**有任何扣减；有就是给免费请求记了费
-//   - credit > 0：本地扣减额必须等于它（±1e-6）
+//   - 没有 credit（上游没回扣费字段）⇒ 跳过
+//   - credit == 0（免费模型）⇒ 本地不得有扣减；有就是给免费请求记了费
+//   - credit > 0 ⇒ 必须有扣减，且金额一致（±1e-6）
+//
+// 关键在第三种：**缺少扣减记录本身就是缺陷**（"扣减路径没跑"），
+// 只有「额度未知/不限量」这两种设计内的跳过才豁免 —— 它们由
+// Skipped 字段显式标记，不靠猜。
 func checkQuotaDeductMismatch(rec decision.Record, state *State) []decision.Finding {
 	if rec.Kind != decision.KindRequest || !rec.Ok || rec.Canceled {
 		return nil
@@ -61,36 +65,47 @@ func checkQuotaDeductMismatch(rec decision.Record, state *State) []decision.Find
 	if rec.Credit == nil || state == nil || rec.RequestID == "" {
 		return nil
 	}
-	deducted, ok := state.TakeDeduct(rec.RequestID)
+	rec2, ok := state.TakeDeduct(rec.RequestID)
+
 	if *rec.Credit <= 0 {
-		if !ok {
+		if !ok || rec2.Amount == 0 {
 			return nil // 免费请求没有扣减，正确
 		}
 		return []decision.Finding{{
 			Subject: rec.AccountID,
 			Detail: fmt.Sprintf("上游未扣费（credit=0），本地却扣了 %s",
-				formatFloat(&deducted)),
+				formatFloat(ptr(rec2.Amount))),
 			Evidence: map[string]any{
-				"requestId": rec.RequestID, "upstream": *rec.Credit, "deducted": deducted,
+				"requestId": rec.RequestID, "upstream": *rec.Credit, "deducted": rec2.Amount,
 			},
 		}}
 	}
+
 	if !ok {
-		// 没有扣减记录：可能是额度未知（nil）跳过扣减，属设计内，
-		// 不算 mismatch —— 由 I1 负责盯「额度变未知」这件事。
-		return nil
+		// 没有任何扣减决策：可能是额度未知时选择跳过却漏了标记，
+		// 也可能是扣减路径根本没跑。无法区分 ⇒ 报出来让人看。
+		return []decision.Finding{{
+			Subject: rec.AccountID,
+			Detail: fmt.Sprintf("上游扣费 %s，但没有对应的扣减记录",
+				formatFloat(rec.Credit)),
+			Evidence: map[string]any{"requestId": rec.RequestID, "upstream": *rec.Credit},
+		}}
 	}
-	if math.Abs(deducted-*rec.Credit) <= 1e-6 {
+	if rec2.Skipped != "" {
+		return nil // 设计内跳过（额度未知 / 不限量 / 无扣费）
+	}
+	if math.Abs(rec2.Amount-*rec.Credit) <= 1e-6 {
 		return nil
 	}
 	return []decision.Finding{{
 		Subject: rec.AccountID,
 		Detail: fmt.Sprintf("上游扣费 %s，本地扣了 %s（差 %s）",
-			formatFloat(rec.Credit), formatFloat(&deducted), formatFloat(ptr(math.Abs(deducted-*rec.Credit)))),
+			formatFloat(rec.Credit), formatFloat(ptr(rec2.Amount)),
+			formatFloat(ptr(math.Abs(rec2.Amount-*rec.Credit)))),
 		Evidence: map[string]any{
 			"requestId": rec.RequestID,
 			"upstream":  *rec.Credit,
-			"deducted":  deducted,
+			"deducted":  rec2.Amount,
 		},
 	}}
 }

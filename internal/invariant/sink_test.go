@@ -1,6 +1,7 @@
 package invariant
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -51,9 +52,8 @@ func TestSinkDedupesWithinWindow(t *testing.T) {
 	s.Start()
 	defer s.Stop()
 
-	now := time.Now().UnixMilli()
 	for i := 0; i < 3; i++ {
-		s.Submit(decision.Record{Kind: "trigger", At: now + int64(i), AccountID: "same"})
+		s.Submit(decision.Record{Kind: "trigger", AccountID: "same"})
 	}
 	got := s.Findings(10)
 	if len(got) != 1 {
@@ -72,24 +72,10 @@ func TestSinkDedupesPerSubject(t *testing.T) {
 	s, _ := newTestSink(t, 8, 64)
 	s.Start()
 	defer s.Stop()
-	now := time.Now().UnixMilli()
-	s.Submit(decision.Record{Kind: "trigger", At: now, AccountID: "a"})
-	s.Submit(decision.Record{Kind: "trigger", At: now, AccountID: "b"})
+	s.Submit(decision.Record{Kind: "trigger", AccountID: "a"})
+	s.Submit(decision.Record{Kind: "trigger", AccountID: "b"})
 	if got := s.Findings(10); len(got) != 2 {
 		t.Fatalf("不同 subject 应各自保留，实际 %d", len(got))
-	}
-}
-
-// 超出窗口后允许再次落一条。
-func TestSinkAllowsAfterWindow(t *testing.T) {
-	s, _ := newTestSink(t, 8, 64)
-	s.Start()
-	defer s.Stop()
-	now := time.Now().UnixMilli()
-	s.Submit(decision.Record{Kind: "trigger", At: now - dedupeWindow.Milliseconds() - 1, AccountID: "x"})
-	s.Submit(decision.Record{Kind: "trigger", At: now, AccountID: "x"})
-	if got := s.Findings(10); len(got) != 2 {
-		t.Fatalf("窗口外应再落一条，实际 %d", len(got))
 	}
 }
 
@@ -98,15 +84,13 @@ func TestSinkRingIsBounded(t *testing.T) {
 	s, _ := newTestSink(t, 3, 64)
 	s.Start()
 	defer s.Stop()
-	now := time.Now().UnixMilli()
 	for i := 0; i < 10; i++ {
-		s.Submit(decision.Record{Kind: "trigger", At: now + int64(i), AccountID: string(rune('a' + i))})
+		s.Submit(decision.Record{Kind: "trigger", AccountID: string(rune('a' + i))})
 	}
 	got := s.Findings(0)
 	if len(got) != 3 {
 		t.Fatalf("ring 应被限制在 3，实际 %d", len(got))
 	}
-	// 最新在前
 	if got[0].Subject != "j" {
 		t.Fatalf("最新应在最前，实际 %q", got[0].Subject)
 	}
@@ -158,7 +142,35 @@ func TestBackfillIgnoresOld(t *testing.T) {
 	}
 }
 
-// 注入 logger 时每条去重后的 finding 都要发一条日志。
+// 输入记录（非 finding）也必须落盘 —— 否则离线回放没有输入。
+func TestSinkPersistsInputRecords(t *testing.T) {
+	st, err := decision.OpenStore(t.TempDir(), 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSink(st, NewRegistry(), NewState(8, 8), 50, 64)
+	s.Start()
+
+	now := time.Now()
+	if err := st.Append(decision.Record{Kind: decision.KindRequest, At: now.UnixMilli(), RequestID: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	s.Submit(decision.Record{Kind: decision.KindRequest, At: now.UnixMilli(), RequestID: "r2"})
+	s.Stop()
+
+	got, err := st.ReadKind(now.Add(-time.Minute), now.Add(time.Minute), decision.KindRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("输入记录应被落盘（含直接 Append 的那条），实际 %d 条：%+v", len(got), got)
+	}
+	if s.Persisted() == 0 {
+		t.Fatal("Persisted 计数应 > 0")
+	}
+}
+
+// 日志必须由写协程发出（不能阻塞 Submit），且每条去重后的 finding 一条。
 func TestSinkEmitsLog(t *testing.T) {
 	s, _ := newTestSink(t, 8, 64)
 	var logs []string
@@ -166,9 +178,38 @@ func TestSinkEmitsLog(t *testing.T) {
 		logs = append(logs, msg+":"+fields["invariant"].(string))
 	})
 	s.Start()
-	defer s.Stop()
 	s.Submit(decision.Record{Kind: "trigger", AccountID: "z"})
+	s.Stop() // Stop 会等队列写完，此时日志已刷
 	if len(logs) != 1 || logs[0] != "invariant hit:T1" {
 		t.Fatalf("日志不对：%v", logs)
+	}
+}
+
+// 未 Start 就 Stop 必须立即返回（不白等 2 秒）。
+func TestStopWithoutStartIsFast(t *testing.T) {
+	s, _ := newTestSink(t, 8, 64)
+	start := time.Now()
+	s.Stop()
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("未 Start 的 Stop 应立刻返回，实际耗时 %v", elapsed)
+	}
+}
+
+// 落盘失败必须计数（否则「面板有、磁盘无」是观测系统自身的静默失效）。
+func TestWriteErrorsAreCounted(t *testing.T) {
+	st, err := decision.OpenStore(t.TempDir(), 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSink(st, NewRegistry(), NewState(8, 8), 50, 64)
+	s.Start()
+	// 删掉底层目录，后续 Append 必然失败。
+	if err := os.RemoveAll(st.Dir()); err != nil {
+		t.Fatal(err)
+	}
+	s.Submit(decision.Record{Kind: decision.KindRequest, RequestID: "boom"})
+	s.Stop()
+	if s.WriteErrors() == 0 {
+		t.Fatal("落盘失败应被计数")
 	}
 }

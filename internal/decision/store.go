@@ -30,6 +30,20 @@ func OpenStore(dir string, retention time.Duration) (*Store, error) {
 	return &Store{dir: dir, retention: retention}, nil
 }
 
+// OpenStoreReadOnly 只打开已存在的目录，绝不创建。
+//
+// 审计工具必须用这个：`-dir` 拼错时不应该在别人机器上凭空建出目录，
+// 那会让「空报告」看起来像「已初始化但没数据」。
+func OpenStoreReadOnly(dir string, retention time.Duration) (*Store, error) {
+	if retention <= 0 {
+		retention = 30 * 24 * time.Hour
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return nil, err
+	}
+	return &Store{dir: dir, retention: retention}, nil
+}
+
 // Append 追加一条记录。At==0 时填当前毫秒。
 func (s *Store) Append(r Record) error {
 	if s == nil {
@@ -62,6 +76,18 @@ func (s *Store) Append(r Record) error {
 
 // ReadRange 返回 [from, to] 内的记录，按 At 升序。坏行跳过。
 func (s *Store) ReadRange(from, to time.Time) ([]Record, error) {
+	return s.read(from, to, "")
+}
+
+// ReadKind 只返回指定 kind 的记录（流式过滤，不把其它 kind 留在内存里）。
+//
+// 回扫必须用它：一天的 request 记录是几万条，全读进来再过滤会
+// 直接顶到 80MB 预算。
+func (s *Store) ReadKind(from, to time.Time, kind string) ([]Record, error) {
+	return s.read(from, to, kind)
+}
+
+func (s *Store) read(from, to time.Time, kind string) ([]Record, error) {
 	if s == nil {
 		return nil, nil
 	}
@@ -89,6 +115,9 @@ func (s *Store) ReadRange(from, to time.Time) ([]Record, error) {
 			if r.At < fromMs || r.At > toMs {
 				continue
 			}
+			if kind != "" && r.Kind != kind {
+				continue
+			}
 			out = append(out, r)
 		}
 	}
@@ -113,4 +142,18 @@ func (s *Store) Dir() string {
 		return ""
 	}
 	return s.dir
+}
+
+// EarliestDate 返回最早一天的日期键（20060102），无文件时返回空串。
+func (s *Store) EarliestDate() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dates := dailyjsonl.Dates(s.dir, filePrefix)
+	if len(dates) == 0 {
+		return ""
+	}
+	return dates[0]
 }

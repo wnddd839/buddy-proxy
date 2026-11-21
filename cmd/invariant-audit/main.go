@@ -50,9 +50,10 @@ func main() {
 		}
 	}
 
-	store, err := decision.OpenStore(*dir, 30*24*time.Hour)
+	// 只读打开：审计工具不得因为 -dir 拼错就在别人机器上建出目录。
+	store, err := decision.OpenStoreReadOnly(*dir, 30*24*time.Hour)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "打开决策日志失败：%v\n", err)
+		fmt.Fprintf(os.Stderr, "目录不可读：%v\n", err)
 		os.Exit(1)
 	}
 

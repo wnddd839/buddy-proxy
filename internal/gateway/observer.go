@@ -14,8 +14,10 @@ import (
 // （那会让纯账号池包带上观测体系的全部传递依赖），
 // 而 gateway 本来就同时知道两者。
 //
-// 注意：这些回调发生在 Pool 持有锁期间（见 accounts.Observer 的契约），
-// 所以这里只做「构造 Record + 调 Sink.Submit」，绝不可回调 Pool。
+// 锁序警告：这些回调发生在 Pool 持有 p.mu 期间（见 accounts.Observer 的契约）。
+// 因此这里只允许做「构造 Record + 调 Sink.Submit」，后者只碰内存与
+// 有界 channel（锁序 Pool.mu → State.mu）。**绝不可回调 Pool 的方法**，
+// 反向获取锁必死锁。
 type InvariantObserver struct {
 	Sink *invariant.Sink
 }
@@ -24,6 +26,13 @@ type InvariantObserver struct {
 func (o *InvariantObserver) ObserveQuota(e accounts.QuotaEvent) {
 	if o == nil || o.Sink == nil {
 		return
+	}
+	// 实际扣减量用 Before-After 计算，而不是 e.Credit。
+	// 两者通常相等，但 Before/After 是「额度真的动了多少」的直接证据；
+	// 一旦将来扣减逻辑引入折扣/多扣，I2a 抓的是真实差额而不是声明值。
+	amount := 0.0
+	if e.Before != nil && e.After != nil {
+		amount = *e.Before - *e.After
 	}
 	rec := decision.Record{
 		Kind:            decision.KindQuota,
@@ -38,10 +47,10 @@ func (o *InvariantObserver) ObserveQuota(e accounts.QuotaEvent) {
 		CheckedAtBefore: e.CheckedAtBefore,
 		CheckedAtAfter:  e.CheckedAtAfter,
 		Reason:          e.Reason,
+		SkipReason:      e.Skipped,
 	}
-	// I2a 靠这条把「本地扣了多少」与稍后到达的 request 记录对上。
 	if e.Op == accounts.QuotaOpDeduct && e.RequestID != "" {
-		o.Sink.RememberDeduct(e.RequestID, e.Credit)
+		o.Sink.RememberDeduct(e.RequestID, amount, e.Skipped)
 	}
 	o.Sink.Submit(rec)
 }
@@ -58,6 +67,7 @@ func (o *InvariantObserver) ObserveSelection(e accounts.SelectionEvent) {
 		Site:       e.Site,
 		Model:      e.Model,
 		Candidates: e.Candidates,
+		Examined:   e.Examined,
 		Chosen:     e.Chosen,
 		Skipped:    e.Skipped,
 	})

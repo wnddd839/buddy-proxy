@@ -6,8 +6,6 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/decision"
 )
 
-func acct(v float64) *float64 { return &v }
-
 func TestI1ClearNeedsWhitelistedReason(t *testing.T) {
 	reg := DefaultRegistry()
 	before := 5.0
@@ -17,8 +15,8 @@ func TestI1ClearNeedsWhitelistedReason(t *testing.T) {
 	}{
 		{decision.OpClear, "", 1},
 		{decision.OpClear, "随便写的", 1},
-		{decision.OpClear, decision.ReasonProbeExpired, 0},
-		{decision.OpClear, decision.ReasonAdminClear, 0},
+		{decision.OpClear, decision.ReasonQuotaRecovered, 0},
+		{decision.OpClear, decision.ReasonInvalidSnapshot, 0},
 		{decision.OpImport, "", 0},
 		{decision.OpReset, "", 0},
 		{decision.OpDeduct, "", 0}, // 不是清空
@@ -36,7 +34,6 @@ func TestI1ClearNeedsWhitelistedReason(t *testing.T) {
 	}
 }
 
-// 对照：有理由的清空不得报，且「没变 nil」的扣减也不得报。
 func TestI1IgnoresNormalMutations(t *testing.T) {
 	reg := DefaultRegistry()
 	before, after := 10.0, 8.7
@@ -49,61 +46,85 @@ func TestI1IgnoresNormalMutations(t *testing.T) {
 	}
 }
 
-// 免费模型（credit=0）且本地没扣 ⇒ 不报；上游收费但本地扣 0 ⇒ 报。
-func TestI2aDetectMismatch(t *testing.T) {
-	// credit=1.3 但没有扣减记录 ⇒ 忽略（额度未知时跳过扣减，属设计内）
-	st := NewState(8, 8)
+// I2a 的四种情形。关键在于「上游收费但本地没扣」必须报 ——
+// 那正是「扣减路径没跑」，也是评审 I-5 指出的自证漏洞。
+func TestI2aCases(t *testing.T) {
 	credit := 1.3
-	rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r0", Ok: true, Credit: &credit}
-	if got := DefaultRegistry().Run(rec, st); len(got) != 0 {
-		t.Fatalf("无扣减记录不该报：%+v", got)
-	}
-
-	// credit=1.3，本地只扣了 0 ⇒ 必须报（漏记一笔）
-	st.PutDeduct("r1", 0)
-	rec.RequestID = "r1"
-	got := DefaultRegistry().Run(rec, st)
-	if len(got) != 1 || got[0].Invariant != "I2a" {
-		t.Fatalf("应命中 I2a：%+v", got)
-	}
-
-	// 对照：免费请求却记了费 ⇒ 也必须报（多扣）
-	st.PutDeduct("r2", 1.0)
 	zero := 0.0
-	free := decision.Record{Kind: decision.KindRequest, At: 3, RequestID: "r2", Ok: true, Credit: &zero}
-	got = DefaultRegistry().Run(free, st)
-	if len(got) != 1 || got[0].Invariant != "I2a" {
-		t.Fatalf("免费请求多扣应报：%+v", got)
-	}
+
+	t.Run("上游收费且本地扣了一致", func(t *testing.T) {
+		st := NewState(8, 8)
+		st.PutDeduct("r1", 1.3, "")
+		rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r1", AccountID: "a1", Ok: true, Credit: &credit}
+		if got := DefaultRegistry().Run(rec, st); len(got) != 0 {
+			t.Fatalf("一致不该报：%+v", got)
+		}
+	})
+
+	t.Run("上游收费但本地完全没记账", func(t *testing.T) {
+		st := NewState(8, 8)
+		rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r2", AccountID: "a1", Ok: true, Credit: &credit}
+		got := DefaultRegistry().Run(rec, st)
+		if len(got) != 1 || got[0].Invariant != "I2a" {
+			t.Fatalf("漏记应报：%+v", got)
+		}
+	})
+
+	t.Run("上游收费但金额不一致", func(t *testing.T) {
+		st := NewState(8, 8)
+		st.PutDeduct("r3", 0.5, "")
+		rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r3", AccountID: "a1", Ok: true, Credit: &credit}
+		if got := DefaultRegistry().Run(rec, st); len(got) != 1 || got[0].Invariant != "I2a" {
+			t.Fatalf("不一致应报：%+v", got)
+		}
+	})
+
+	t.Run("设计内跳过（额度未知）", func(t *testing.T) {
+		st := NewState(8, 8)
+		st.PutDeduct("r4", 0, decision.DeductSkipQuotaUnknown)
+		rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r4", AccountID: "a1", Ok: true, Credit: &credit}
+		if got := DefaultRegistry().Run(rec, st); len(got) != 0 {
+			t.Fatalf("额度未知时跳过扣减是设计内：%+v", got)
+		}
+	})
+
+	t.Run("免费模型没有扣减", func(t *testing.T) {
+		st := NewState(8, 8)
+		st.PutDeduct("r5", 0, decision.DeductSkipNoCredit)
+		rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r5", AccountID: "a1", Ok: true, Credit: &zero}
+		if got := DefaultRegistry().Run(rec, st); len(got) != 0 {
+			t.Fatalf("免费模型不该报：%+v", got)
+		}
+	})
+
+	t.Run("免费请求却扣了钱", func(t *testing.T) {
+		st := NewState(8, 8)
+		st.PutDeduct("r6", 0.9, "")
+		rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r6", AccountID: "a1", Ok: true, Credit: &zero}
+		if got := DefaultRegistry().Run(rec, st); len(got) != 1 {
+			t.Fatalf("多扣应报：%+v", got)
+		}
+	})
+
+	t.Run("上游没回 credit 字段", func(t *testing.T) {
+		st := NewState(8, 8)
+		rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r7", Ok: true}
+		if got := DefaultRegistry().Run(rec, st); len(got) != 0 {
+			t.Fatalf("无 credit 无从对账，不该报：%+v", got)
+		}
+	})
+
+	t.Run("取消的请求不参与", func(t *testing.T) {
+		st := NewState(8, 8)
+		rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r8", Ok: true, Canceled: true, Credit: &credit}
+		if got := DefaultRegistry().Run(rec, st); len(got) != 0 {
+			t.Fatalf("取消不该报：%+v", got)
+		}
+	})
 }
 
-func TestI2aMatchesWhenEqual(t *testing.T) {
-	st := NewState(8, 8)
-	st.PutDeduct("r1", 1.3)
-	credit := 1.3
-	rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r1", Ok: true, Credit: &credit}
-	if got := DefaultRegistry().Run(rec, st); len(got) != 0 {
-		t.Fatalf("相等不该报：%+v", got)
-	}
-}
-
-// 免费模型（credit=0）不参与对账 —— 否则每次免费请求都会误报。
-func TestI2aSkipsFreeModel(t *testing.T) {
-	st := NewState(8, 8)
-	zero := 0.0
-	rec := decision.Record{Kind: decision.KindRequest, At: 2, RequestID: "r1", Ok: true, Credit: &zero}
-	if got := DefaultRegistry().Run(rec, st); len(got) != 0 {
-		t.Fatalf("免费模型不该报：%+v", got)
-	}
-	// 没有 credit 字段（上游没回）同样跳过。
-	if got := DefaultRegistry().Run(decision.Record{Kind: decision.KindRequest, At: 2, Ok: true}, st); len(got) != 0 {
-		t.Fatalf("无 credit 不该报：%+v", got)
-	}
-}
-
-// 探针刷新的对照：in-flight 已被 ApplyQuotaProbe 校正过，账面应当吻合。
 func TestI2bNoDriftWhenAccounted(t *testing.T) {
-	before, after := 100.0, 97.0 // 差 3
+	before, after := 100.0, 97.0
 	match := decision.Record{
 		Kind: decision.KindQuota, At: 3, AccountID: "a1",
 		Op: decision.OpRefresh, Before: &before, After: &after, SpentSinceCheck: 3.0,
@@ -113,14 +134,13 @@ func TestI2bNoDriftWhenAccounted(t *testing.T) {
 	}
 
 	drift := match
-	drift.SpentSinceCheck = 1.0 // 账面只记了 1，实际掉了 3
+	drift.SpentSinceCheck = 1.0
 	got := DefaultRegistry().Run(drift, NewState(8, 8))
 	if len(got) != 1 || got[0].Severity != SeverityInfo {
 		t.Fatalf("应出 info：%+v", got)
 	}
 }
 
-// 「额度由未知变有值」（首次探针）不是漂移。
 func TestI2bSkipsFirstProbe(t *testing.T) {
 	after := 50.0
 	rec := decision.Record{
@@ -132,7 +152,6 @@ func TestI2bSkipsFirstProbe(t *testing.T) {
 	}
 }
 
-// 每条注册的断言都必须带 why（否则面板 tooltip 为空，用户无从判断）。
 func TestAllInvariantsHaveWhy(t *testing.T) {
 	for _, spec := range DefaultRegistry().Specs() {
 		if spec["why"] == "" {
@@ -144,7 +163,6 @@ func TestAllInvariantsHaveWhy(t *testing.T) {
 	}
 }
 
-// 断言自身 panic 不得穿出去影响请求路径。
 func TestPanicIsContained(t *testing.T) {
 	r := NewRegistry()
 	r.Add("X1", "会 panic 的断言", "用来验证 recover", SeverityViolation,
@@ -152,5 +170,24 @@ func TestPanicIsContained(t *testing.T) {
 	got := r.Run(decision.Record{At: 1}, NewState(8, 8))
 	if len(got) != 1 || got[0].Subject != "invariant-panic" {
 		t.Fatalf("panic 应被转成一条 finding：%+v", got)
+	}
+}
+
+// 扣减记录必须有上限（评审 I-6：RequestID 不同源时是慢性泄漏）。
+func TestDeductStateIsBounded(t *testing.T) {
+	st := NewState(8, 8)
+	st.SetDeductCap(3)
+	for i := 0; i < 10; i++ {
+		st.PutDeduct(string(rune('a'+i)), 1, "")
+	}
+	if got := st.PendingDeducts(); got != 3 {
+		t.Fatalf("扣减记录应被限制在 3，实际 %d", got)
+	}
+	// 最早的已被淘汰
+	if _, ok := st.TakeDeduct("a"); ok {
+		t.Fatal("最旧的应被淘汰")
+	}
+	if _, ok := st.TakeDeduct("j"); !ok {
+		t.Fatal("最新的应保留")
 	}
 }

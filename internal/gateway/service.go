@@ -801,6 +801,10 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if opts.AccountID == "" && opts.RetryDepth == 0 && s.needsQuotaRefresh(opts.ExcludeIDs, site) {
 		s.refreshCandidateQuotas(ctx, opts.ExcludeIDs, true, site)
 	}
+	// 入站快照必须取在网关入口：provider 内部的 opts.Messages 已经过
+	// 网关侧一切准备，若历史缩减发生在网关，那里看到的 In==Out 就永远
+	// 发现不了（I3 会结构性失明）。
+	primeInboundIO(opts)
 	selection, err := s.Pool.Select(accounts.SelectOptions{
 		AccountID:     opts.AccountID,
 		Site:          site,

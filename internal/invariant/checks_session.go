@@ -65,6 +65,12 @@ func checkErrorUnclassified(rec decision.Record, st *State) []decision.Finding {
 	if rec.Kind != decision.KindRequest || rec.Ok || rec.Canceled {
 		return nil
 	}
+	// 只有「有原文但没有码」才算分类器漏了。取消、空回包、
+	// 已有数字码的都不进这条断言 —— 否则 I5 会退化成
+	// 「所有失败都未分类」，指标不可解读。
+	if rec.ErrorKind != "" && rec.ErrorKind != "unclassified" {
+		return nil
+	}
 	if rec.ErrorCode != "" || st == nil {
 		return nil
 	}

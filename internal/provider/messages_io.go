@@ -28,8 +28,14 @@ func FillMessagesIO(dst *MessagesIO, in, out []map[string]any) {
 	if dst == nil {
 		return
 	}
-	dst.InMessages, dst.InBytes, dst.InSystemLen = countMessages(in)
-	dst.OutMessages, dst.OutBytes, dst.OutSystemLen = countMessages(out)
+	// nil 表示「这一侧本次不统计」，而不是「这一侧是空的」。
+	// 网关入口先用 nil 的 out 预填入站侧，随后 provider 再填出站侧。
+	if in != nil {
+		dst.InMessages, dst.InBytes, dst.InSystemLen = countMessages(in)
+	}
+	if out != nil {
+		dst.OutMessages, dst.OutBytes, dst.OutSystemLen = countMessages(out)
+	}
 }
 
 // countMessages 返回条数、内容总长度、system 内容总长度。

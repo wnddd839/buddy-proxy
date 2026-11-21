@@ -1954,12 +1954,17 @@ func (s *Server) handleSystemPromptEvents(w http.ResponseWriter, r *http.Request
 func (s *Server) handleInvariants(w http.ResponseWriter, r *http.Request) {
 	sink := s.Svc.InvariantSink()
 	if sink == nil {
+		// disabled 分支也要给出与启用时同形的字段：前端与测试都
+		// 按固定契约读，缺字段会被当成「0 命中」而不是「未启用」。
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
-			"ok":       true,
-			"enabled":  false,
-			"findings": []any{},
-			"counts":   map[string]int{},
-			"coverage": "未启用（需要账号目录可写）",
+			"ok":          true,
+			"enabled":     false,
+			"findings":    []any{},
+			"counts":      map[string]int{},
+			"dropped":     0,
+			"suppressed":  0,
+			"writeErrors": 0,
+			"coverage":    "未启用（需要账号目录可写）",
 		})
 		return
 	}
@@ -1971,14 +1976,15 @@ func (s *Server) handleInvariants(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"enabled":    true,
-		"findings":   sink.Findings(limit),
-		"counts":     sink.Counts(now),
-		"dropped":    sink.Dropped(),
-		"suppressed": sink.Suppressed(),
-		"coverage":   "自 " + time.UnixMilli(sink.StartedAt()).Format("2006-01-02 15:04") + " 起（含回扫的近 24h）",
-		"specs":      invariant.DefaultRegistry().Specs(),
+		"ok":          true,
+		"enabled":     true,
+		"findings":    sink.Findings(limit),
+		"counts":      sink.Counts(now),
+		"dropped":     sink.Dropped(),
+		"suppressed":  sink.Suppressed(),
+		"writeErrors": sink.WriteErrors(),
+		"coverage":    "自 " + time.UnixMilli(sink.StartedAt()).Format("2006-01-02 15:04") + " 起（含回扫的近 24h）",
+		"specs":       invariant.DefaultRegistry().Specs(),
 	})
 }
 

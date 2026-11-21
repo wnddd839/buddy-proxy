@@ -1,10 +1,3 @@
-// Package decision 记录网关的决策流：请求、选号、额度变动、断言命中。
-//
-// 与 usagejournal 的分工：
-//   - usagejournal 服务 UI（内存里只留最近 400 条明细），历史深度不够
-//   - 本包按日追加 jsonl，无内存上限，供离线回放与「以前有没有发生过」
-//
-// 与 systemprompt 的分工：那边只记 system 侧处理结果，本包记整条决策链。
 package decision
 
 // Kind 取值。
@@ -19,6 +12,8 @@ const (
 const (
 	UsageActual    = "actual"
 	UsageEstimated = "estimated"
+	// UsageUpstream 与 actual 同义，保留为上游原始字面值。
+	UsageUpstream = "upstream"
 )
 
 // 额度变更的操作类型。
@@ -30,14 +25,34 @@ const (
 	OpReset   = "reset"
 )
 
-// 允许把余额清成 nil 的显式理由。
-// 只有这里列出的值才被 I1 接受；自由字符串不算。
+// 扣减被跳过的原因（此时 After == Before，额度没动）。
+//
+// 单列出来的理由：只有把「为什么没扣」也记下来，I2a 才能区分
+// 「额度未知/不限量，扣不了」与「上游明明收费了，扣减路径却没跑」。
 const (
-	ReasonProbeExpired     = "probe_expired"
-	ReasonAdminClear       = "admin_clear"
-	ReasonAccountReimport  = "account_reimport"
-	ReasonModelUnsupported = "model_unsupported"
+	DeductSkipQuotaUnknown = "quota_unknown"
+	DeductSkipUnlimited    = "unlimited"
+	DeductSkipNoCredit     = "no_credit"
 )
+
+// 允许把余额清成 nil 的显式理由。
+//
+// 这里是**唯一来源**：internal/accounts 里的 ClearReason* 常量必须与之一致，
+// 由 crosscheck_test.go 强制（历史上这两套没同步，导致 I1 对每次合法清空都误报）。
+const (
+	ReasonQuotaRecovered  = "quota_recovered"  // 付费成功证明旧「耗尽」快照已过期
+	ReasonInvalidSnapshot = "invalid_snapshot" // 上游回包 NaN/Inf，只能清空
+	ReasonImport          = "import"           // 账号导入/覆盖
+	ReasonAdminClear      = "admin_clear"      // 管理台手动清空（暂无调用点，预留）
+)
+
+// AllowedClearReasons 是 I1 的白名单。
+var AllowedClearReasons = map[string]struct{}{
+	ReasonQuotaRecovered:  {},
+	ReasonInvalidSnapshot: {},
+	ReasonImport:          {},
+	ReasonAdminClear:      {},
+}
 
 // Record 是一条决策。四种 kind 共用一张扁平表：jsonl 好读、回放好过滤，
 // 代价是字段多，但每行只有一个 kind 的字段非零。
@@ -46,35 +61,40 @@ type Record struct {
 	At   int64  `json:"at"`
 
 	// request
-	RequestID        string   `json:"requestId,omitempty"`
-	SessionKey       string   `json:"sessionKey,omitempty"`
-	AccountID        string   `json:"accountId,omitempty"`
-	Site             string   `json:"site,omitempty"`
-	Model            string   `json:"model,omitempty"`
-	RoutedModel      string   `json:"routedModel,omitempty"`
-	PromptTokens     int64    `json:"promptTokens,omitempty"`
-	CompletionTokens int64    `json:"completionTokens,omitempty"`
-	UsageSource      string   `json:"usageSource,omitempty"`
-	Canceled         bool     `json:"canceled,omitempty"`
-	TitleRewrite     bool     `json:"titleRewrite,omitempty"`
-	InMessages       int      `json:"inMessages,omitempty"`
-	OutMessages      int      `json:"outMessages,omitempty"`
-	InBytes          int      `json:"inBytes,omitempty"`
-	OutBytes         int      `json:"outBytes,omitempty"`
-	InSystemLen      int      `json:"inSystemLen,omitempty"`
-	OutSystemLen     int      `json:"outSystemLen,omitempty"`
-	SystemFp         string   `json:"systemFp,omitempty"`
-	SystemForm       string   `json:"systemForm,omitempty"`
-	Stripped         bool     `json:"stripped,omitempty"`
-	StripScope       string   `json:"stripScope,omitempty"`
-	Degraded         bool     `json:"degraded,omitempty"`
-	Ok               bool     `json:"ok,omitempty"`
-	ErrorCode        string   `json:"errorCode,omitempty"`
-	ErrorText        string   `json:"errorText,omitempty"`
-	Credit           *float64 `json:"credit,omitempty"`
+	RequestID        string `json:"requestId,omitempty"`
+	SessionKey       string `json:"sessionKey,omitempty"`
+	AccountID        string `json:"accountId,omitempty"`
+	Site             string `json:"site,omitempty"`
+	Model            string `json:"model,omitempty"`
+	RoutedModel      string `json:"routedModel,omitempty"`
+	PromptTokens     int64  `json:"promptTokens,omitempty"`
+	CompletionTokens int64  `json:"completionTokens,omitempty"`
+	UsageSource      string `json:"usageSource,omitempty"`
+	Canceled         bool   `json:"canceled,omitempty"`
+	TitleRewrite     bool   `json:"titleRewrite,omitempty"`
+	InMessages       int    `json:"inMessages,omitempty"`
+	OutMessages      int    `json:"outMessages,omitempty"`
+	InBytes          int    `json:"inBytes,omitempty"`
+	OutBytes         int    `json:"outBytes,omitempty"`
+	InSystemLen      int    `json:"inSystemLen,omitempty"`
+	OutSystemLen     int    `json:"outSystemLen,omitempty"`
+	SystemFp         string `json:"systemFp,omitempty"`
+	SystemForm       string `json:"systemForm,omitempty"`
+	Stripped         bool   `json:"stripped,omitempty"`
+	StripScope       string `json:"stripScope,omitempty"`
+	Degraded         bool   `json:"degraded,omitempty"`
+	Ok               bool   `json:"ok,omitempty"`
+	ErrorCode        string `json:"errorCode,omitempty"`
+	// ErrorKind 是粗分类（canceled / coded / empty / unclassified）。
+	// 与 ErrorCode 分开：I5 只关心「有原文但没有码」，需要把
+	// 取消、空回包、有码这几种情况摘出去。
+	ErrorKind string   `json:"errorKind,omitempty"`
+	ErrorText string   `json:"errorText,omitempty"`
+	Credit    *float64 `json:"credit,omitempty"`
 
 	// selection
 	Candidates int            `json:"candidates,omitempty"`
+	Examined   int            `json:"examined,omitempty"`
 	Chosen     string         `json:"chosen,omitempty"`
 	Skipped    map[string]int `json:"skipped,omitempty"`
 
@@ -86,6 +106,8 @@ type Record struct {
 	CheckedAtBefore int64    `json:"checkedAtBefore,omitempty"`
 	CheckedAtAfter  int64    `json:"checkedAtAfter,omitempty"`
 	Reason          string   `json:"reason,omitempty"`
+	// SkipReason 非空表示这次扣减**被跳过**，值说明原因（DeductSkip*）。
+	SkipReason string `json:"skipReason,omitempty"`
 
 	// finding
 	Finding *Finding `json:"finding,omitempty"`
@@ -101,12 +123,4 @@ type Finding struct {
 	Why        string         `json:"why,omitempty"`
 	Evidence   map[string]any `json:"evidence,omitempty"`
 	Suppressed int            `json:"suppressed,omitempty"`
-}
-
-// AllowedClearReasons 是 I1 的白名单：只有这些理由允许把余额清成 nil。
-var AllowedClearReasons = map[string]struct{}{
-	ReasonProbeExpired:     {},
-	ReasonAdminClear:       {},
-	ReasonAccountReimport:  {},
-	ReasonModelUnsupported: {},
 }
