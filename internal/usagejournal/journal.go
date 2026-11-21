@@ -71,6 +71,22 @@ type Entry struct {
 	SystemFp string `json:"systemFp,omitempty"`
 	// SystemDegraded 表示本次请求因 11128 从 keep 降级为 fold。
 	SystemDegraded bool `json:"systemDegraded,omitempty"`
+	// SystemLen 是 system 的字节数（出站口径），SystemStripped 表示删过指纹。
+	SystemLen      int    `json:"systemLen,omitempty"`
+	SystemStripped bool   `json:"systemStripped,omitempty"`
+	StripScope     string `json:"stripScope,omitempty"`
+	// ErrorCode 是分类后的错误码（空 = 未分类）。与 Error 的区别：
+	// Error 是给人看的原文，ErrorCode 是给统计与断言用的枚举。
+	ErrorCode string `json:"errorCode,omitempty"`
+	// UsageSource 区分上游真实值与本地估算（upstream | estimated）。
+	UsageSource string `json:"usageSource,omitempty"`
+	// TitleRewrite 标记被改写成标题生成模型的请求（会话级统计要排除它）。
+	TitleRewrite bool `json:"titleRewrite,omitempty"`
+	// InMessages/OutMessages/InBytes/OutBytes 是进/出两侧的消息统计。
+	InMessages  int `json:"inMessages,omitempty"`
+	OutMessages int `json:"outMessages,omitempty"`
+	InBytes     int `json:"inBytes,omitempty"`
+	OutBytes    int `json:"outBytes,omitempty"`
 }
 
 // Summary rolls up token / credit totals for a time window.

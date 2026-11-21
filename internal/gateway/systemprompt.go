@@ -42,6 +42,10 @@ type SystemPromptOutcome struct {
 	StripAssistantBytes int    `json:"stripAssistantBytes,omitempty"`
 	// StrippedBytes 是删除的字节数，便于核对「只删了那一句」。
 	StrippedBytes int `json:"strippedBytes,omitempty"`
+	// IO 是进/出两侧的消息统计（条数与字节数），供不变量层判断
+	// 网关有没有在内部减少历史。与 Stripped 的区别：Stripped 只看
+	// 「有没有删指纹」，IO 看「整体形状有没有变」。
+	IO *provider.MessagesIO `json:"io,omitempty"`
 }
 
 // systemAttempt 是一次上游尝试的 system 侧快照，只算一次指纹。

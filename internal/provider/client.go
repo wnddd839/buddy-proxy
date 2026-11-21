@@ -183,6 +183,11 @@ type ChatOptions struct {
 	//
 	// 默认关闭（CODEBUDDY_PROXY_SYSTEM_ECHO_USER=1 才开），属临时调试开关。
 	EchoSystemToUser bool
+	// IOReport 非 nil 时回填「进/出两侧」的消息统计，供不变量层判断
+	// 网关有没有在内部减少历史（I3）或让 system 无声消失（I4）。
+	// 传 nil 时不做任何统计 —— 生产默认就是 nil 之外的值由 gateway 填，
+	// 但测试与其它调用方可以不管。
+	IOReport *MessagesIO
 }
 
 type Event struct {
@@ -1119,6 +1124,9 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 		out = append(out, map[string]any{"role": "system", "content": canonicalUpstreamSystem})
 		messages = append(out, messages...)
 	}
+	// 统计必须放在所有改写之后（剥离 / echo / fold / system 注入），
+	// 否则量到的是中间态，I3/I4 会把合法的策略变换当成丢失。
+	FillMessagesIO(opts.IOReport, opts.Messages, messages)
 	if len(messages) == 0 {
 		return Result{}, fmt.Errorf("CodeBuddy chat completion failed: no valid messages after normalization")
 	}

@@ -43,6 +43,17 @@ type ChatRecordInput struct {
 	SystemForm     string
 	SystemFp       string
 	SystemDegraded bool
+	// SystemStripped / StripScope 说明这次剥离动到了哪一侧。
+	SystemStripped bool
+	StripScope     string
+	// IO 是进/出两侧的消息统计（nil = 未观测）。
+	IO *provider.MessagesIO
+	// TitleRewrite 标记本次被改写成了标题生成请求（会话级统计要排除）。
+	TitleRewrite bool
+	// ErrorCode 是分类后的错误码（空 = 未分类）。
+	ErrorCode string
+	// UsageSource 区分上游真实值与本地估算（空 → upstream）。
+	UsageSource string
 }
 
 // RecordChat appends a usage journal row (persisted via usage journal flush).
@@ -94,7 +105,40 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		SystemForm:                    input.SystemForm,
 		SystemFp:                      input.SystemFp,
 		SystemDegraded:                input.SystemDegraded,
+		SystemLen:                     ioSystemLen(input),
+		SystemStripped:                input.SystemStripped,
+		StripScope:                    input.StripScope,
+		ErrorCode:                     input.ErrorCode,
+		UsageSource:                   ioUsageSource(input),
+		TitleRewrite:                  input.TitleRewrite,
+		InMessages:                    ioInt(input.IO, func(m *provider.MessagesIO) int { return m.InMessages }),
+		OutMessages:                   ioInt(input.IO, func(m *provider.MessagesIO) int { return m.OutMessages }),
+		InBytes:                       ioInt(input.IO, func(m *provider.MessagesIO) int { return m.InBytes }),
+		OutBytes:                      ioInt(input.IO, func(m *provider.MessagesIO) int { return m.OutBytes }),
 	})
+}
+
+// ioSystemLen 取出站 system 的字节数（未观测时 0）。
+func ioSystemLen(input ChatRecordInput) int {
+	if input.IO == nil {
+		return 0
+	}
+	return input.IO.OutSystemLen
+}
+
+// ioUsageSource 空值按 upstream 处理：老调用方不会填这个字段。
+func ioUsageSource(input ChatRecordInput) string {
+	if input.UsageSource != "" {
+		return input.UsageSource
+	}
+	return "upstream"
+}
+
+func ioInt(io *provider.MessagesIO, pick func(*provider.MessagesIO) int) int {
+	if io == nil {
+		return 0
+	}
+	return pick(io)
 }
 
 // reasoningTokens 取出 completion_tokens_details.reasoning_tokens（没有则 0）。

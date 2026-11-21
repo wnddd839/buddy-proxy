@@ -66,7 +66,12 @@ func (s *Server) recordChatJournal(
 		input.SystemForm = outcome.Form
 		input.SystemFp = outcome.Fingerprint
 		input.SystemDegraded = outcome.Degraded
+		input.SystemStripped = outcome.Stripped
+		input.StripScope = outcome.StripScope
+		input.IO = outcome.IO
 	}
+	input.TitleRewrite = opts.RoutedFrom != "" && opts.TitleRewrite
+	input.UsageSource = usage.Source
 	s.Svc.RecordChat(input)
 }
 

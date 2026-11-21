@@ -423,7 +423,11 @@ type CompleteOptions struct {
 	// 避免 429/流重置/OAuth 刷新等无关失败提前耗尽）。
 	EmptyTurnReplays int
 	// RoutedFrom 记录路由改写前的原始模型名（未命中路由时为空）。
-	RoutedFrom     string
+	RoutedFrom string
+	// TitleRewrite 标记本次是「会话标题生成」被改写到轻量模型。
+	// 与 RoutedFrom 分开的原因：普通模型路由不算标题请求，
+	// 会话级统计（I3b）只豁免后者。
+	TitleRewrite   bool
 	routeFallbacks []modelroute.Rule // Remaining rules from the original source/model snapshot.
 	// RequestID 是本次请求的代理 ID，用来把 system 事件与用量明细对上。
 	RequestID string
@@ -517,11 +521,29 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		// system 策略：fold 永远折叠；auto/keep/strip 原样透传；已降级过的重试强制折叠。
 		KeepSystem:       s.keepSystemFor(opts),
 		EchoSystemToUser: s.Config().SystemEchoUser,
+		// 进/出统计：只有调用方要了 SystemOutcome 才统计（生产入口都会要，
+		// 单测可省）。同一请求的多次尝试共用同一个指针，重试覆盖而非累加。
+		IOReport: systemIOFor(opts),
 		// 历史 thinking 回传：默认开（DeepSeek 规范要求带 tools 时回传）。
 		ReasoningReplay: !s.Config().ReasoningReplayDisabled,
 		// 该模型的档位画像（快照里没有时 Known=false，退回全局三档）。
 		EffortProfile: s.effortProfileFor(site, opts.Model),
 	}
+}
+
+// systemIOFor 返回本次请求共享的 IO 统计指针（调用方不需要时返回 nil）。
+//
+// 惰性分配挂在 SystemOutcome 上：CompleteFromPool 每轮重试都调用
+// chatOptionsFor，但 SystemOutcome 是跨轮共享的同一个指针，
+// 所以只有第一次会分配。
+func systemIOFor(opts CompleteOptions) *provider.MessagesIO {
+	if opts.SystemOutcome == nil {
+		return nil
+	}
+	if opts.SystemOutcome.IO == nil {
+		opts.SystemOutcome.IO = &provider.MessagesIO{}
+	}
+	return opts.SystemOutcome.IO
 }
 
 // effortProfileFor 从只读快照里取该模型的思考档位画像。
@@ -718,6 +740,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				orig := opts.Model
 				opts.Model = target
 				opts.RoutedFrom = orig
+				opts.TitleRewrite = true
 				// 标题生成不需要思考预算，而且轻量模型不接受这些字段
 				// （竞品 rewriteSessionTitleModel 同样删掉这两项）。
 				// 留着会让逐模型档位逻辑去收敛一个对目标无意义的档位。
