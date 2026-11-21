@@ -946,7 +946,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		exclude[id] = struct{}{}
 	}
 	if opts.PreferQuota {
-		if sel, ok := p.pickHighestQuotaLocked(&store, now, opts.Site, opts.Model, exclude); ok {
+		if sel, ok := p.pickHighestQuotaLocked(&store, now, opts.Site, opts.Model, opts.RequestID, exclude); ok {
 			p.mem = store
 			p.markDirtyLocked()
 			return sel, nil
@@ -1108,7 +1108,7 @@ func quotaScore(account Account) (float64, bool) {
 	return *account.QuotaRemaining, true
 }
 
-func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site, model string, exclude map[string]struct{}) (Selection, bool) {
+func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site, model, requestID string, exclude map[string]struct{}) (Selection, bool) {
 	floor := p.QuotaFloor()
 	bestIdx := -1
 	var bestRemaining float64
@@ -1141,7 +1141,19 @@ func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site, model strin
 	}
 	store.Accounts[bestIdx].LastSelectedAt = now
 	store.NextIndex = (bestIdx + 1) % len(store.Accounts)
-	return Selection{Source: "pool", Account: cloneAccount(store.Accounts[bestIdx]), Index: bestIdx, Store: cloneStore(*store), Model: model}, true
+	// 这条快路径同样「选了 1 个号」，也要交代（虽然它不检查其余号），
+	// 更要紧的是必须把 RequestID 带下去 —— 否则后续 deduct 事件没有
+	// requestID，I2a 就永远对不上账（上线首分钟即复现过）。
+	p.emitSelection(SelectionEvent{
+		RequestID: requestID, Site: site, Model: model,
+		Candidates: len(store.Accounts), Examined: 1,
+		Chosen: store.Accounts[bestIdx].ID,
+	})
+	return Selection{
+		Source: "pool", Account: cloneAccount(store.Accounts[bestIdx]),
+		Index: bestIdx, Store: cloneStore(*store), Model: model,
+		RequestID: requestID,
+	}, true
 }
 
 type SelectOptions struct {

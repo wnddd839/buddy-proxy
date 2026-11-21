@@ -17,8 +17,8 @@ func registerQuota(r *Registry) {
 		"上游扣了钱而本地没动额度，余额就会与真实脱节，最终把号打穿",
 		SeverityViolation, checkQuotaDeductMismatch)
 
-	r.Add("I2b", "探针刷新与本地账本必须吻合",
-		"探针已按在途请求校正过余额，仍有偏差说明记账漏了一笔",
+	r.Add("I2b", "探针余额与本地快照必须吻合",
+		"探针已按在途请求校正过回包，若与本地快照仍有差，说明有一笔记账漏了",
 		SeverityInfo, checkQuotaProbeDrift)
 }
 
@@ -49,15 +49,6 @@ func checkQuotaNoSilentUnknown(rec decision.Record, _ *State) []decision.Finding
 }
 
 // I2a：上游收费时，本地必须真的扣了账，且扣减量必须等于上游。
-//
-// 三种情形：
-//   - 没有 credit（上游没回扣费字段）⇒ 跳过
-//   - credit == 0（免费模型）⇒ 本地不得有扣减；有就是给免费请求记了费
-//   - credit > 0 ⇒ 必须有扣减，且金额一致（±1e-6）
-//
-// 关键在第三种：**缺少扣减记录本身就是缺陷**（"扣减路径没跑"），
-// 只有「额度未知/不限量」这两种设计内的跳过才豁免 —— 它们由
-// Skipped 字段显式标记，不靠猜。
 func checkQuotaDeductMismatch(rec decision.Record, state *State) []decision.Finding {
 	if rec.Kind != decision.KindRequest || !rec.Ok || rec.Canceled {
 		return nil
@@ -65,25 +56,23 @@ func checkQuotaDeductMismatch(rec decision.Record, state *State) []decision.Find
 	if rec.Credit == nil || state == nil || rec.RequestID == "" {
 		return nil
 	}
-	rec2, ok := state.TakeDeduct(rec.RequestID)
+	dr, ok := state.TakeDeduct(rec.RequestID)
 
 	if *rec.Credit <= 0 {
-		if !ok || rec2.Amount == 0 {
+		if !ok || dr.Amount == 0 {
 			return nil // 免费请求没有扣减，正确
 		}
 		return []decision.Finding{{
 			Subject: rec.AccountID,
 			Detail: fmt.Sprintf("上游未扣费（credit=0），本地却扣了 %s",
-				formatFloat(ptr(rec2.Amount))),
+				formatFloat(ptr(dr.Amount))),
 			Evidence: map[string]any{
-				"requestId": rec.RequestID, "upstream": *rec.Credit, "deducted": rec2.Amount,
+				"requestId": rec.RequestID, "upstream": *rec.Credit, "deducted": dr.Amount,
 			},
 		}}
 	}
 
 	if !ok {
-		// 没有任何扣减决策：可能是额度未知时选择跳过却漏了标记，
-		// 也可能是扣减路径根本没跑。无法区分 ⇒ 报出来让人看。
 		return []decision.Finding{{
 			Subject: rec.AccountID,
 			Detail: fmt.Sprintf("上游扣费 %s，但没有对应的扣减记录",
@@ -91,26 +80,40 @@ func checkQuotaDeductMismatch(rec decision.Record, state *State) []decision.Find
 			Evidence: map[string]any{"requestId": rec.RequestID, "upstream": *rec.Credit},
 		}}
 	}
-	if rec2.Skipped != "" {
+	if dr.Skipped != "" {
 		return nil // 设计内跳过（额度未知 / 不限量 / 无扣费）
 	}
-	if math.Abs(rec2.Amount-*rec.Credit) <= 1e-6 {
+	if math.Abs(dr.Amount-*rec.Credit) <= 1e-6 {
 		return nil
 	}
 	return []decision.Finding{{
 		Subject: rec.AccountID,
 		Detail: fmt.Sprintf("上游扣费 %s，本地扣了 %s（差 %s）",
-			formatFloat(rec.Credit), formatFloat(ptr(rec2.Amount)),
-			formatFloat(ptr(math.Abs(rec2.Amount-*rec.Credit)))),
+			formatFloat(rec.Credit), formatFloat(ptr(dr.Amount)),
+			formatFloat(ptr(math.Abs(dr.Amount-*rec.Credit)))),
 		Evidence: map[string]any{
 			"requestId": rec.RequestID,
 			"upstream":  *rec.Credit,
-			"deducted":  rec2.Amount,
+			"deducted":  dr.Amount,
 		},
 	}}
 }
 
-// I2b：探针刷新后的余额差应与本地累计消耗吻合。
+// driftTolerance 是探针对账的宽容度。
+//
+// 上游回包是浮点运算结果，实测会带 1e-14 量级的噪声；同时探针与在途
+// 请求之间有几毫秒的竞态窗口，可能差一笔很小的扣费。0.5 credit 足以
+// 吸收这两者，又远小于任何真实的「漏记一笔」（通常 0.1~5 credit）。
+const driftTolerance = 0.5
+
+// I2b：探针回包与本地快照必须吻合。
+//
+// 关键：Before 与 After 是**同一口径** —— 都是「已扣过在途消耗」的
+// 本地余额视图。ApplyQuotaProbe 在写入前已经把 inFlightSpent 从上游
+// 回包里减掉了，所以两者相等就说明账对得上。
+//
+// SpentSinceCheck 只是**证据**（说明这段时间本地记了多少），
+// 不能再从差额里减一次 —— 那样等于把它算两遍（上线首分钟即误报）。
 func checkQuotaProbeDrift(rec decision.Record, _ *State) []decision.Finding {
 	if rec.Kind != decision.KindQuota || rec.Op != decision.OpRefresh {
 		return nil
@@ -118,19 +121,20 @@ func checkQuotaProbeDrift(rec decision.Record, _ *State) []decision.Finding {
 	if rec.Before == nil || rec.After == nil {
 		return nil // 首次探针（没有基线）或清空（由 I1 管）
 	}
-	observed := *rec.Before - *rec.After
-	drift := observed - rec.SpentSinceCheck
-	if math.Abs(drift) <= 0.5 {
+	drift := *rec.After - *rec.Before
+	if math.Abs(drift) <= driftTolerance {
 		return nil
 	}
 	return []decision.Finding{{
 		Subject: rec.AccountID,
-		Detail: fmt.Sprintf("余额实际变化 %s，本地账本只记了 %s（差 %s）",
-			formatFloat(ptr(observed)), formatFloat(ptr(rec.SpentSinceCheck)), formatFloat(ptr(drift))),
+		Detail: fmt.Sprintf("探针余额 %s 与本地快照 %s 相差 %s（同期本地记账 %s）",
+			formatFloat(rec.After), formatFloat(rec.Before),
+			formatFloat(ptr(drift)), formatFloat(ptr(rec.SpentSinceCheck))),
 		Evidence: map[string]any{
-			"observed":        observed,
-			"spentSinceCheck": rec.SpentSinceCheck,
+			"before":          *rec.Before,
+			"after":           *rec.After,
 			"drift":           drift,
+			"spentSinceCheck": rec.SpentSinceCheck,
 		},
 	}}
 }

@@ -72,9 +72,13 @@ func TestShadowReplayOnlyExpectedHits(t *testing.T) {
 	})
 
 	// ---------- 探针刷新，账面吻合 ----------
+	//
+	// Before / After 是同一口径：ApplyQuotaProbe 已把在途消耗从上游回包里
+	// 减掉，所以账对得上时两者相等（实测值见 2026-11-21 上线日志）。
+	// SpentSinceCheck 只作证据，不参与判定。
 	appendAt(5000, decision.Record{
 		Kind: decision.KindQuota, AccountID: "a1", Op: decision.OpRefresh,
-		Before: f(48.7), After: f(45.7), SpentSinceCheck: 3.0,
+		Before: f(48.7), After: f(48.7), SpentSinceCheck: 3.0,
 	})
 
 	// ---------- 选号：健康池首选（只检查 1 个）----------

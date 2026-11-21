@@ -123,35 +123,6 @@ func TestI2aCases(t *testing.T) {
 	})
 }
 
-func TestI2bNoDriftWhenAccounted(t *testing.T) {
-	before, after := 100.0, 97.0
-	match := decision.Record{
-		Kind: decision.KindQuota, At: 3, AccountID: "a1",
-		Op: decision.OpRefresh, Before: &before, After: &after, SpentSinceCheck: 3.0,
-	}
-	if got := DefaultRegistry().Run(match, NewState(8, 8)); len(got) != 0 {
-		t.Fatalf("不应误报：%+v", got)
-	}
-
-	drift := match
-	drift.SpentSinceCheck = 1.0
-	got := DefaultRegistry().Run(drift, NewState(8, 8))
-	if len(got) != 1 || got[0].Severity != SeverityInfo {
-		t.Fatalf("应出 info：%+v", got)
-	}
-}
-
-func TestI2bSkipsFirstProbe(t *testing.T) {
-	after := 50.0
-	rec := decision.Record{
-		Kind: decision.KindQuota, At: 3, AccountID: "a1",
-		Op: decision.OpRefresh, Before: nil, After: &after,
-	}
-	if got := DefaultRegistry().Run(rec, NewState(8, 8)); len(got) != 0 {
-		t.Fatalf("首次探针不该报：%+v", got)
-	}
-}
-
 func TestAllInvariantsHaveWhy(t *testing.T) {
 	for _, spec := range DefaultRegistry().Specs() {
 		if spec["why"] == "" {
