@@ -241,6 +241,12 @@ func (s *Service) Close() error {
 		return nil
 	}
 	var err error
+	// 先停观测写协程，再关 store：反过来的话，Sink 可能在目录已删后
+	// 还在往里写（测试里表现为 TempDir cleanup 报 directory not empty，
+	// 生产里表现为进程退出瞬间丢最后几条 finding）。
+	if sink := s.InvariantSink(); sink != nil {
+		sink.Stop()
+	}
 	if s.Journal != nil {
 		err = s.Journal.Close()
 	}
