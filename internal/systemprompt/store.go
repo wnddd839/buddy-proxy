@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wnddd839/codebuddy-proxy/internal/dailyjsonl"
 )
 
 const storeFilePrefix = "proxy-systemprompt-"
@@ -59,7 +60,7 @@ func OpenStore(dir string, retention time.Duration) (*Store, error) {
 func (s *Store) Close() error { return nil }
 
 func (s *Store) pathFor(date string) string {
-	return filepath.Join(s.dir, storeFilePrefix+date+storeFileSuffix)
+	return dailyjsonl.Path(s.dir, storeFilePrefix, date)
 }
 
 func eventDate(e Event) string {
@@ -122,24 +123,7 @@ func (s *Store) Dates() []string {
 		return out
 	}
 
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return nil
-	}
-	out := make([]string, 0, len(entries))
-	for _, ent := range entries {
-		name := ent.Name()
-		if ent.IsDir() || !strings.HasPrefix(name, storeFilePrefix) || !strings.HasSuffix(name, storeFileSuffix) {
-			continue
-		}
-		date := strings.TrimSuffix(strings.TrimPrefix(name, storeFilePrefix), storeFileSuffix)
-		if _, err := time.ParseInLocation(storeDateLayout, date, time.Local); err != nil {
-			continue
-		}
-		out = append(out, date)
-	}
-	sort.Strings(out)
-	return out
+	return dailyjsonl.Dates(s.dir, storeFilePrefix)
 }
 
 // Read 返回指定日期的事件页（最新在前）与当日总条数。
@@ -295,44 +279,11 @@ func (s *Store) Prune(now time.Time) error {
 		return nil
 	}
 
-	cutoff := now.Add(-s.retention)
-	var firstErr error
-	for _, date := range s.datesLocked() {
-		day, err := time.ParseInLocation(storeDateLayout, date, time.Local)
-		if err != nil {
-			continue
-		}
-		// 以「该日结束时刻」判过期，避免把当天整天误删。
-		if day.Add(24 * time.Hour).After(cutoff) {
-			continue
-		}
-		s.fileMu.Lock()
-		rmErr := os.Remove(s.pathFor(date))
-		s.fileMu.Unlock()
-		if rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) && firstErr == nil {
-			firstErr = fmt.Errorf("systemprompt: 删除过期事件文件 %s 失败: %w", date, rmErr)
-		}
-	}
-	return firstErr
-}
-
-func (s *Store) datesLocked() []string {
-	entries, err := os.ReadDir(s.dir)
+	s.fileMu.Lock()
+	_, err := dailyjsonl.Prune(s.dir, storeFilePrefix, s.retention, now)
+	s.fileMu.Unlock()
 	if err != nil {
-		return nil
+		return fmt.Errorf("systemprompt: 清理过期事件文件失败: %w", err)
 	}
-	out := make([]string, 0, len(entries))
-	for _, ent := range entries {
-		name := ent.Name()
-		if ent.IsDir() || !strings.HasPrefix(name, storeFilePrefix) || !strings.HasSuffix(name, storeFileSuffix) {
-			continue
-		}
-		date := strings.TrimSuffix(strings.TrimPrefix(name, storeFilePrefix), storeFileSuffix)
-		if _, err := time.ParseInLocation(storeDateLayout, date, time.Local); err != nil {
-			continue
-		}
-		out = append(out, date)
-	}
-	sort.Strings(out)
-	return out
+	return nil
 }
