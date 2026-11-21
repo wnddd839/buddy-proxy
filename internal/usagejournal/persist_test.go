@@ -1,6 +1,7 @@
 package usagejournal_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,44 @@ import (
 
 	"github.com/wnddd839/codebuddy-proxy/internal/usagejournal"
 )
+
+func TestAllRangeAfterOpeningLegacySnapshot(t *testing.T) {
+	now := time.Now()
+	expired := now.AddDate(0, 0, -100)
+	retained := now.AddDate(0, 0, -40)
+	path := filepath.Join(t.TempDir(), "proxy-usage.json")
+	snapshot := fmt.Sprintf(`{"version":1,"entries":[
+		{"at":%d,"proxyRequestId":"expired","model":"old"},
+		{"at":%d,"proxyRequestId":"retained","model":"current"}
+	],"byDay":{"%s":{"requests":1},"%s":{"requests":1}}}`,
+		expired.UnixMilli(), retained.UnixMilli(),
+		expired.Format(time.DateOnly), retained.Format(time.DateOnly))
+	if err := os.WriteFile(path, []byte(snapshot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := usagejournal.Open(path, 400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := j.Close(); err != nil {
+			t.Errorf("close journal: %v", err)
+		}
+	})
+
+	view := j.View("all", 20, 0)
+	if view.Summary.Requests != 1 || view.RequestsTotal != 1 ||
+		len(view.Requests) != 1 || view.Requests[0].ProxyRequestID != "retained" {
+		t.Fatalf("summary=%d, details=%d, rows=%+v", view.Summary.Requests, view.RequestsTotal, view.Requests)
+	}
+	if got := time.UnixMilli(view.Summary.From).Format(time.DateOnly); got != retained.Format(time.DateOnly) {
+		t.Fatalf("chart starts on %s, want %s", got, retained.Format(time.DateOnly))
+	}
+	filtered := j.Query(usagejournal.Query{Range: "all", Model: "old"})
+	if filtered.RequestsTotal != 0 || filtered.Summary.Requests != 0 {
+		t.Fatalf("expired request returned by model filter: %+v", filtered.Requests)
+	}
+}
 
 func TestOpenPersistsAcrossReload(t *testing.T) {
 	dir := t.TempDir()
