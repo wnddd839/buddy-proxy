@@ -21,6 +21,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/concurrency"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/egress"
+	"github.com/wnddd839/codebuddy-proxy/internal/invariant"
 	"github.com/wnddd839/codebuddy-proxy/internal/modelroute"
 	"github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
@@ -154,6 +155,26 @@ type Service struct {
 
 	// systemPrunedAt 是上次清理按天事件文件的时间（毫秒），惰性清理用。
 	systemPrunedAt atomic.Int64
+
+	// Invariants 是静默失效断言的在线执行器；nil 表示未启用（全部跳过）。
+	// 用原子指针而不是普通字段：SetInvariants 可能在请求进行中被调用。
+	invariants atomic.Pointer[invariant.Sink]
+}
+
+// SetInvariants 注入在线执行器（启动装配时调用一次）。
+func (s *Service) SetInvariants(sink *invariant.Sink) {
+	if s == nil {
+		return
+	}
+	s.invariants.Store(sink)
+}
+
+// InvariantSink 返回当前的执行器（未启用时为 nil）。
+func (s *Service) InvariantSink() *invariant.Sink {
+	if s == nil {
+		return nil
+	}
+	return s.invariants.Load()
 }
 
 type modelsCacheEntry struct {
@@ -210,6 +231,8 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 	svc.efforts = map[string]provider.EffortProfile{}
 	svc.probeCache = map[string]provider.Reachability{}
 	svc.storeConfig(cfg)
+	// 静默失效观测：失败只 WARN，绝不拦住服务启动。
+	svc.startInvariants(cfg.AccountsPath)
 	return svc
 }
 
@@ -778,6 +801,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		ExcludeIDs:    opts.ExcludeIDs,
 		PreferQuota:   opts.AccountID == "",
 		Model:         opts.Model,
+		RequestID:     opts.RequestID,
 		CheckCooldown: !opts.FixedAccount && !opts.sameAccountRetry,
 	})
 	if err != nil {

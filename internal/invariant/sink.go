@@ -133,6 +133,17 @@ func (s *Sink) persist(rec decision.Record) {
 	_ = s.store.Append(rec)
 }
 
+// RememberDeduct 记一条「本次请求扣了多少」，供 I2a 与 request 记录对账。
+//
+// 必须在 Submit(request) 之前调用：额度事件先发生（MarkResult），
+// 请求记录后写（RecordChat）。
+func (s *Sink) RememberDeduct(requestID string, credit float64) {
+	if s == nil || s.state == nil || requestID == "" {
+		return
+	}
+	s.state.PutDeduct(requestID, credit)
+}
+
 // Submit 提交一条记录：同步跑断言（O(1) 内存操作），finding 入队。
 //
 // 记录本身不落盘 —— 落盘由调用方自己的 Decision 写入器负责，

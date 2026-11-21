@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
+	"github.com/wnddd839/codebuddy-proxy/internal/decision"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
 	"github.com/wnddd839/codebuddy-proxy/internal/usagejournal"
 	"github.com/wnddd839/codebuddy-proxy/internal/watch"
@@ -116,6 +117,50 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		InBytes:                       ioInt(input.IO, func(m *provider.MessagesIO) int { return m.InBytes }),
 		OutBytes:                      ioInt(input.IO, func(m *provider.MessagesIO) int { return m.OutBytes }),
 	})
+	s.submitInvariantRecord(input)
+}
+
+// submitInvariantRecord 把一条请求喂给不变量执行器。
+//
+// 与 usage journal 分开：journal 是给人看的明细（有容量上限），
+// 这里是给断言看的输入（无容量上限，且要带 IO 两侧统计与豁免标记）。
+func (s *Service) submitInvariantRecord(input ChatRecordInput) {
+	sink := s.InvariantSink()
+	if sink == nil {
+		return
+	}
+	rec := decision.Record{
+		Kind:             decision.KindRequest,
+		At:               input.Started.UnixMilli(),
+		RequestID:        input.ProxyRequestID,
+		SessionKey:       input.SessionKey,
+		AccountID:        input.AccountID,
+		Model:            input.Model,
+		RoutedModel:      input.RoutedModel,
+		PromptTokens:     int64(input.Usage.PromptTokens),
+		CompletionTokens: int64(input.Usage.CompletionTokens),
+		UsageSource:      input.UsageSource,
+		Canceled:         input.Canceled,
+		TitleRewrite:     input.TitleRewrite,
+		SystemFp:         input.SystemFp,
+		SystemForm:       input.SystemForm,
+		Stripped:         input.SystemStripped,
+		StripScope:       input.StripScope,
+		Degraded:         input.SystemDegraded,
+		Ok:               input.Ok,
+		ErrorCode:        input.ErrorCode,
+		ErrorText:        input.ErrMsg,
+		Credit:           input.Usage.Credit,
+	}
+	if input.IO != nil {
+		rec.InMessages = input.IO.InMessages
+		rec.OutMessages = input.IO.OutMessages
+		rec.InBytes = input.IO.InBytes
+		rec.OutBytes = input.IO.OutBytes
+		rec.InSystemLen = input.IO.InSystemLen
+		rec.OutSystemLen = input.IO.OutSystemLen
+	}
+	sink.Submit(rec)
 }
 
 // ioSystemLen 取出站 system 的字节数（未观测时 0）。
