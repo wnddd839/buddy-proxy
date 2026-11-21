@@ -10,6 +10,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -212,6 +214,19 @@ type QuotaEvent struct {
 	CheckedAtAfter  int64
 	Reason          string
 }
+
+// 选号跳过原因。I7 只校验「有跳过就必须有原因」，不校验具体 key，
+// 但 key 必须稳定，否则面板的历史聚合会碎成很多行。
+const (
+	SkipDisabled      = "disabled"
+	SkipNoCredentials = "no_credentials"
+	SkipSiteMismatch  = "site_mismatch"
+	SkipExcluded      = "excluded"
+	SkipModelCooldown = "model_cooldown"
+	SkipQuotaFloor    = "quota_floor"
+	SkipQuotaBlocked  = "quota_blocked"
+	SkipCoolingDown   = "cooldown"
+)
 
 // SelectionEvent 是一次选号（成功或失败都记，失败时 Chosen 为空）。
 type SelectionEvent struct {
@@ -876,7 +891,10 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 	}
 
 	if len(store.Accounts) == 0 {
-		return Selection{}, ErrNoAccounts
+		// 与「全被拦住」保持同一诊断口径：candidates=0 且无跳过原因，
+		// 一眼看出是真没配号，而不是额度/冷却把整池挡住了。
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: 0})
+		return Selection{}, fmt.Errorf("%w (candidates=0)", ErrNoAccounts)
 	}
 	exclude := map[string]struct{}{}
 	for _, id := range opts.ExcludeIDs {
@@ -895,17 +913,39 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		// modelResetAt 记录「该模型」最早解除限流的时刻，用于区分
 		// 「号池真空了」与「只是这个模型在限流窗口内」。
 		modelResetAt int64
+		// skipped 记每个「看过但没选」的号的原因。
+		// 成功时也要交（「成功了但跳过了 5 个号」正是某个号悄悄坏掉的唯一线索）。
+		skipped = map[string]int{}
 	)
+	// candidates 是「同站点、已启用、有凭据」的候选总数，
+	// 比 len(store.Accounts) 更准确：别的站点的号本来就不该被算进来。
+	candidates := 0
+	for _, a := range store.Accounts {
+		if !a.Enabled || !HasCredentials(a) {
+			continue
+		}
+		if opts.Site != "" && config.NormalizeSite(a.Site) != config.NormalizeSite(opts.Site) {
+			continue
+		}
+		candidates++
+	}
 	for offset := 0; offset < len(store.Accounts); offset++ {
 		idx := (store.NextIndex + offset) % len(store.Accounts)
 		account := store.Accounts[idx]
-		if !account.Enabled || !HasCredentials(account) {
+		if !account.Enabled {
+			skipped[SkipDisabled]++
+			continue
+		}
+		if !HasCredentials(account) {
+			skipped[SkipNoCredentials]++
 			continue
 		}
 		if opts.Site != "" && config.NormalizeSite(account.Site) != config.NormalizeSite(opts.Site) {
+			skipped[SkipSiteMismatch]++
 			continue
 		}
 		if _, skip := exclude[account.ID]; skip {
+			skipped[SkipExcluded]++
 			continue
 		}
 		// 上游已明确限制该模型：不能借「全冷却降级」提前再打一次上游，
@@ -914,6 +954,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			if modelResetAt == 0 || until < modelResetAt {
 				modelResetAt = until
 			}
+			skipped[SkipModelCooldown]++
 			continue
 		}
 		// The floor is a hard exclusion, never an all-cooling fallback candidate.
@@ -922,7 +963,12 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		// 这类号成为「全冷却兜底」候选的唯一后果就是白打一次上游换 429，
 		// 更糟的是它一旦侥幸成功（免费模型）就会触发 clearQuotaCache，
 		// 把「额度耗尽」这个事实抹掉。
-		if QuotaBelowFloor(account, now, floor) || QuotaBlocked(account, now) {
+		if QuotaBelowFloor(account, now, floor) {
+			skipped[SkipQuotaFloor]++
+			continue
+		}
+		if QuotaBlocked(account, now) {
+			skipped[SkipQuotaBlocked]++
 			continue
 		}
 		if blockedUntil := unavailableUntil(account, now, opts.Model); blockedUntil > now {
@@ -930,16 +976,19 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 				fallbackIdx = idx
 				fallbackUntil = blockedUntil
 			}
+			skipped[SkipCoolingDown]++
 			continue
 		}
 		store.Accounts[idx].LastSelectedAt = now
 		store.NextIndex = (idx + 1) % len(store.Accounts)
 		p.mem = store
 		p.markDirtyLocked()
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Chosen: store.Accounts[idx].ID, Skipped: cloneCounts(skipped)})
 		return Selection{Source: "pool", Account: cloneAccount(store.Accounts[idx]), Index: idx, Store: cloneStore(store), Model: opts.Model, RequestID: opts.RequestID}, nil
 	}
 	// 全部候选都只是「这个模型」在限流窗口内 ⇒ 不降级、明确报错。
 	if modelResetAt > 0 && fallbackIdx < 0 {
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Skipped: cloneCounts(skipped)})
 		return Selection{}, &ModelCooldownError{Model: opts.Model, Until: modelResetAt}
 	}
 	if fallbackIdx >= 0 {
@@ -947,6 +996,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		store.NextIndex = (fallbackIdx + 1) % len(store.Accounts)
 		p.mem = store
 		p.markDirtyLocked()
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Chosen: store.Accounts[fallbackIdx].ID, Skipped: cloneCounts(skipped)})
 		return Selection{
 			Source:           "pool",
 			Account:          cloneAccount(store.Accounts[fallbackIdx]),
@@ -957,10 +1007,53 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			RequestID:        opts.RequestID,
 		}, nil
 	}
+	p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Skipped: cloneCounts(skipped)})
+	// 报错带上计数：「真没配账号」与「全被额度/冷却拦住」必须能区分，
+	// 否则排查时会先怀疑配置而不是额度。errors.Is(ErrNoAccounts) 仍成立。
+	detail := formatSkipCounts(skipped)
 	if opts.Site != "" {
-		return Selection{}, fmt.Errorf("%w for site=%s", ErrNoAccounts, config.NormalizeSite(opts.Site))
+		return Selection{}, fmt.Errorf("%w for site=%s (candidates=%d%s)", ErrNoAccounts, config.NormalizeSite(opts.Site), candidates, detail)
 	}
-	return Selection{}, ErrNoAccounts
+	return Selection{}, fmt.Errorf("%w (candidates=%d%s)", ErrNoAccounts, candidates, detail)
+}
+
+// cloneCounts 复制跳过原因直方图（调用方可能在锁释放后继续用）。
+func cloneCounts(in map[string]int) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// formatSkipCounts 把直方图渲染成 ` quota_floor=2 cooldown=1` 形式（含前导空格）。
+func formatSkipCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // 稳定输出，便于测试断言与日志比对
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(" ")
+		b.WriteString(k)
+		b.WriteString("=")
+		b.WriteString(strconv.Itoa(counts[k]))
+	}
+	return b.String()
+}
+
+// emitSelection 把选号事件交给观察者。调用时持有 p.mu —— 观察者不得回调 Pool。
+func (p *Pool) emitSelection(e SelectionEvent) {
+	if p != nil && p.observer != nil {
+		p.observer.ObserveSelection(e)
+	}
 }
 
 func quotaScore(account Account) (float64, bool) {
