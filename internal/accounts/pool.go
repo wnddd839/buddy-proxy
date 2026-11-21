@@ -178,10 +178,63 @@ type Selection struct {
 	BypassedCooldown bool // 全部账号冷却时降级选最快恢复者
 	Model            string
 	ModelRateLimited bool
+	RequestID        string
+}
+
+// 额度事件的操作类型。取值必须与 decision 包一致：
+// accounts 不 import decision（decision 是纯数据包，反过来依赖会绕圈），
+// 一致性由 decision 包的跨包测试守住。
+const (
+	QuotaOpDeduct  = "deduct"
+	QuotaOpClear   = "clear"
+	QuotaOpRefresh = "refresh"
+	QuotaOpImport  = "import"
+	QuotaOpReset   = "reset"
+)
+
+// 允许把余额清成 nil 的理由。取值必须与 decision 的白名单一致。
+const (
+	ClearReasonQuotaRecovered  = "quota_recovered"  // 付费成功证明旧「耗尽」快照过期
+	ClearReasonInvalidSnapshot = "invalid_snapshot" // 上游回包 NaN/Inf，只能清空
+)
+
+// QuotaEvent 是一次额度状态变化。
+type QuotaEvent struct {
+	AccountID string
+	RequestID string // 与 request 决策对账用（I2a）
+	Op        string
+	Before    *float64
+	After     *float64
+	Credit    float64
+	// SpentSinceCheck 是变更前的本地累计消耗（refresh 用它做漂移对账）。
+	SpentSinceCheck float64
+	CheckedAtBefore int64
+	CheckedAtAfter  int64
+	Reason          string
+}
+
+// SelectionEvent 是一次选号（成功或失败都记，失败时 Chosen 为空）。
+type SelectionEvent struct {
+	RequestID  string
+	Site       string
+	Model      string
+	Candidates int
+	Chosen     string
+	Skipped    map[string]int
+}
+
+// Observer 接收额度与选号事件。
+//
+// 契约：**不得回调 Pool 的任何方法** —— 这些回调发生在 p.mu 持有期间，
+// 回调进 Pool 会自死锁。实现方只应做内存记账或投递到自己的队列。
+type Observer interface {
+	ObserveQuota(QuotaEvent)
+	ObserveSelection(SelectionEvent)
 }
 
 type Pool struct {
-	path string
+	observer Observer
+	path     string
 
 	// mu 保护内存态；persistMu 与写盘串行，避免并发 rename 冲突。
 	mu       sync.RWMutex
@@ -708,11 +761,12 @@ func UsableForModel(account Account, nowMillis int64, model string, floor float6
 //
 // 允许扣成负数：宁可多算，不可少算。负数会让下限立刻拦住该账号，
 // 而「保守地不扣」会让账号继续被打穿。
-func (p *Pool) deductQuotaLocked(account *Account, credit float64) {
+func (p *Pool) deductQuotaLocked(account *Account, credit float64, requestID string) {
 	if account == nil || math.IsNaN(credit) || math.IsInf(credit, 0) || credit <= 0 || account.QuotaUnlimited || account.QuotaRemaining == nil {
 		return
 	}
-	next := *account.QuotaRemaining - credit
+	before := *account.QuotaRemaining
+	next := before - credit
 	spent := account.QuotaSpentSinceCheck + credit
 	total := account.quotaSpentTotal + credit
 	if math.IsNaN(next) || math.IsInf(next, 0) || math.IsNaN(spent) || math.IsInf(spent, 0) {
@@ -723,6 +777,15 @@ func (p *Pool) deductQuotaLocked(account *Account, credit float64) {
 	if !math.IsNaN(total) && !math.IsInf(total, 0) {
 		account.quotaSpentTotal = total
 	}
+	beforeCopy, afterCopy := before, next
+	p.emitQuota(QuotaEvent{
+		AccountID: account.ID, RequestID: requestID, Op: QuotaOpDeduct,
+		Before: &beforeCopy, After: &afterCopy,
+		Credit:          credit,
+		SpentSinceCheck: spent,
+		CheckedAtBefore: account.QuotaCheckedAt,
+		CheckedAtAfter:  account.QuotaCheckedAt,
+	})
 }
 
 // clearQuotaCache 清空额度快照。
@@ -730,12 +793,45 @@ func (p *Pool) deductQuotaLocked(account *Account, credit float64) {
 // 只在「真实扣费成功 + 全冷却兜底 + 原本额度阻塞」时触发（见 MarkResult）。
 // 清空后该号会短暂处于「未知」状态并放行，靠下一次 billing 探测重建数字；
 // 这条路径罕见，且已排除免费模型（credit=0 不清空）。
-func clearQuotaCache(account *Account) {
+func (p *Pool) clearQuotaCache(account *Account, reason string) {
+	if account == nil {
+		return
+	}
+	var before *float64
+	if account.QuotaRemaining != nil {
+		v := *account.QuotaRemaining
+		before = &v
+	}
+	checkedAtBefore, spentBefore := account.QuotaCheckedAt, account.QuotaSpentSinceCheck
 	account.QuotaRemaining = nil
 	account.QuotaUnlimited = false
 	account.QuotaResetAt = 0
 	account.QuotaCheckedAt = 0
 	account.QuotaSpentSinceCheck = 0
+	p.emitQuota(QuotaEvent{
+		AccountID: account.ID, Op: QuotaOpClear,
+		Before: before, After: nil,
+		SpentSinceCheck: spentBefore,
+		CheckedAtBefore: checkedAtBefore, CheckedAtAfter: 0,
+		Reason: reason,
+	})
+}
+
+// emitQuota 把额度事件交给观察者。调用时可能持有 p.mu —— 观察者不得回调 Pool。
+func (p *Pool) emitQuota(e QuotaEvent) {
+	if p != nil && p.observer != nil {
+		p.observer.ObserveQuota(e)
+	}
+}
+
+// SetObserver 安装事件观察者；传 nil 关闭。
+func (p *Pool) SetObserver(o Observer) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.observer = o
+	p.mu.Unlock()
 }
 
 func (p *Pool) Select(opts SelectOptions) (Selection, error) {
@@ -774,7 +870,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			store.Accounts[i].LastSelectedAt = now
 			p.mem = store
 			p.markDirtyLocked()
-			return Selection{Source: "pool", Account: cloneAccount(store.Accounts[i]), Index: i, Store: cloneStore(store), Model: opts.Model}, nil
+			return Selection{Source: "pool", Account: cloneAccount(store.Accounts[i]), Index: i, Store: cloneStore(store), Model: opts.Model, RequestID: opts.RequestID}, nil
 		}
 		return Selection{}, fmt.Errorf("%w: %s", ErrAccountNotFound, opts.AccountID)
 	}
@@ -840,7 +936,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		store.NextIndex = (idx + 1) % len(store.Accounts)
 		p.mem = store
 		p.markDirtyLocked()
-		return Selection{Source: "pool", Account: cloneAccount(store.Accounts[idx]), Index: idx, Store: cloneStore(store), Model: opts.Model}, nil
+		return Selection{Source: "pool", Account: cloneAccount(store.Accounts[idx]), Index: idx, Store: cloneStore(store), Model: opts.Model, RequestID: opts.RequestID}, nil
 	}
 	// 全部候选都只是「这个模型」在限流窗口内 ⇒ 不降级、明确报错。
 	if modelResetAt > 0 && fallbackIdx < 0 {
@@ -858,6 +954,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			Store:            cloneStore(store),
 			BypassedCooldown: true,
 			Model:            opts.Model,
+			RequestID:        opts.RequestID,
 		}, nil
 	}
 	if opts.Site != "" {
@@ -918,7 +1015,8 @@ type SelectOptions struct {
 	ExcludeIDs    []string
 	PreferQuota   bool
 	Model         string
-	CheckCooldown bool // 会话软钉号检查冷却；显式固定账号仍可直接请求。
+	RequestID     string // 代理请求 ID，透传进 Selection 供额度对账
+	CheckCooldown bool   // 会话软钉号检查冷却；显式固定账号仍可直接请求。
 }
 
 // InCooldown reports whether the account is temporarily excluded from pool rotation.
@@ -968,9 +1066,9 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 			// 成功（说明上游真的扣了钱还允许继续）才说明旧快照过期。
 			// 不加这一条，免费模型就是清空额度快照的稳定钥匙。
 			if selection.BypassedCooldown && wasQuotaBlocked && credit > 0 {
-				clearQuotaCache(&p.mem.Accounts[i])
+				p.clearQuotaCache(&p.mem.Accounts[i], ClearReasonQuotaRecovered)
 			} else {
-				p.deductQuotaLocked(&p.mem.Accounts[i], credit)
+				p.deductQuotaLocked(&p.mem.Accounts[i], credit, selection.RequestID)
 			}
 		} else {
 			p.mem.Accounts[i].FailedRequests++
@@ -1049,6 +1147,9 @@ func (p *Pool) ApplyQuotaProbe(accountID string, baseline float64, remaining *fl
 			continue
 		}
 		account := &p.mem.Accounts[i]
+		beforeRemaining := cloneFloatPtr(account.QuotaRemaining)
+		beforeSpent := account.QuotaSpentSinceCheck
+		beforeCheckedAt := account.QuotaCheckedAt
 		legacyQuotaCooldown := account.CooldownSource == "" &&
 			account.CooldownUntil > 0 && account.CooldownUntil == account.QuotaResetAt
 		inFlightSpent := 0.0
@@ -1079,6 +1180,17 @@ func (p *Pool) ApplyQuotaProbe(accountID string, baseline float64, remaining *fl
 			account.CooldownUntil = 0
 			account.CooldownSource = ""
 		}
+		reason := ""
+		if nextRemaining == nil && beforeRemaining != nil {
+			reason = ClearReasonInvalidSnapshot
+		}
+		p.emitQuota(QuotaEvent{
+			AccountID: account.ID, Op: QuotaOpRefresh,
+			Before: beforeRemaining, After: cloneFloatPtr(nextRemaining),
+			SpentSinceCheck: beforeSpent,
+			CheckedAtBefore: beforeCheckedAt, CheckedAtAfter: checkedAt,
+			Reason: reason,
+		})
 		updated = cloneAccount(*account)
 		found = true
 		break
