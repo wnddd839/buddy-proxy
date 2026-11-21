@@ -629,37 +629,44 @@ func QuotaBlocked(account Account, nowMillis int64) bool {
 	return quotaBlockedFloor(account, nowMillis, 0)
 }
 
-// QuotaBelowFloor 报告账号积分是否低于阈值（floor>0 时启用）。
-// 低于阈值 = 不再参与选号，即使还没到 0——避免把号打到负数或触发上游风控。
-// 与 QuotaBlocked 同一数据源（缓存的 billing credits）与同一时效约束。
-func QuotaBelowFloor(account Account, nowMillis int64, floor float64) bool {
-	// 额度未知（nil）按设计放行：新导入的号还没探测过，拦下来就永远用不了。
-	// 真正的保护在写入侧 —— 见 MarkResult 里 clearQuotaCache 的 credit>0 条件，
-	// 以及 selectFloor 对 QuotaBlocked 的硬排除。
-	if floor <= 0 || account.QuotaUnlimited || account.QuotaRemaining == nil {
-		return false
-	}
-	// Unknown/stale billing is not proof of a low balance; refresh it before selection.
-	if account.QuotaCheckedAt <= 0 || nowMillis-account.QuotaCheckedAt > quotaCacheMaxAge.Milliseconds() {
+// quotaSnapshotAuthoritative 回答「这份余额快照值不值得信」。
+//
+// 两个判定（QuotaBelowFloor / quotaBlockedFloor）必须共用它：
+// 同一份数据一处拦住、另一处放行，就是 2026-11 那个额度后门的成因
+// （checkedAt==0 时 QuotaBelowFloor 放行、quotaBlockedFloor 拦住）。
+//
+// 规则：
+//   - 不限量 / 余额未知（nil）      → 不可信（nil 按设计放行）
+//   - 重置时刻已过（resetAt<=now）  → 不可信
+//   - 快照超过 6 小时              → 不可信（先去刷新，别拿旧值判死）
+//   - checkedAt==0 不特殊对待：值本身可信、时间未知，释放交给上面的两条
+func quotaSnapshotAuthoritative(account Account, nowMillis int64) bool {
+	if account.QuotaUnlimited || account.QuotaRemaining == nil {
 		return false
 	}
 	if account.QuotaResetAt > 0 && account.QuotaResetAt <= nowMillis {
-		return false
-	}
-	return *account.QuotaRemaining < floor
-}
-
-func quotaBlockedFloor(account Account, nowMillis int64, floor float64) bool {
-	if account.QuotaUnlimited || account.QuotaRemaining == nil || *account.QuotaRemaining > floor {
-		return false
-	}
-	if account.QuotaResetAt <= nowMillis {
 		return false
 	}
 	if account.QuotaCheckedAt > 0 && nowMillis-account.QuotaCheckedAt > quotaCacheMaxAge.Milliseconds() {
 		return false
 	}
 	return true
+}
+
+// QuotaBelowFloor 报告账号积分是否低于阈值（floor>0 时启用）。
+// 低于阈值 = 不再参与选号，即使还没到 0——避免把号打到负数或触发上游风控。
+func QuotaBelowFloor(account Account, nowMillis int64, floor float64) bool {
+	if floor <= 0 || !quotaSnapshotAuthoritative(account, nowMillis) {
+		return false
+	}
+	return *account.QuotaRemaining < floor
+}
+
+func quotaBlockedFloor(account Account, nowMillis int64, floor float64) bool {
+	if !quotaSnapshotAuthoritative(account, nowMillis) {
+		return false
+	}
+	return *account.QuotaRemaining <= floor
 }
 
 func unavailableUntil(account Account, nowMillis int64, model string) int64 {
