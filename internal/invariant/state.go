@@ -3,6 +3,8 @@ package invariant
 import (
 	"strings"
 	"sync"
+
+	"github.com/wnddd839/codebuddy-proxy/internal/decision"
 )
 
 // 生产默认上限。512 个会话足够覆盖并发会话；超过就淘汰最旧的 ——
@@ -97,6 +99,24 @@ func (s *State) SetPrompt(key string, tokens int64) {
 		s.promptRing = append(s.promptRing, key)
 	}
 	s.prompt[key] = tokens
+}
+
+// PrimeFromRecord 把一条决策记录里「对后续断言有影响的状态」写入 State。
+//
+// 在线与离线两个执行器必须都调用它：否则回放会缺少扣减记录，
+// 把每一笔正常扣费都判成「上游收费但本地没记账」（影子回放抓到过）。
+func (s *State) PrimeFromRecord(rec decision.Record) {
+	if s == nil || rec.Kind != decision.KindQuota {
+		return
+	}
+	if rec.Op != decision.OpDeduct || rec.RequestID == "" {
+		return
+	}
+	amount := 0.0
+	if rec.Before != nil && rec.After != nil {
+		amount = *rec.Before - *rec.After
+	}
+	s.PutDeduct(rec.RequestID, amount, rec.SkipReason)
 }
 
 // PutDeduct 记一条扣减结果（amount 是**实际扣减量**，skipped 说明为何没扣）。

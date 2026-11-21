@@ -73,6 +73,7 @@ func Replay(store *decision.Store, from, to time.Time, only []string) (ReplayRep
 		if rec.At > last {
 			last = rec.At
 		}
+		state.PrimeFromRecord(rec)
 		for _, f := range reg.Run(rec, state) {
 			if len(allow) > 0 {
 				if _, ok := allow[f.Invariant]; !ok {

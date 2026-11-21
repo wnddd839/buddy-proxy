@@ -67,6 +67,9 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		duration = 0
 	}
 	s.recordWatchSample(input, duration)
+	// 断言执行器与 usage journal 是两条独立通路：journal 可以有容量上限、
+	// 可以被关闭，但那不该让「静默失效检测」跟着失明。
+	s.submitInvariantRecord(input)
 	if s.Journal == nil {
 		return
 	}
@@ -117,7 +120,6 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		InBytes:                       ioInt(input.IO, func(m *provider.MessagesIO) int { return m.InBytes }),
 		OutBytes:                      ioInt(input.IO, func(m *provider.MessagesIO) int { return m.OutBytes }),
 	})
-	s.submitInvariantRecord(input)
 }
 
 // submitInvariantRecord 把一条请求喂给不变量执行器。

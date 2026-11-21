@@ -191,6 +191,9 @@ func (s *Sink) Submit(rec decision.Record) {
 	if s == nil || s.reg == nil {
 		return
 	}
+	// 先把记录里「影响后续断言的状态」入库，再跑断言：
+	// 额度扣减记录必须在对应 request 到达前就位，I2a 才对的账。
+	s.state.PrimeFromRecord(rec)
 	findings := s.reg.Run(rec, s.state)
 
 	// 输入记录本身也要落盘 —— 否则离线回放永远读不到 request/selection/quota，
