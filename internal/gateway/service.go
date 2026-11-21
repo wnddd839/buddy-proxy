@@ -329,6 +329,16 @@ func (s *Service) SetSystemPromptMode(mode string) config.Config {
 // 与 SetBehaviorSwitches 分开的原因：后者的字段是值语义，没传的字段会被
 // 写成零值 —— 用它单独改开关会把积分下限顺手清零。这里用指针，
 // nil = 本次不涉及。
+// SetSystemEchoUser 热更新「把 system 复制一份进 user」的临时实验开关。
+//
+// 与 SetSystemStripSwitches 分开的原因：这是独立的实验开关，不该和
+// 剥离策略混在一次调用里 —— 改剥离时不能顺手把实验开关也覆写掉。
+func (s *Service) SetSystemEchoUser(on bool) config.Config {
+	return s.updateConfig(func(c *config.Config) {
+		c.SystemEchoUser = on
+	})
+}
+
 func (s *Service) SetSystemStripSwitches(stripOff, stripAssistantOff *bool) config.Config {
 	return s.updateConfig(func(c *config.Config) {
 		if stripOff != nil {

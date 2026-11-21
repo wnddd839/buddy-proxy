@@ -1142,6 +1142,7 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 			"mode":           config.NormalizeSystemPromptMode(cfg.SystemPromptMode),
 			"strip":          !cfg.SystemStripDisabled,
 			"stripAssistant": !cfg.SystemStripAssistantDisabled,
+			"echoUser":       cfg.SystemEchoUser,
 			"stats":          stats,
 			"statsScope":     scope,
 			"recent":         s.Svc.SystemPromptJournal.Recent(systemPromptRealtimeLimit),
@@ -1947,6 +1948,7 @@ func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) 
 		Mode           string `json:"mode"`
 		Strip          *bool  `json:"strip"`
 		StripAssistant *bool  `json:"stripAssistant"`
+		EchoUser       *bool  `json:"echoUser"`
 	}
 	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
 		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
@@ -1960,9 +1962,9 @@ func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	if mode == "" && body.Strip == nil && body.StripAssistant == nil {
+	if mode == "" && body.Strip == nil && body.StripAssistant == nil && body.EchoUser == nil {
 		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
-			"ok": false, "error": "至少要传 mode / strip / stripAssistant 之一",
+			"ok": false, "error": "至少要传 mode / strip / stripAssistant / echoUser 之一",
 		})
 		return
 	}
@@ -1979,6 +1981,9 @@ func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) 
 	}
 	if body.StripAssistant != nil {
 		updates["CODEBUDDY_PROXY_SYSTEM_STRIP_ASSISTANT_OFF"] = boolEnvValue(!*body.StripAssistant)
+	}
+	if body.EchoUser != nil {
+		updates["CODEBUDDY_PROXY_SYSTEM_ECHO_USER"] = boolEnvValue(*body.EchoUser)
 	}
 	if err := config.UpsertEnvFile(envPath, updates); err != nil {
 		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
@@ -2004,12 +2009,16 @@ func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) 
 	if stripOff != nil || stripAsstOff != nil {
 		s.Svc.SetSystemStripSwitches(stripOff, stripAsstOff)
 	}
+	if body.EchoUser != nil {
+		s.Svc.SetSystemEchoUser(*body.EchoUser)
+	}
 	cfg := s.Svc.Config()
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok":             true,
 		"mode":           config.NormalizeSystemPromptMode(cfg.SystemPromptMode),
 		"strip":          !cfg.SystemStripDisabled,
 		"stripAssistant": !cfg.SystemStripAssistantDisabled,
+		"echoUser":       cfg.SystemEchoUser,
 	})
 }
 

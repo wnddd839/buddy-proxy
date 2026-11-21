@@ -1154,6 +1154,10 @@ button:disabled{opacity:.4;cursor:not-allowed}
                    title="只控制 assistant 正文这一路。关掉后 system 仍照剥，但历史里带指纹的会话会永久 502（折叠救不了）">
               <input type="checkbox" id="spStripAssistant"/> 连 assistant 正文一起剥
             </label>
+            <label class="sp-check" style="display:flex;align-items:center;gap:8px;cursor:pointer"
+                   title="实验开关。system 仍留在 system 位不动，同时把同一份内容复制一份到第一条 user 开头（client_instructions 包裹）。用于对照验证模型是靠 system 位还是 user 副本更能遵循指令。开启后每次请求多消耗约等于 system 长度的 prompt tokens">
+              <input type="checkbox" id="spEchoUser"/> 额外把 system 复制进 user（实验）
+            </label>
           </div>
           <div class="actions">
             <span class="sp-check" style="text-transform:none;letter-spacing:0" id="spStripState">—</span>
@@ -2123,6 +2127,7 @@ let spMode = 'auto';
 // 剥离开关：总开关 + assistant 子开关。两者都由后端持久化到 .env。
 let spStrip = true;
 let spStripAssistant = true;
+let spEchoUser = false;
 let spHistory = {date:'', page:1, size:100, total:0, hasMore:false};
 
 function spResultLabel(e){
@@ -2200,8 +2205,10 @@ function paintSpMode(){
 function paintSpStrip(){
   const total = $('spStripEnabled');
   const asst = $('spStripAssistant');
+  const echo = $('spEchoUser');
   if (total) total.checked = !!spStrip;
   if (asst){ asst.checked = !!spStripAssistant; asst.disabled = !spStrip; }
+  if (echo) echo.checked = !!spEchoUser;
   const state = $('spStripState');
   if (state){
     if (!spStrip) state.textContent = '已关闭：先直传，被 11128 拒了才折叠重试（每请求多一次 400）';
@@ -2215,10 +2222,17 @@ async function spSwitchStrip(which, value){
   const data = await api('/direct-admin/api/system-prompt', {method:'POST', body: JSON.stringify(body)});
   spStrip = data.strip !== false;
   spStripAssistant = data.stripAssistant !== false;
+  spEchoUser = data.echoUser === true;
   paintSpStrip();
-  showToast(which === 'strip'
-    ? ('首试前剥离已' + (spStrip ? '开启' : '关闭'))
-    : ('assistant 剥离已' + (spStripAssistant ? '开启' : '关闭')));
+  if (which === 'echoUser'){
+    showToast(spEchoUser
+      ? 'system 复制进 user 已开启（每次请求多消耗约 system 长度的 token）'
+      : 'system 复制进 user 已关闭');
+  } else if (which === 'strip'){
+    showToast('首试前剥离已' + (spStrip ? '开启' : '关闭'));
+  } else {
+    showToast('assistant 剥离已' + (spStripAssistant ? '开启' : '关闭'));
+  }
   await refreshSystemPrompt();
 }
 function fillSpDates(dates){
@@ -2245,6 +2259,7 @@ async function refreshSystemPrompt(){
   spMode = data.mode || 'auto';
   spStrip = data.strip !== false;
   spStripAssistant = data.stripAssistant !== false;
+  spEchoUser = data.echoUser === true;
   paintSpMode();
   paintSpStrip();
   const stats = data.stats || {};
@@ -2319,6 +2334,11 @@ if ($('spStripEnabled')) $('spStripEnabled').addEventListener('change', function
 });
 if ($('spStripAssistant')) $('spStripAssistant').addEventListener('change', function(){
   spSwitchStrip('stripAssistant', this.checked).catch(function(e){
+    showToast(e.message,'error'); paintSpStrip();
+  });
+});
+if ($('spEchoUser')) $('spEchoUser').addEventListener('change', function(){
+  spSwitchStrip('echoUser', this.checked).catch(function(e){
     showToast(e.message,'error'); paintSpStrip();
   });
 });
