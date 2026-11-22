@@ -206,6 +206,10 @@ const (
 	DeductSkipQuotaUnknown = "quota_unknown" // 从未核实过余额，凭空造值只会误导下限判断
 	DeductSkipUnlimited    = "unlimited"     // 不限量账号没有余额概念
 	DeductSkipNoCredit     = "no_credit"     // credit<=0：免费模型或上游没回扣费字段
+	// DeductSkipQuotaCleared：付费成功但走的是「清空额度快照」路径
+	// （全冷却兜底 + 原本额度阻塞 + credit>0）。这条路径不扣减，
+	// 因为它的语义是「旧快照已过期，重建」，不是记账。
+	DeductSkipQuotaCleared = "quota_cleared"
 )
 
 // QuotaEvent 是一次额度状态变化。
@@ -865,7 +869,7 @@ func (p *Pool) emitDeductSkipped(account *Account, requestID, reason string) {
 // 只在「真实扣费成功 + 全冷却兜底 + 原本额度阻塞」时触发（见 MarkResult）。
 // 清空后该号会短暂处于「未知」状态并放行，靠下一次 billing 探测重建数字；
 // 这条路径罕见，且已排除免费模型（credit=0 不清空）。
-func (p *Pool) clearQuotaCache(account *Account, reason string) {
+func (p *Pool) clearQuotaCache(account *Account, reason, requestID string) {
 	if account == nil {
 		return
 	}
@@ -881,7 +885,7 @@ func (p *Pool) clearQuotaCache(account *Account, reason string) {
 	account.QuotaCheckedAt = 0
 	account.QuotaSpentSinceCheck = 0
 	p.emitQuota(QuotaEvent{
-		AccountID: account.ID, Op: QuotaOpClear,
+		AccountID: account.ID, RequestID: requestID, Op: QuotaOpClear,
 		Before: before, After: nil,
 		SpentSinceCheck: spentBefore,
 		CheckedAtBefore: checkedAtBefore, CheckedAtAfter: 0,
@@ -1058,6 +1062,15 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		return Selection{}, &ModelCooldownError{Model: opts.Model, Until: modelResetAt}
 	}
 	if fallbackIdx >= 0 {
+		// 兜底候选在循环里被计过 SkipCoolingDown，但它现在是**选中的号**，
+		// 不该再算「被跳过」——否则 I7 的「原因覆盖 Examined-1」判据
+		// 会因 sum == Examined 而稳定误报（池内 ≥2 号时必现）。
+		if skipped[SkipCoolingDown] > 0 {
+			skipped[SkipCoolingDown]--
+			if skipped[SkipCoolingDown] == 0 {
+				delete(skipped, SkipCoolingDown)
+			}
+		}
 		store.Accounts[fallbackIdx].LastSelectedAt = now
 		store.NextIndex = (fallbackIdx + 1) % len(store.Accounts)
 		p.mem = store
@@ -1238,7 +1251,7 @@ func (p *Pool) MarkResult(selection Selection, ok bool, errMsg string, cooldown 
 			// 成功（说明上游真的扣了钱还允许继续）才说明旧快照过期。
 			// 不加这一条，免费模型就是清空额度快照的稳定钥匙。
 			if selection.BypassedCooldown && wasQuotaBlocked && credit > 0 {
-				p.clearQuotaCache(&p.mem.Accounts[i], ClearReasonQuotaRecovered)
+				p.clearQuotaCache(&p.mem.Accounts[i], ClearReasonQuotaRecovered, selection.RequestID)
 			} else {
 				p.deductQuotaLocked(&p.mem.Accounts[i], credit, selection.RequestID)
 			}

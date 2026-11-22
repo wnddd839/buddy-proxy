@@ -81,7 +81,10 @@ func checkQuotaDeductMismatch(rec decision.Record, state *State) []decision.Find
 		}}
 	}
 	if dr.Skipped != "" {
-		return nil // 设计内跳过（额度未知 / 不限量 / 无扣费）
+		// 设计内跳过：额度未知 / 不限量 / 无扣费 / 清空快照后重建
+		// （quota_cleared —— 全冷却兜底且原本额度阻塞时的语义是
+		//  「旧快照已过期」，不是记账）。
+		return nil
 	}
 	if math.Abs(dr.Amount-*rec.Credit) <= 1e-6 {
 		return nil

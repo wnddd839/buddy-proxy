@@ -49,8 +49,18 @@ func (o *InvariantObserver) ObserveQuota(e accounts.QuotaEvent) {
 		Reason:          e.Reason,
 		SkipReason:      e.Skipped,
 	}
-	if e.Op == accounts.QuotaOpDeduct && e.RequestID != "" {
-		o.Sink.RememberDeduct(e.RequestID, amount, e.Skipped)
+	// 扣减事件：记下「这个请求扣了多少 / 为什么没扣」，供 I2a 与
+	// 稍后到达的 request 记录对账。
+	if e.RequestID != "" {
+		switch e.Op {
+		case accounts.QuotaOpDeduct:
+			o.Sink.RememberDeduct(e.RequestID, amount, e.Skipped)
+		case accounts.QuotaOpClear:
+			// 清空快照路径（全冷却兜底 + 原本额度阻塞 + credit>0）：
+			// 它的语义是「旧快照过期，重建」，**不扣减**。
+			// 必须显式标成「设计内跳过」，否则 I2a 会报「漏记」。
+			o.Sink.RememberDeduct(e.RequestID, 0, accounts.DeductSkipQuotaCleared)
+		}
 	}
 	o.Sink.Submit(rec)
 }
