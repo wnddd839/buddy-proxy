@@ -6,59 +6,34 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/modelroute"
 )
 
-// 默认目标：启用后未配置的站点一律改写到 wb-lite。
-func TestTitleRouteDefaultsToLite(t *testing.T) {
+// 标题路由的网关层接线：默认不改写、显式配置才改写。
+//
+// 旧版这三处断言「未配置回落 wb-lite」，wb-lite 已删除（2026-11-22），
+// 默认行为改为「跟随实际请求的模型」= 不配置即不改写。
+func TestTitleRouteDefaultsToNoRewrite(t *testing.T) {
 	route := &modelroute.TitleRoute{Enabled: true}
-	if err := modelroute.ValidateTitleRoute(route); err != nil {
-		t.Fatalf("启用但无显式目标应合法：%v", err)
+	if got := route.TargetFor("domestic"); got != "" {
+		t.Fatalf("未配置时不该改写，实际 %q", got)
 	}
-	if got := route.TargetFor("domestic"); got != modelroute.LiteModel {
-		t.Fatalf("国内站默认应为 wb-lite，实际 %q", got)
-	}
-	if got := route.TargetFor("global"); got != modelroute.LiteModel {
-		t.Fatalf("国际站默认应为 wb-lite，实际 %q", got)
+	if got := route.TargetFor("global"); got != "" {
+		t.Fatalf("未配置时不该改写，实际 %q", got)
 	}
 }
 
-// 显式配置优先于默认。
-func TestTitleRouteExplicitWins(t *testing.T) {
-	route := &modelroute.TitleRoute{
-		Enabled:  true,
-		Domestic: "hy4flash-free",
-		Global:   "deepseek-v4.1-flash",
-	}
+// 显式配置时按配置走。
+func TestTitleRouteExplicitTarget(t *testing.T) {
+	route := &modelroute.TitleRoute{Enabled: true, Domestic: "hy4flash-free"}
 	if got := route.TargetFor("domestic"); got != "hy4flash-free" {
-		t.Fatalf("国内站目标错：%q", got)
-	}
-	if got := route.TargetFor("global"); got != "deepseek-v4.1-flash" {
-		t.Fatalf("国际站目标错：%q", got)
+		t.Fatalf("应尊重显式配置，实际 %q", got)
 	}
 }
 
-// 关闭时不改写，即使配了目标 —— 这是回滚路径。
-func TestTitleRouteDisabledNeverRewrites(t *testing.T) {
-	store := modelroute.Store{}
-	if store.TitleRoute != nil {
-		t.Fatal("零值 Store 的 TitleRoute 应为 nil")
-	}
+// 开关关闭时不改写（即使配了目标）。
+func TestTitleRouteDisabled(t *testing.T) {
 	route := &modelroute.TitleRoute{
-		Enabled: false, Domestic: modelroute.LiteModel, Global: modelroute.LiteModel,
+		Enabled: false, Domestic: "hy4flash-free", Global: "hy4flash-free",
 	}
 	if got := route.TargetFor("domestic"); got != "" {
-		t.Fatalf("未启用时不该返回目标：%q", got)
-	}
-}
-
-// 标题请求识别边界。
-func TestTitleRouteDetectionBoundary(t *testing.T) {
-	title := []map[string]any{
-		{"role": "user", "content": modelroute.SessionTitlePrefix + " []"},
-	}
-	if !modelroute.IsSessionTitleRequest(title) {
-		t.Fatal("标准标题请求应被识别")
-	}
-	normal := []map[string]any{{"role": "user", "content": "帮我写个函数"}}
-	if modelroute.IsSessionTitleRequest(normal) {
-		t.Fatal("普通对话不该被识别")
+		t.Fatalf("开关关闭时不该改写，实际 %q", got)
 	}
 }

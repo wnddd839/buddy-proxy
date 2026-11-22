@@ -793,7 +793,7 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				// 留着会让逐模型档位逻辑去收敛一个对目标无意义的档位。
 				opts.ReasoningEffort = ""
 				opts.Reasoning = nil
-				s.Log.Warn("session title request routed to lightweight model",
+				s.Log.Info("session title request routed to lightweight model",
 					"from", orig, "to", target, "site", requestSite)
 			}
 		}
@@ -1679,7 +1679,7 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 	cacheKey := strings.Join([]string{activeSite, product, account.ID, site, baseURL, internet, account.Proxy}, "|")
 	if !fresh {
 		if cached, ok := s.cachedModels(cacheKey); ok {
-			return withLiteModel(cached), nil
+			return cached, nil
 		}
 	}
 
@@ -1714,18 +1714,7 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 	if listed.OK && len(listed.Models) > 0 {
 		s.noteModelEfforts(site, listed)
 	}
-	return withLiteModel(listed), err
-}
-
-// withLiteModel 把上游隐藏的 wb-lite 补进编目。
-//
-// 统一收口在 listModelsForSite 的所有出口：缓存命中路径会提前 return，
-// 若只在「真的拉了上游」的分支注入，缓存一热 wb-lite 就消失（实测过）。
-func withLiteModel(listed models.ListResult) models.ListResult {
-	if listed.OK {
-		listed.Models = models.WithLiteModel(listed.Models)
-	}
-	return listed
+	return listed, err
 }
 
 func (s *Service) cachedModels(key string) (models.ListResult, bool) {

@@ -3925,27 +3925,21 @@ async function refreshModelRoutes(){
 
 // paintTitleRoute 渲染标题改写控件（两站点各一个目标）。
 //
-// 下拉只列该站点的免费模型（creditMultiplier==0）：这个功能的全部收益
+// 下拉只列该站点的免费模型（creditMultiplier==0）：这个功能的收益
 // 来自「不花积分」，让用户选一个付费模型就失去意义。
-// WBLITE 是上游的隐藏轻量模型：不在 /models 编目里，但可直接调用且对
-// 标题请求计 0 积分（2026-11-20 实测）。它不出现在「免费模型」列表里，
-// 所以要在这里显式置顶。
-const TITLE_LITE_MODEL = 'wb-lite';
-
+//
+// 「沿用请求模型」始终是默认项：未配置 = 不改写 = 标题由当前会话的主模型
+// 生成。这是 2026-11-22 的默认行为（在此之前回落到上游隐藏模型 wb-lite，
+// 实测它只是 deepseek-v4.1-flash 的 0 价别名，特殊逻辑的维护成本大于收益）。
 function titleSelectOptions(site, selected){
   const list = titleFreeModels[site] || [];
-  // 「沿用请求模型」仍保留为可选项：想完全不改写可以关掉总开关，
-  // 也可以在这里显式选它（后端会因 Enabled=false 而不改写）。
-  let html = '<option value="">沿用请求模型</option>';
-  html += '<option value="' + TITLE_LITE_MODEL + '"' +
-          (selected === TITLE_LITE_MODEL ? ' selected' : '') + '>' +
-          TITLE_LITE_MODEL + '（隐藏轻量模型 · 0 积分）</option>';
+  let html = '<option value="">沿用请求模型（不改写）</option>';
   list.forEach(function(name){
     html += '<option value="' + escapeHtml(name) + '"' +
             (name === selected ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
   });
   // 已配置的值不在可选列表里时不静默丢掉，而是显式列出来提醒
-  if (selected && selected !== TITLE_LITE_MODEL && list.indexOf(selected) < 0) {
+  if (selected && list.indexOf(selected) < 0) {
     html += '<option value="' + escapeHtml(selected) + '" selected>' +
             escapeHtml(selected) + '（不在免费列表）</option>';
   }
@@ -3975,10 +3969,19 @@ function paintTitleRoute(){
   $('titleRouteGlobalHint').textContent = gloList.length
     ? '可选 ' + gloList.length + ' 个免费模型' : '该站点没有免费模型';
 
-  configState('titleRouteState',
-    cfg.enabled ? 'saved' : 'idle',
-    !cfg.enabled ? '未启用（会话标题按原模型计费）'
-      : '已启用：两站标题请求改写到 ' + TITLE_LITE_MODEL + '（0 积分）');
+  const domTarget = cfg.domestic || '';
+  const gloTarget = cfg.global || '';
+  let stateText;
+  if (!cfg.enabled) {
+    stateText = '未启用（会话标题按原模型计费）';
+  } else if (!domTarget && !gloTarget) {
+    // 开关开着但一个目标都没配 —— 这是最常见的「以为在省钱其实没有」状态。
+    stateText = '已启用但未配置目标 ⇒ 实际不改写，标题仍由主模型生成';
+  } else {
+    stateText = '已启用：国内 → ' + (domTarget || '不改写') +
+                ' · 国际 → ' + (gloTarget || '不改写');
+  }
+  configState('titleRouteState', cfg.enabled ? 'saved' : 'idle', stateText);
 }
 
 // collectTitleRoute 从界面读回配置。
@@ -4004,13 +4007,9 @@ if ($('titleRouteEnabled')) $('titleRouteEnabled').onchange = function(){
     domestic: cfg.domestic || '',
     global: cfg.global || ''
   };
-  // 首次启用时把两站默认填成 wb-lite：它与后端 TargetFor 的回落值一致，
-  // 让界面显示的就是实际生效的目标（否则下拉显示「沿用请求模型」，
-  // 后端却按 wb-lite 改写，用户看到的和实际不符）。
-  if (next.enabled) {
-    if (!next.domestic) next.domestic = TITLE_LITE_MODEL;
-    if (!next.global) next.global = TITLE_LITE_MODEL;
-  }
+  // 首次启用时**不再**自动填目标：留空 = 不改写，界面上直接显示
+  // 「未配置目标 ⇒ 实际不改写」。用户想省钱就自己选一个免费模型。
+  // （旧版会在这里自动填 wb-lite，但它在 2026-11-22 已被删除。）
   titleRoute = next;
   paintTitleRoute();
   markTitleDirty();

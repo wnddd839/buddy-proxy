@@ -10,8 +10,7 @@ import "strings"
 //	/data/.../dsh-session-title-all-prompts-llm/lib/index.js
 //
 // 宿主每新建一个会话就会发一次这样的请求，走的是当前选中的付费模型。
-// 竞品（dsh-connect-workbuddy）实测上游有个隐藏的轻量模型对这些请求
-// 计 0 积分，于是把它改写到那个模型上，每个新会话省一次主模型计费。
+// 若配置了目标，这些请求会被改写到更便宜的模型上。
 const SessionTitlePrefix = "Generate the session title from this JSON array of human messages:"
 
 // TitleRoute 是「会话标题请求改写」的配置。
@@ -24,27 +23,25 @@ type TitleRoute struct {
 	// Domestic / Global 是两个站点的目标模型。
 	//
 	// 为什么要按站点分开：标题请求本来就来自两个站点，而两站的免费
-	// 模型集合不同（国内只有 hy4flash-free，国际还有 deepseek-v4.1-flash、
-	// hy3）。一个全局 target 只能让其中一个站点受益。
+	// 模型集合不同。一个全局 target 只能让其中一个站点受益。
 	//
-	// 留空 = 该站点不改写（防御：宁可不改，也不要在运行时猜一个模型）。
+	// 留空 = 该站点不改写。
 	Domestic string `json:"domestic,omitempty"`
 	Global   string `json:"global,omitempty"`
 }
 
-// LiteModel 是上游的隐藏轻量模型：不在 /models 编目里，但可直接调用，
-// 且对标题请求计 0 积分（2026-11-20 线上实测：credit=0，能正常产出标题）。
-//
-// 竞品 dsh-connect-workbuddy 的 rewriteSessionTitleModel 也用它作为默认目标
-// （src/upstream.ts:3928），注释写明「reporter measured the upstream's hidden
-// wb-lite at 0 credits for exactly these requests」。
-const LiteModel = "wb-lite"
-
 // TargetFor 返回该站点的目标模型。
 //
-// 已启用时，未配置的站点回落到 LiteModel（wb-lite）：这是产品默认值 ——
-// 打开开关就该省钱，而 wb-lite 对标题请求实测计 0 积分。
-// 想彻底不改写就把 Enabled 关掉，而不是「开着但不配目标」。
+// **未配置目标时返回空字符串 = 不改写**。
+//
+// 这个默认值是有意选的（2026-11-22，用户明确要求「默认目标就跟随实际
+// 请求的模型」）：标题请求走当前会话的主模型，不额外改写。
+// 之前这里回落到 `wb-lite`（上游隐藏轻量模型），但实测它其实只是
+// `deepseek-v4.1-flash` 的 0 价别名（分词器 delta 恒为 4，完全同一套词表），
+// 而且标题请求本身常常不计费 —— 改写的收益远小于「多一层特殊逻辑」的成本，
+// 所以删掉了。
+//
+// 想省钱就在面板上显式配 `hy4flash-free`（实测 0 价、在编目里）。
 func (r *TitleRoute) TargetFor(site string) string {
 	if r == nil || !r.Enabled {
 		return ""
@@ -53,10 +50,7 @@ func (r *TitleRoute) TargetFor(site string) string {
 	if strings.EqualFold(strings.TrimSpace(site), "global") {
 		configured = r.Global
 	}
-	if target := strings.TrimSpace(configured); target != "" {
-		return target
-	}
-	return LiteModel
+	return strings.TrimSpace(configured)
 }
 
 // Normalize 归一站点键（旧配置的 site 字段不再使用，这里只做空白裁剪）。
@@ -105,7 +99,6 @@ func IsSessionTitleRequest(messages []map[string]any) bool {
 }
 
 // contentToText 把 content 拍平成纯文本。
-// 标题请求的 content 是单个 text 块（宿主构造），但这里也容忍字符串与数组两种形态。
 func contentToText(content any) string {
 	switch v := content.(type) {
 	case string:
