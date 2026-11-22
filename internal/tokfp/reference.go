@@ -58,21 +58,13 @@ const (
 // 内容长度完全不影响 delta（u_a_u 官方 3 → 8；同结构换成 722 token 内容仍是 8）。
 const TokenTemplateOverhead = 3
 
-// CompositionEstimatedTokens 用参考权重把成分转成「官方 tokenizer 会切出多少 token」。
+// 注意：这里曾有一个 EstimatedTokens（用参考权重估算官方 token 数）。
+// 已删除，原因两条：
 //
-// 实测精度（混合样本与官方精确计数对比）：
+//  1. 全仓无引用 —— 绝对锚定走的是 tokfp.CalibrationSamples
+//     （对固定文本用官方计数精确比对），不需要「估算任意文本」。
+//  2. 公式本身是错的：ASCII 全用 Alpha 权重（0.2047），但符号（{}[]）
+//     的真实比例是 0.6786，代码类文本会被低估 30%+。
+//     混合文本实测误差最大 7.26%，不足以支撑任何判定。
 //
-//	zh+code   5.00%
-//	en+code   7.26%  ← 最差（英文散文与代码同属 ASCII，权重被平均）
-//	zh+nums   1.15%
-//	zh+en     1.35%
-//	code+zh   1.65%
-//	json+zh   1.16%
-//
-// 只适合抓大偏差（例如 glm 的数字样本 +32%），不适合判定细微差异。
-func (c Composition) EstimatedTokens() float64 {
-	return float64(c.CJK)*ReferenceCJK +
-		float64(c.Digits)*ReferenceDigits +
-		float64(c.ASCII)*ReferenceAlpha +
-		float64(c.Other)*ReferenceOther
-}
+// 留着一个错的、且没人用的估算函数，早晚会被人当真。

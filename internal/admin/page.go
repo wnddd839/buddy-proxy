@@ -1339,7 +1339,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th title="keep=直传 system；fold=改写 system；keep(已剥离)=auto/strip 档删过已知指纹；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
                   <th title="从请求头推断的客户端类型；「会话」列显示它有没有发会话头（header=有，content=靠内容哈希）">客户端</th>
                   <th>指纹</th>
-                  <th title="system 内容的字符数（按 Go 的 len(string) 计，不是 UTF-8 字节数）。中文占比高的 system 会比字节数小很多，这是有意的：用于比较「有没有变短」，与编码无关">system 长度</th>
+                  <th title="system 内容的 UTF-8 字节数（Go 的 len(string) 就是字节数）。中文每字 3 字节，所以中文 system 的字节数约为字符数的 3 倍。这里用字节数是为了与剥离统计（StripReport.Bytes）同口径">system 长度</th>
                   <th>账号</th>
                   <th>模型</th>
                   <th>耗时</th>
@@ -1375,7 +1375,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th title="keep=直传 system；fold=改写 system；keep(已剥离)=auto/strip 档删过已知指纹；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
                   <th title="从请求头推断的客户端类型；「会话」列显示它有没有发会话头（header=有，content=靠内容哈希）">客户端</th>
                   <th>指纹</th>
-                  <th title="system 内容的字符数（按 Go 的 len(string) 计，不是 UTF-8 字节数）。中文占比高的 system 会比字节数小很多，这是有意的：用于比较「有没有变短」，与编码无关">system 长度</th>
+                  <th title="system 内容的 UTF-8 字节数（Go 的 len(string) 就是字节数）。中文每字 3 字节，所以中文 system 的字节数约为字符数的 3 倍。这里用字节数是为了与剥离统计（StripReport.Bytes）同口径">system 长度</th>
                   <th>账号</th>
                   <th>模型</th>
                   <th>耗时</th>
@@ -1486,7 +1486,6 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th>System</th>
                   <th>Token 总量</th>
                   <th>缓存命中</th>
-                  <th title="上游 SSE 帧里回显的 model 字段。与「模型」列不一致即说明上游换了模型；auto 一族由上游解析，属正常">上游模型</th>
                   <th title="上游 SSE 帧里回显的 model 字段。与「模型」列不一致即说明上游换了模型；auto 一族由上游解析，属正常">上游模型</th>
                   <th title="本次请求上游返回的单次扣费（不是余额）。余额看 01 概览或 02 账号池">单次 Credit</th>
                   <th>耗时</th>

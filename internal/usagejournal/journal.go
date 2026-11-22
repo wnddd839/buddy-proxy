@@ -71,8 +71,14 @@ type Entry struct {
 	SystemFp string `json:"systemFp,omitempty"`
 	// SystemDegraded 表示本次请求因 11128 从 keep 降级为 fold。
 	SystemDegraded bool `json:"systemDegraded,omitempty"`
-	// SystemLen 是 system 的**字符数**（出站口径，按 len(string) 计，不是 UTF-8 字节数）。
-	// 与 provider.MessagesIO 的 OutSystemLen 同源同口径：用于比较「有没有变短」。
+	// SystemLen 是 system 的 **UTF-8 字节数**（出站口径）。
+	//
+	// Go 的 len(string) 就是字节数，中文每字 3 字节 —— 所以中文 system
+	// 的字节数约为字符数的 3 倍。用字节数而不是字符数，是为了与
+	// StripReport.Bytes（剥离字节数）同口径，两个数字能直接相减。
+	//
+	// 需要「字符数」的场景是 tokenizer 指纹（tokfp.Composition.Chars），
+	// 那里用 utf8.RuneCountInString，是另一套口径。
 	// SystemStripped 表示删过已知指纹。
 	SystemLen      int    `json:"systemLen,omitempty"`
 	SystemStripped bool   `json:"systemStripped,omitempty"`

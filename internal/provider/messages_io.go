@@ -15,8 +15,14 @@ type MessagesIO struct {
 	OutMessages int `json:"outMessages,omitempty"`
 	InBytes     int `json:"inBytes,omitempty"`
 	OutBytes    int `json:"outBytes,omitempty"`
-	// InSystemLen / OutSystemLen 是 system 角色消息的字节数之和。
-	// I4（system 无声消失）只看它：条数不变但 system 字节归零，同样是丢失。
+	// InSystemLen / OutSystemLen 是 system 角色消息的 **UTF-8 字节数**之和
+	// （Go 的 len(string) 就是字节数）。
+	//
+	// 注意与 tokfp.Composition.Chars 区分：那边按 unicode 字符数计
+	// （RuneCountInString），因为 token/字符比要与分词器统计同口径。
+	// 这里用字节数与 StripReport.Bytes 对齐，便于「剥了多少」直接相减。
+	//
+	// I4（system 无声消失）只看它：条数不变但 system 归零，同样是丢失。
 	InSystemLen  int `json:"inSystemLen,omitempty"`
 	OutSystemLen int `json:"outSystemLen,omitempty"`
 	// Composition 是入站内容的字符成分（中文/数字/ASCII 分开计）。

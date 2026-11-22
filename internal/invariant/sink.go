@@ -367,7 +367,37 @@ func (s *Sink) Backfill(now time.Time) error {
 		}
 		s.restore(f)
 	}
+
+	// 同时重建 I9 的分词器基线。
+	//
+	// 不重建的后果：每次重启基线从零开始，重启后前 3 个样本就固化了
+	// 基线 —— 若那 3 个恰好异常（例如采样 bug 期间的假值），
+	// 错误的值就被当成「正常」，之后所有真实值都被判偏离。
+	// 实测踩过：重启后 ascii 基线被固化成 2.11（真实值 0.31）。
+	s.backfillTokBaseline(from, now)
 	return nil
+}
+
+// backfillTokBaseline 用历史 request 记录重建分词器比例基线。
+func (s *Sink) backfillTokBaseline(from, to time.Time) {
+	if s == nil || s.store == nil || s.state == nil {
+		return
+	}
+	recs, err := s.store.ReadKind(from, to, decision.KindRequest)
+	if err != nil {
+		return
+	}
+	for _, rec := range recs {
+		if rec.TokRatio <= 0 || rec.TokBucket == "" {
+			continue
+		}
+		model := rec.RoutedModel
+		if model == "" {
+			model = rec.Model
+		}
+		// ObserveTokRatio 会自然累积 Fast/Slow，与在线路径完全同一套逻辑。
+		s.state.ObserveTokRatio(model, rec.TokBucket, rec.TokRatio)
+	}
 }
 
 // restore 把一条历史 finding 放回 ring（不做 dedupe 计数，只保留最后一条）。

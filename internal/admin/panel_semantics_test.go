@@ -29,7 +29,9 @@ func TestPanelMetricScopesAreDocumented(t *testing.T) {
 		{"限流事件次数，不是账号数", "1h 限流计数是事件数"},
 		{"只显示首个账号", "概览的 Credits 余额只来自 primary 账号"},
 		{"缓存 token ÷ prompt token", "07 命中率的分母口径"},
-		{"字符数（按 Go 的 len(string) 计，不是 UTF-8 字节数）", "06 的 system 长度按字符计，不是字节"},
+		// 06 的 system 长度是 UTF-8 字节数（Go 的 len(string) 就是字节数）。
+		{"UTF-8 字节数", "06 的 system 长度必须标注是字节数"},
+		{"中文 system 的字节数约为字符数的 3 倍", "说明字节与字符的关系，避免误读"},
 	} {
 		if !strings.Contains(page, want.needle) {
 			t.Errorf("缺少口径说明 %q（%s）", want.needle, want.why)

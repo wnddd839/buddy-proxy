@@ -321,6 +321,12 @@ func tokRatio(input ChatRecordInput) float64 {
 	if !c.Usable() {
 		return 0
 	}
+	// 采样路径下 Ratio 没有意义：分母只是前缀字符数，分子却是全量
+	// prompt_tokens，比值会被放大数倍（实测 0.31 的真实值算成 2.11）。
+	// 返回 0 表示「未观测」，I9 会跳过 —— 宁可漏报，不可误报。
+	if c.Sampled {
+		return 0
+	}
 	return c.Ratio(input.Tok.PromptTokens)
 }
 
