@@ -51,6 +51,25 @@ const tokMinSamples = 3
 // 8% 的真正用途是「同一模型的分词器变了」，而不是「换了个模型」。
 const tokTolerance = 0.08
 
+// 分词器比例的物理可信区间。
+//
+// 官方 reference 的最高比例是「符号」的 0.8238（见 tokfp.ReferenceSym），
+// 真实混合文本不可能超过 1.0 —— 超过 1 意味着「一个字符切出多于一个
+// token」，物理上不成立。
+//
+// 这个闸门是为了挡住**历史污染值与单位错误**：
+// 采样 bug 期间，1.2MB 长上下文的 tokRatio 被算成 2.11（真实 0.31），
+// 而 Backfill 会把这些历史值装回基线，让修复失效。
+const (
+	tokRatioMinPlausible = 0.05
+	tokRatioMaxPlausible = 1.0
+)
+
+// tokRatioPlausible 报告该比例是否符合物理可能。
+func tokRatioPlausible(ratio float64) bool {
+	return ratio >= tokRatioMinPlausible && ratio <= tokRatioMaxPlausible
+}
+
 // tokKey 拼出基线的键：归一化模型名 + 分桶。
 //
 // 模型名必须归一化（剥 cn:/global: 站点前缀）：
@@ -77,6 +96,10 @@ func tokKey(model, bucket string) string {
 // 返回 (baseline, ok)：ok=false 表示样本不足，不做判定。
 func (s *State) ObserveTokRatio(model, bucket string, ratio float64) (*tokBaseline, bool) {
 	if s == nil || ratio <= 0 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		return nil, false
+	}
+	// 不合理比例一律拒收（见 tokRatioPlausible 的注释）。
+	if !tokRatioPlausible(ratio) {
 		return nil, false
 	}
 	key := tokKey(model, bucket)
