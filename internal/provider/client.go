@@ -1131,6 +1131,8 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	// 统计必须放在所有改写之后（剥离 / echo / fold / system 注入），
 	// 否则量到的是中间态，I3/I4 会把合法的策略变换当成丢失。
 	FillMessagesIO(opts.IOReport, opts.Messages, messages)
+	// PromptTokens 在拿到 usage 后才能填，所以先在 Complete 返回前回填。
+	// 这里不填：见 completeFingerprint 的注释。
 	if len(messages) == 0 {
 		return Result{}, fmt.Errorf("CodeBuddy chat completion failed: no valid messages after normalization")
 	}
@@ -1227,6 +1229,11 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	result.Status = resp.StatusCode
 	result.Model = model
 	result.Trace = trace
+	// 分词器指纹需要「上游返回的 prompt_tokens」与「入站字符成分」配对。
+	// 两者都只有到这里才齐，所以在返回前一次性写进共享指针。
+	if opts.IOReport != nil {
+		opts.IOReport.PromptTokens = result.Turn.Usage.PromptTokens
+	}
 	return result, nil
 }
 

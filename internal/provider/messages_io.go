@@ -1,5 +1,7 @@
 package provider
 
+import "github.com/wnddd839/codebuddy-proxy/internal/tokfp"
+
 // MessagesIO 是一次请求「进」「出」两侧的消息统计。
 //
 // 存在的理由：判断「网关有没有把历史弄丢」不能看 token 数 —— 客户端
@@ -17,6 +19,14 @@ type MessagesIO struct {
 	// I4（system 无声消失）只看它：条数不变但 system 字节归零，同样是丢失。
 	InSystemLen  int `json:"inSystemLen,omitempty"`
 	OutSystemLen int `json:"outSystemLen,omitempty"`
+	// Composition 是入站内容的字符成分（中文/数字/ASCII 分开计）。
+	//
+	// 为什么要分类：不同类别的 token 密度差 2~3 倍（ASCII≈0.22、
+	// 中文≈0.64、数字≈0.46~0.60）。混在一起算比例会互相抵消，
+	// 把真正的分词器差异淹没。
+	Composition tokfp.Composition `json:"composition,omitempty"`
+	// PromptTokens 是上游返回的 prompt_tokens（0 = 未观测）。
+	PromptTokens int `json:"promptTokens,omitempty"`
 }
 
 // FillMessagesIO 把 in / out 两侧的统计写进 dst（dst 为 nil 时是空操作）。
@@ -32,6 +42,7 @@ func FillMessagesIO(dst *MessagesIO, in, out []map[string]any) {
 	// 网关入口先用 nil 的 out 预填入站侧，随后 provider 再填出站侧。
 	if in != nil {
 		dst.InMessages, dst.InBytes, dst.InSystemLen = countMessages(in)
+		dst.Composition = tokfp.Of(in)
 	}
 	if out != nil {
 		dst.OutMessages, dst.OutBytes, dst.OutSystemLen = countMessages(out)

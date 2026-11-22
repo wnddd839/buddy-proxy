@@ -89,6 +89,17 @@ type Entry struct {
 	OutMessages int `json:"outMessages,omitempty"`
 	InBytes     int `json:"inBytes,omitempty"`
 	OutBytes    int `json:"outBytes,omitempty"`
+	// 分词器指纹：入站内容的字符成分与上游 prompt_tokens 的比值。
+	// 与 UpstreamModel 互补 —— 后者是「上游说它跑了哪个」，
+	// 这里是对「它到底用哪个分词器」的物理证据。
+	TokChars  int    `json:"tokChars,omitempty"`
+	TokCJK    int    `json:"tokCJK,omitempty"`
+	TokDigits int    `json:"tokDigits,omitempty"`
+	TokASCII  int    `json:"tokASCII,omitempty"`
+	TokBucket string `json:"tokBucket,omitempty"`
+	// TokRatio 是 prompt_tokens / 入站字符数（保留 4 位小数）。
+	TokRatio float64 `json:"tokRatio,omitempty"`
+
 	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测或旧数据）。
 	// 与 Model 并列：前者是客户端要的，后者是上游说它跑了哪个。
 	UpstreamModel string `json:"upstreamModel,omitempty"`

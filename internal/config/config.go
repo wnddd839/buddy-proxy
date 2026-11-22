@@ -139,6 +139,11 @@ type Config struct {
 	// 验证模型是靠 system 位还是 user 里的副本更能遵循指令。
 	// 只在 keep / auto / strip 模式生效（fold 模式本就搬 system 进 user）。
 	SystemEchoUser bool
+	// TokFingerprintDisabled 关闭分词器指纹检测（I9）。
+	//
+	// 默认开启：token 数来自上游 usage（本来就有），字符成分是本地纯算术，
+	// 实测每请求 < 0.1ms。关闭的场景：怀疑它造成误报、或想彻底去掉这部分开销。
+	TokFingerprintDisabled bool
 }
 
 func Load() Config {
@@ -182,6 +187,7 @@ func Load() Config {
 		CheckinRetryMax:            envInt("CODEBUDDY_PROXY_CHECKIN_RETRY_MAX", "", DefaultCheckinRetryMax),
 		QuotaFloorCredits:          envFloat("CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS", 0),
 		SystemEchoUser:             envBool("CODEBUDDY_PROXY_SYSTEM_ECHO_USER", "", false),
+		TokFingerprintDisabled:     envBool("CODEBUDDY_PROXY_TOK_FP_OFF", "", false),
 		SystemPromptMode:           NormalizeSystemPromptMode(firstEnv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE")),
 		ReasoningReplayDisabled:    envBool("CODEBUDDY_PROXY_REASONING_REPLAY_OFF", "", false),
 		// 两个都是「跳过式」开关：只有显式写 0/false 才关闭剥离。

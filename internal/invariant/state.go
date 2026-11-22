@@ -13,6 +13,7 @@ const (
 	defaultSessionCap = 512
 	defaultErrorCap   = 256
 	defaultDeductCap  = 4096
+	defaultTokCap     = 512
 )
 
 // deductRec 是一条「本次请求扣了多少」的记录。
@@ -48,17 +49,29 @@ type State struct {
 	deductCap  int
 	deduct     map[string]deductRec
 	deductRing []string
+
+	// tokBaseline 是「(模型, 分桶) → 快/慢双基线」的分词器比例基线。
+	//
+	// 它的用途是**发现模型被悄悄换掉**：回显的 model 字段（I8）只能
+	// 覆盖「上游老实说了」的情况，而 token 比例是改不了的物理证据。
+	//
+	// 上限：最多 512 条（模型×分桶的组合远小于此）。
+	tokCap      int
+	tokBaseline map[string]*tokBaseline
+	tokRing     []string
 }
 
 // NewState 建状态。任一 cap 为 0 表示该项不限制。
 func NewState(sessionCap, errCap int) *State {
 	return &State{
-		sessionCap: sessionCap,
-		errCap:     errCap,
-		deductCap:  defaultDeductCap,
-		prompt:     make(map[string]int64),
-		errCount:   make(map[string]int),
-		deduct:     make(map[string]deductRec),
+		sessionCap:  sessionCap,
+		errCap:      errCap,
+		deductCap:   defaultDeductCap,
+		tokCap:      defaultTokCap,
+		prompt:      make(map[string]int64),
+		errCount:    make(map[string]int),
+		deduct:      make(map[string]deductRec),
+		tokBaseline: make(map[string]*tokBaseline),
 	}
 }
 

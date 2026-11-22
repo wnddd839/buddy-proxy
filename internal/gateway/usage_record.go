@@ -7,6 +7,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/decision"
 	"github.com/wnddd839/codebuddy-proxy/internal/provider"
+	"github.com/wnddd839/codebuddy-proxy/internal/tokfp"
 	"github.com/wnddd839/codebuddy-proxy/internal/usagejournal"
 	"github.com/wnddd839/codebuddy-proxy/internal/watch"
 )
@@ -58,6 +59,9 @@ type ChatRecordInput struct {
 	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测）。
 	// 与 RoutedModel 不同：后者是「我们发出去的」，这个是「上游说它跑了哪个」。
 	UpstreamModel string
+	// Tok* 是分词器指纹：入站字符成分 + 上游 prompt_tokens 的比值。
+	// 由 IO.Composition 与 IO.PromptTokens 算出，这里用结构体携带便于传递。
+	Tok *provider.MessagesIO
 }
 
 // RecordChat appends a usage journal row (persisted via usage journal flush).
@@ -123,6 +127,12 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		InBytes:                       ioInt(input.IO, func(m *provider.MessagesIO) int { return m.InBytes }),
 		OutBytes:                      ioInt(input.IO, func(m *provider.MessagesIO) int { return m.OutBytes }),
 		UpstreamModel:                 input.UpstreamModel,
+		TokChars:                      tokEnabledInt(s, tokChars, input),
+		TokCJK:                        tokEnabledInt(s, tokCJK, input),
+		TokDigits:                     tokEnabledInt(s, tokDigits, input),
+		TokASCII:                      tokEnabledInt(s, tokASCII, input),
+		TokBucket:                     tokEnabledStr(s, tokBucket, input),
+		TokRatio:                      tokEnabledFloat(s, tokRatio, input),
 		ModelMismatch:                 modelMismatch(input.Model, input.RoutedModel, input.UpstreamModel),
 	})
 }
@@ -145,6 +155,12 @@ func (s *Service) submitInvariantRecord(input ChatRecordInput) {
 		Model:            input.Model,
 		RoutedModel:      input.RoutedModel,
 		UpstreamModel:    input.UpstreamModel,
+		TokChars:         tokEnabledInt(s, tokChars, input),
+		TokCJK:           tokEnabledInt(s, tokCJK, input),
+		TokDigits:        tokEnabledInt(s, tokDigits, input),
+		TokASCII:         tokEnabledInt(s, tokASCII, input),
+		TokBucket:        tokEnabledStr(s, tokBucket, input),
+		TokRatio:         tokEnabledFloat(s, tokRatio, input),
 		PromptTokens:     int64(input.Usage.PromptTokens),
 		CompletionTokens: int64(input.Usage.CompletionTokens),
 		UsageSource:      input.UsageSource,
@@ -269,6 +285,64 @@ func normalizeModelName(model string) string {
 		}
 	}
 	return b.String()
+}
+
+// tokChars / tokCJK / ... 读分词器指纹的各个分量（未观测时返回零值）。
+// 单独拆开而不是返回整个结构，是为了让 journal 与 decision 两边都能
+// 用同一组 helper，不必各自做 nil 判断。
+func tokComposition(input ChatRecordInput) tokfp.Composition {
+	if input.Tok == nil {
+		return tokfp.Composition{}
+	}
+	return input.Tok.Composition
+}
+
+// tokEnabled 检查开关。关掉时所有 Tok* 都写零值 ——
+// journal 与 decision 两侧用同一判据，避免一边有值一边没有。
+func (s *Service) tokEnabled() bool {
+	return s.TokFingerprintEnabled()
+}
+
+func tokChars(input ChatRecordInput) int     { return tokComposition(input).Chars }
+func tokCJK(input ChatRecordInput) int       { return tokComposition(input).CJK }
+func tokDigits(input ChatRecordInput) int    { return tokComposition(input).Digits }
+func tokASCII(input ChatRecordInput) int     { return tokComposition(input).ASCII }
+func tokBucket(input ChatRecordInput) string { return tokComposition(input).Bucket() }
+
+// tokRatio 返回 prompt_tokens / 字符数（不可用时 0）。
+//
+// 只在「字符数够、且上游真的回了 prompt_tokens」时才非零：
+// 短 prompt 的模板开销占比过高，比值会失真，这时宁可返回 0 也不给假信号。
+func tokRatio(input ChatRecordInput) float64 {
+	if input.Tok == nil || input.Tok.PromptTokens <= 0 {
+		return 0
+	}
+	c := input.Tok.Composition
+	if !c.Usable() {
+		return 0
+	}
+	return c.Ratio(input.Tok.PromptTokens)
+}
+
+func tokEnabledInt(s *Service, fn func(ChatRecordInput) int, input ChatRecordInput) int {
+	if !s.tokEnabled() {
+		return 0
+	}
+	return fn(input)
+}
+
+func tokEnabledStr(s *Service, fn func(ChatRecordInput) string, input ChatRecordInput) string {
+	if !s.tokEnabled() {
+		return ""
+	}
+	return fn(input)
+}
+
+func tokEnabledFloat(s *Service, fn func(ChatRecordInput) float64, input ChatRecordInput) float64 {
+	if !s.tokEnabled() {
+		return 0
+	}
+	return fn(input)
 }
 
 // ioSystemLen 取出站 system 的字节数（未观测时 0）。

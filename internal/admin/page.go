@@ -1135,6 +1135,34 @@ button:disabled{opacity:.4;cursor:not-allowed}
       <div class="panel-inner">
         <div class="section-head">
           <div>
+            <h2>分词器指纹基线</h2>
+            <p>
+              同一模型对<strong>同类文本</strong>切出的 token 数应当稳定 —— 这是改不了的物理证据。
+              上游如果把请求悄悄路由到别的模型，即使回显字段仍写原名字，分词器比例也会变。<br>
+              按内容成分分桶（<code>中文 / 数字 / ASCII</code>）：不同类别的 token 密度差 2~3 倍，混算会把差异淹没。
+              数字密集文本最敏感 —— 实测 <code>deepseek-v4.1-flash</code> 为 <code>0.4552</code>、
+              <code>glm-5.3-flash</code> 为 <code>0.6018</code>（差 32%）。<br>
+              <strong>不需要安装任何 tokenizer</strong>：token 数来自上游返回的 <code>prompt_tokens</code>，
+              字符成分在网关本地按字符类别数（纯算术，零依赖）。
+            </p>
+          </div>
+          <div class="actions">
+            <label class="sp-check" title="关掉后完全不观测分词器比例；开启成本约为每请求一次字符遍历">
+              <input type="checkbox" id="tokEnable"/> 启用分词器指纹检测
+            </label>
+            <button class="ghost" id="btnRefreshTok" type="button">刷新基线</button>
+          </div>
+        </div>
+        <div class="bound-keys" id="tokTable">
+          <div class="empty">加载中…</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-inner">
+        <div class="section-head">
+          <div>
             <h2>会话标题改写</h2>
             <p>dsh 宿主每新建一个会话，会额外发一次「生成会话标题」的请求，走当前选中的付费模型。打开这一项后，这类请求会被改写到<strong>免费模型</strong>上，每个新会话省一次主模型计费。<br>识别是 fail-closed 的：只有<strong>一条 user 消息、没有 assistant/tool、且以标题模板开头</strong>才改写；模板改了就自动停止识别，不会误伤正常对话。请求里的 messages、stream、max_tokens、任何 header 都不动，只改模型名。</p>
           </div>
@@ -2475,6 +2503,56 @@ if ($('btnRefreshEcho')) $('btnRefreshEcho').addEventListener('click', function(
 });
 if ($('tab-models')) {
   refreshModelEcho().catch(function(e){ showToast('模型回显对照加载失败：' + (e.message || e), 'error'); });
+}
+
+// refreshTokBaselines 渲染分词器指纹基线表。
+//
+// 数据来自 /direct-admin/api/invariants（已带 specs 与 findings）之外的
+// 一个轻量端点：基线属于 State，不是 finding，所以单独取。
+async function refreshTokBaselines(){
+  const data = await api('/direct-admin/api/tok-baselines');
+  if ($('tokEnable')) $('tokEnable').checked = data.enabled !== false;
+  const host = $('tokTable');
+  if (!host) return;
+  const rows = data.baselines || [];
+  if (!rows.length){
+    host.innerHTML = '<p class="lede" style="margin:8px 0 0">还没有足够的样本（每对 (模型, 分桶) 需要 3 次才能建立基线）。</p>';
+    return;
+  }
+  host.innerHTML = '<table aria-label="分词器指纹基线"><thead><tr>' +
+    '<th>模型</th><th title="按内容成分分桶；不同桶的 token 密度差 2~3 倍，不可混算">分桶</th>' +
+    '<th title="观测到的最小比例（指数平滑）">快线</th>' +
+    '<th title="观测到的最大比例（指数平滑）">慢线</th>' +
+    '<th title="最近一次观测的比例">当前</th>' +
+    '<th title="超出快/慢线 8% 才判异常">样本</th>' +
+    '</tr></thead><tbody>' + rows.map(function(r){
+      const dev = r.deviating ? ' style="color:var(--bad,#e05252);font-weight:700"' : '';
+      return '<tr>' +
+        '<td class="mono">' + escapeHtml(r.model) + '</td>' +
+        '<td><span class="badge muted">' + escapeHtml(r.bucket) + '</span></td>' +
+        '<td class="mono">' + r.fast.toFixed(4) + '</td>' +
+        '<td class="mono">' + r.slow.toFixed(4) + '</td>' +
+        '<td class="mono"' + dev + '>' + r.lastRatio.toFixed(4) + '</td>' +
+        '<td class="mono">' + r.samples + '</td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+if ($('tokEnable')) $('tokEnable').addEventListener('change', async function(){
+  const on = this.checked;
+  try {
+    await api('/direct-admin/api/tok-fingerprint', {method:'POST', body: JSON.stringify({enabled: on})});
+    showToast('分词器指纹检测已' + (on ? '开启' : '关闭'));
+    await refreshTokBaselines();
+  } catch (e) {
+    showToast('切换失败：' + (e.message || e), 'error');
+    this.checked = !on;
+  }
+});
+if ($('btnRefreshTok')) $('btnRefreshTok').addEventListener('click', function(){
+  refreshTokBaselines().catch(function(e){ showToast(e.message,'error'); });
+});
+if ($('tab-models')) {
+  refreshTokBaselines().catch(function(e){ showToast('分词器基线加载失败：' + (e.message || e), 'error'); });
 }
 
 async function refreshInvariants(){

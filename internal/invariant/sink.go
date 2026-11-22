@@ -1,6 +1,8 @@
 package invariant
 
 import (
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -396,6 +398,51 @@ func (s *Sink) restore(f decision.Finding) {
 		}
 	}
 	s.dedupe[key] = &dedupeEntry{lastAt: f.At, indexInRing: len(s.ring) - 1, seen: 1}
+}
+
+// TokBaselines 返回分词器指纹基线快照（面板展示用）。
+//
+// 把 State 的内部结构转成面板能直接渲染的扁平行：
+// 每个 (模型, 分桶) 一行，带快/慢线与样本数。
+func (s *Sink) TokBaselines(limit int) []map[string]any {
+	if s == nil || s.state == nil {
+		return nil
+	}
+	all := s.state.TokBaselines()
+	rows := make([]map[string]any, 0, len(all))
+	for key, b := range all {
+		model, bucket, ok := strings.Cut(key, "|")
+		if !ok {
+			continue
+		}
+		rows = append(rows, map[string]any{
+			"model":     model,
+			"bucket":    bucket,
+			"fast":      b.Fast,
+			"slow":      b.Slow,
+			"lastRatio": b.LastRatio,
+			"samples":   b.Samples,
+			// deviating 只在面板高亮用：真正的判定在 I9 里，
+			// 这里只是「当前值是否已超出区间」的即时视图。
+			"deviating": b.Samples >= 3 &&
+				(b.LastRatio < b.Fast-tokTolerance*b.Fast ||
+					b.LastRatio > b.Slow+tokTolerance*b.Slow),
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		a, _ := rows[i]["model"].(string)
+		b, _ := rows[j]["model"].(string)
+		if a != b {
+			return a < b
+		}
+		ba, _ := rows[i]["bucket"].(string)
+		bb, _ := rows[j]["bucket"].(string)
+		return ba < bb
+	})
+	if limit > 0 && len(rows) > limit {
+		rows = rows[:limit]
+	}
+	return rows
 }
 
 // Prune 清理过期的决策日志。由调用方按较低频率触发（例如每小时一次）。

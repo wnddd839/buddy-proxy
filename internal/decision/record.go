@@ -67,6 +67,15 @@ type Record struct {
 	Site        string `json:"site,omitempty"`
 	Model       string `json:"model,omitempty"`
 	RoutedModel string `json:"routedModel,omitempty"`
+	// 分词器指纹（见 internal/tokfp）。与上游回显互补：
+	// 回显是「它说的」，比例是「它实际用的分词器」。
+	TokChars  int     `json:"tokChars,omitempty"`
+	TokCJK    int     `json:"tokCJK,omitempty"`
+	TokDigits int     `json:"tokDigits,omitempty"`
+	TokASCII  int     `json:"tokASCII,omitempty"`
+	TokBucket string  `json:"tokBucket,omitempty"`
+	TokRatio  float64 `json:"tokRatio,omitempty"`
+
 	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测）。
 	// 与 Model/RoutedModel 三者并列：客户端要的 / 我们发的 / 上游说它跑的。
 	UpstreamModel    string `json:"upstreamModel,omitempty"`

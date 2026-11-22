@@ -368,6 +368,21 @@ func (s *Service) SetSystemEchoUser(on bool) config.Config {
 	})
 }
 
+// SetTokFingerprintEnabled 热切换分词器指纹检测（默认开）。
+func (s *Service) SetTokFingerprintEnabled(on bool) config.Config {
+	return s.updateConfig(func(c *config.Config) {
+		c.TokFingerprintDisabled = !on
+	})
+}
+
+// TokFingerprintEnabled 报告当前是否启用。
+func (s *Service) TokFingerprintEnabled() bool {
+	if s == nil {
+		return false
+	}
+	return !s.Config().TokFingerprintDisabled
+}
+
 func (s *Service) SetSystemStripSwitches(stripOff, stripAssistantOff *bool) config.Config {
 	return s.updateConfig(func(c *config.Config) {
 		if stripOff != nil {

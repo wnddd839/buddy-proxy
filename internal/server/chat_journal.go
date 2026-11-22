@@ -73,6 +73,10 @@ func (s *Server) recordChatJournal(
 	if result != nil {
 		input.UpstreamModel = result.UpstreamModel
 	}
+	// 分词器指纹挂在 SystemOutcome.IO 上（CompleteFromPool 每轮共享同一指针）。
+	if outcome := opts.SystemOutcome; outcome != nil {
+		input.Tok = outcome.IO
+	}
 	input.TitleRewrite = opts.RoutedFrom != "" && opts.TitleRewrite
 	input.UsageSource = usage.Source
 	s.Svc.RecordChat(input)

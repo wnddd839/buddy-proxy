@@ -1165,6 +1165,14 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 	case path == "/direct-admin/api/invariants" && r.Method == http.MethodGet:
 		s.handleInvariants(w, r)
 		return
+	// 分词器指纹基线：属于 State（跨请求累积），不是 finding，
+	// 所以单独一个只读端点。
+	case path == "/direct-admin/api/tok-baselines" && r.Method == http.MethodGet:
+		s.handleTokBaselines(w, r)
+		return
+	case path == "/direct-admin/api/tok-fingerprint" && r.Method == http.MethodPost:
+		s.handleTokFingerprintToggle(w, r)
+		return
 	case path == "/direct-admin/api/quota-floor" && r.Method == http.MethodGet:
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "quotaFloor": s.Svc.Config().QuotaFloorCredits,
@@ -1961,6 +1969,70 @@ func invariantSpecs() []map[string]string {
 		invariantSpecsCache = invariant.DefaultRegistry().Specs()
 	})
 	return invariantSpecsCache
+}
+
+// handleTokFingerprintToggle 热切换分词器指纹检测。
+//
+// 只写内存 + .env（与其他热切换开关同一套机制），不重启生效。
+func (s *Server) handleTokFingerprintToggle(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if body.Enabled == nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "需要 enabled",
+		})
+		return
+	}
+
+	s.envMu.Lock()
+	envPath := config.ResolveEnvFilePath()
+	updates := map[string]string{
+		// .env 里存的是「关掉」标志，所以 enabled=false 要写 1。
+		"CODEBUDDY_PROXY_TOK_FP_OFF": boolEnvValue(!*body.Enabled),
+	}
+	if err := config.UpsertEnvFile(envPath, updates); err != nil {
+		s.envMu.Unlock()
+		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
+	}
+	s.envMu.Unlock()
+
+	s.Svc.SetTokFingerprintEnabled(*body.Enabled)
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"enabled": s.Svc.TokFingerprintEnabled(),
+	})
+}
+
+// handleTokBaselines 返回分词器指纹基线快照。
+//
+// 基线是按 (模型, 分桶) 的跨请求统计，不进 findings ——
+// 面板需要「已经建立了哪些基线」而不是「哪条命中了」。
+func (s *Server) handleTokBaselines(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	var rows []map[string]any
+	if sink := s.Svc.InvariantSink(); sink != nil {
+		rows = sink.TokBaselines(limit)
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"enabled":   s.Svc.TokFingerprintEnabled(),
+		"baselines": rows,
+		"count":     len(rows),
+	})
 }
 
 // handleInvariants 返回静默失效体检数据。

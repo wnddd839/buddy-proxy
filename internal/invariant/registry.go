@@ -126,5 +126,6 @@ func DefaultRegistry() *Registry {
 	registerSession(r)
 	registerSelection(r)
 	registerModel(r)
+	registerTokFP(r)
 	return r
 }
