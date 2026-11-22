@@ -486,12 +486,15 @@ type CompleteOptions struct {
 
 // ImageOptions is one pooled image generation or edit.
 type ImageOptions struct {
-	Site         string
-	Model        string
-	Prompt       string
-	ImageURLs    []string
-	ImageData    []string
-	AccountID    string
+	Site      string
+	Model     string
+	Prompt    string
+	ImageURLs []string
+	ImageData []string
+	AccountID string
+	// RequestID 是本次代理请求的 ID，透传给 Pool.Select 供决策日志配对。
+	// 没有它的话，出图请求的 selection 记录 requestId 为空，无法与 request 配对。
+	RequestID    string
 	FixedAccount bool
 	ExcludeIDs   []string
 	RefreshRetry bool

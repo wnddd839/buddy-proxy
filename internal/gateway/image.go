@@ -30,6 +30,7 @@ func (s *Service) ImageFromPool(ctx context.Context, opts ImageOptions) (ImageRe
 		ExcludeIDs:  opts.ExcludeIDs,
 		PreferQuota: opts.AccountID == "",
 		Model:       strings.TrimSpace(opts.Model),
+		RequestID:   opts.RequestID,
 	})
 	if err != nil {
 		return ImageResult{}, err
