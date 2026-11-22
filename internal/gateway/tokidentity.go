@@ -23,8 +23,18 @@ type TokIdentityResult struct {
 	Vocabulary string              `json:"vocabulary"`
 	Weight     string              `json:"weight"`
 	TemplateOK bool                `json:"templateOK"`
-	Note       string              `json:"note,omitempty"`
-	Cost       string              `json:"cost"`
+	// TemplateDetail 逐结构记录「观测 vs 预测」，模板不符时能直接看到差在哪。
+	TemplateDetail []TokTemplateCase `json:"templateDetail,omitempty"`
+	Note           string            `json:"note,omitempty"`
+	Cost           string            `json:"cost"`
+}
+
+// TokTemplateCase 是一种消息结构的模板校验明细。
+type TokTemplateCase struct {
+	Name      string `json:"name"`
+	Observed  int    `json:"observed"`
+	Predicted int    `json:"predicted"`
+	OK        bool   `json:"ok"`
 }
 
 type toxIdentitySample struct {
@@ -107,7 +117,7 @@ func (s *Service) TokIdentityCheck(ctx context.Context, site, model string) (Tok
 	// ── 3. 模板公式校验 ────────────────────────────────
 	// 只在词表判定通过时做：词表都不对，模板校验没有意义。
 	if report.Vocabulary == tokfp.VerdictPass {
-		out.TemplateOK = s.checkTemplateFormula(ctx, account, site, model)
+		out.TemplateOK, out.TemplateDetail = s.checkTemplateFormula(ctx, account, site, model)
 	}
 
 	return out, nil
@@ -126,6 +136,17 @@ func (s *Service) probePromptTokens(ctx context.Context, account accounts.Accoun
 	chatOpts.Stream = false
 	chatOpts.Site = site
 
+	// 关键：标定请求必须绕过网关自身的消息变换。
+	//
+	// 实测事故（2026-11-22）：线上 echo 开关开着
+	// （CODEBUDDY_PROXY_SYSTEM_ECHO_USER=1），于是 s_u 结构里
+	// system 被复制进 user 并用 <client_instructions> 包裹，
+	// 上游返回 19 而直连只有 7 —— 多出的 12 个 token 全是网关自己加的，
+	// 却被算进「模板开销」，导致公式校验误判为不符。
+	//
+	// 这里量的是**上游本身**，不是「网关 + 上游」的组合。
+	chatOpts.EchoSystemToUser = false
+
 	res, err := s.Provider.Complete(ctx, chatOpts)
 	if err != nil {
 		return provider.Usage{}, err
@@ -133,31 +154,42 @@ func (s *Service) probePromptTokens(ctx context.Context, account accounts.Accoun
 	return res.Turn.Usage, nil
 }
 
-// checkTemplateFormula 用四种结构验证模板开销公式。
-func (s *Service) checkTemplateFormula(ctx context.Context, account accounts.Account, site, model string) bool {
+// checkTemplateFormula 用四种结构验证模板开销公式，返回逐结构明细。
+//
+// 返回明细而不是 bool：模板不符时「差在哪个结构、差多少」才是可用信息，
+// 一个 false 无法判断是公式错了还是上游模板变了。
+func (s *Service) checkTemplateFormula(ctx context.Context, account accounts.Account, site, model string) (bool, []TokTemplateCase) {
+	all := true
+	details := make([]TokTemplateCase, 0, len(tokfp.TemplateCases))
 	for _, tc := range tokfp.TemplateCases {
 		msgs := make([]map[string]any, 0, len(tc.Messages))
-		for _, m := range tc.Messages {
-			msgs = append(msgs, map[string]any{"role": m.Role, "content": m.Content})
-		}
-		usage, err := s.probePromptTokens(ctx, account, site, model, provider.ChatOptions{
-			Messages: msgs, MaxCompletionTokens: 1,
-		})
-		if err != nil {
-			return false
-		}
-		// 官方计数：模板短内容只有 1 个 token，n 条消息加起来是 n*tmpl。
 		official := 0
 		for _, m := range tc.Messages {
+			msgs = append(msgs, map[string]any{"role": m.Role, "content": m.Content})
 			if m.Content != "" {
 				official += tokfp.TemplateProbeOfficialTokens
 			}
 		}
-		// 公式预测：官方计数 + FormattedOverhead
 		predicted := official + tc.ExpectedOverhead
-		if int(usage.PromptTokens) != predicted {
-			return false
+		usage, err := s.probePromptTokens(ctx, account, site, model, provider.ChatOptions{
+			Messages: msgs, MaxCompletionTokens: 1,
+		})
+		if err != nil {
+			details = append(details, TokTemplateCase{
+				Name: tc.Name, Predicted: predicted,
+			})
+			all = false
+			continue
 		}
+		observed := int(usage.PromptTokens)
+		ok := observed == predicted
+		if !ok {
+			all = false
+		}
+		details = append(details, TokTemplateCase{
+			Name: tc.Name, Observed: observed,
+			Predicted: predicted, OK: ok,
+		})
 	}
-	return true
+	return all, details
 }
