@@ -1173,6 +1173,10 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 	case path == "/direct-admin/api/tok-fingerprint" && r.Method == http.MethodPost:
 		s.handleTokFingerprintToggle(w, r)
 		return
+	// 词表身份鉴定：手动触发（成本约 0.02 credit/模型），不做定时。
+	case path == "/direct-admin/api/tok-identity-check" && r.Method == http.MethodPost:
+		s.handleTokIdentityCheck(w, r)
+		return
 	case path == "/direct-admin/api/quota-floor" && r.Method == http.MethodGet:
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "quotaFloor": s.Svc.Config().QuotaFloorCredits,
@@ -1969,6 +1973,55 @@ func invariantSpecs() []map[string]string {
 		invariantSpecsCache = invariant.DefaultRegistry().Specs()
 	})
 	return invariantSpecsCache
+}
+
+// handleTokIdentityCheck 对在役模型跑一次词表身份鉴定。
+//
+// 成本约 0.02 credit/模型，所以只做手动触发。
+// 只查「有凭据 + 已启用」的账号所属的模型，避免对全编目 38 个模型都烧一遍。
+func (s *Server) handleTokIdentityCheck(w http.ResponseWriter, r *http.Request) {
+	store, err := s.Svc.Pool.Read()
+	if err != nil {
+		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
+	// 取每个站点的主模型：优先用当前配置的站点，再补另一个。
+	// 不做「全编目」，因为那会跑到 38 个模型 × 7 次 = 266 次请求。
+	sites := []string{"domestic", "global"}
+	var results []gateway.TokIdentityResult
+	for _, site := range sites {
+		model := ""
+		for _, a := range store.Accounts {
+			if !a.Enabled || !accounts.HasCredentials(a) {
+				continue
+			}
+			if config.NormalizeSite(a.Site) != site {
+				continue
+			}
+			model = "deepseek-v4.1-flash"
+			break
+		}
+		if model == "" {
+			continue
+		}
+		res, err := s.Svc.TokIdentityCheck(r.Context(), site, model)
+		if err != nil {
+			results = append(results, gateway.TokIdentityResult{
+				Model: model, Site: site,
+				Vocabulary: "无法判定", Weight: "无法验证（上游不提供 logprobs）",
+				Note: "校准失败：" + err.Error(),
+			})
+			continue
+		}
+		results = append(results, res)
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"results": results,
+		"count":   len(results),
+	})
 }
 
 // handleTokFingerprintToggle 热切换分词器指纹检测。

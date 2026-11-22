@@ -1356,6 +1356,29 @@ button:disabled{opacity:.4;cursor:not-allowed}
           </div>
         </div>
 
+        <div class="section-head">
+          <div>
+            <h2>词表身份鉴定</h2>
+            <p>
+              回答一个 system 面板最该回答的问题：<strong>我们发出去的东西，上游到底用什么词表理解的？</strong><br>
+              做法：把 3 条固定样本不改动地发给上游，看它返回的 <code>prompt_tokens</code> 与官方
+              DeepSeek 词表的精确计数是否只差一个<strong>恒定的模板开销</strong>。<br>
+              差值恒为 4（单条 user）⇒ 词表就是官方 DeepSeek。差值各不相同 ⇒ 换了词表。<br>
+              <strong>权重（模型本体）无法验证</strong>：上游不返回 <code>logprobs</code>（实测三个模型都没有），
+              而词表相同不代表权重相同 —— 蒸馏 / 微调模型可以继承词表。这一栏如实写「无法验证」，不留白。
+            </p>
+          </div>
+          <div class="actions">
+            <span class="sp-check" style="text-transform:none;letter-spacing:0" id="tokIdState">—</span>
+            <button class="ghost" id="btnTokIdCheck" type="button" title="会消耗约 0.02 credit（7 次请求，每次 max_tokens=1）">立即校准</button>
+          </div>
+        </div>
+        <p class="checkin-hint" style="margin:0 0 10px">
+          <strong>成本</strong>：约 <code>0.02 credit</code> / 模型（3 条词表样本 + 4 种模板结构，每次只输出 1 token）。
+          只做手动触发，不设定时任务 —— 词表不会天天变，持续烧额度没有意义。
+        </p>
+        <div class="bound-keys" id="tokIdTable"><div class="empty">点「立即校准」开始（未校准时不做任何请求）</div></div>
+
         <p class="checkin-hint" id="spPrivacyHint">
           隐私自检：<code>sudo grep -c "You are Claude Code" /opt/buddy-proxy/proxy-systemprompt-*.jsonl</code> 应恒为
           <code>0</code>。事件里的指纹无法反推原文，只用于判断「同一个 system 出现了几次」。
@@ -2554,6 +2577,71 @@ if ($('btnRefreshTok')) $('btnRefreshTok').addEventListener('click', function(){
 if ($('tab-models')) {
   refreshTokBaselines().catch(function(e){ showToast('分词器基线加载失败：' + (e.message || e), 'error'); });
 }
+
+// runTokIdCheck 触发一次词表身份校准并渲染结果。
+//
+// 结果来自 POST /direct-admin/api/tok-identity-check，每个在役模型一条。
+// 注意：权重一栏恒为「无法验证」，这是设计而不是缺陷 ——
+// 上游不提供 logprobs，词表相同不能证明权重相同。
+async function runTokIdCheck(){
+  const state = $('tokIdState');
+  const table = $('tokIdTable');
+  if (state) state.textContent = '校准中…（约 0.02 credit / 模型）';
+  if (table) table.innerHTML = '<div class="empty">正在请求上游…</div>';
+
+  let data;
+  try {
+    data = await api('/direct-admin/api/tok-identity-check', {method:'POST', body: JSON.stringify({})});
+  } catch (e) {
+    if (state) state.textContent = '失败';
+    if (table) table.innerHTML = '<p class="lede" style="margin:8px 0 0">校准失败：' + escapeHtml(e.message || String(e)) + '</p>';
+    throw e;
+  }
+
+  const rows = data.results || [];
+  if (state) state.textContent = rows.length ? (rows.length + ' 个模型已校准') : '没有可校准的模型';
+  if (!table) return;
+  if (!rows.length){
+    table.innerHTML = '<p class="lede" style="margin:8px 0 0">没有在役模型（账号池为空或全部冷却）。</p>';
+    return;
+  }
+
+  table.innerHTML = '<table aria-label="词表身份鉴定"><thead><tr>' +
+    '<th>模型</th><th>站点</th>' +
+    '<th title="三项固定样本的差值是否一致且等于模板开销">词表</th>' +
+    '<th title="词表相同不代表权重相同；上游不提供 logprobs，无从验证">权重</th>' +
+    '<th title="四种消息结构的模板开销是否符合实测公式">模板公式</th>' +
+    '<th>样本明细</th>' +
+    '</tr></thead><tbody>' + rows.map(function(r){
+      const vocBadge = r.vocabulary === '官方 DeepSeek 词表'
+        ? '<span class="badge on">官方 DeepSeek</span>'
+        : (r.vocabulary === '非 DeepSeek 词表'
+          ? '<span class="badge bad">非 DeepSeek</span>'
+          : '<span class="badge muted">无法判定</span>');
+      const tplBadge = r.templateOK === true
+        ? '<span class="badge on">符合</span>'
+        : (r.templateOK === false ? '<span class="badge bad">不符</span>' : '<span class="badge muted">未测</span>');
+      const detail = (r.samples || []).map(function(s){
+        return escapeHtml(s.name) + ' ' + (s.observed || '?') + '/' + s.official +
+          ' (' + (s.delta >= 0 ? '+' : '') + s.delta + ')';
+      }).join(' · ');
+      return '<tr>' +
+        '<td class="mono">' + escapeHtml(r.model) + '</td>' +
+        '<td>' + escapeHtml(r.site || '—') + '</td>' +
+        '<td>' + vocBadge + '</td>' +
+        '<td><span class="badge muted" title="上游不返回 logprobs，词表相同也不能证明权重相同">' +
+          escapeHtml(r.weight || '无法验证') + '</span></td>' +
+        '<td>' + tplBadge + '</td>' +
+        '<td class="mono" style="font-size:var(--fs-xs)">' + detail + '</td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>' +
+    (rows[0] && rows[0].note
+      ? '<p class="checkin-hint" style="margin:8px 0 0">' + escapeHtml(rows[0].note) + '</p>'
+      : '');
+}
+if ($('btnTokIdCheck')) $('btnTokIdCheck').addEventListener('click', function(){
+  runTokIdCheck().catch(function(e){ showToast(e.message || String(e), 'error'); });
+});
 
 async function refreshInvariants(){
   const data = await api('/direct-admin/api/invariants?limit=20');
