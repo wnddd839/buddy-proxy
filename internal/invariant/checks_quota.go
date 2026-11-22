@@ -106,14 +106,29 @@ func checkQuotaDeductMismatch(rec decision.Record, state *State) []decision.Find
 // 吸收这两者，又远小于任何真实的「漏记一笔」（通常 0.1~5 credit）。
 const driftTolerance = 0.5
 
-// I2b：探针回包与本地快照必须吻合。
+// I2b：探针刷新必须与本地记账吻合 —— 只报「跌得比记账多」。
 //
-// 关键：Before 与 After 是**同一口径** —— 都是「已扣过在途消耗」的
-// 本地余额视图。ApplyQuotaProbe 在写入前已经把 inFlightSpent 从上游
-// 回包里减掉了，所以两者相等就说明账对得上。
+// ## 两条探针路径形状不同，判据必须同时容得下
 //
-// SpentSinceCheck 只是**证据**（说明这段时间本地记了多少），
-// 不能再从差额里减一次 —— 那样等于把它算两遍（上线首分钟即误报）。
+//	ApplyQuotaProbe(真实 baseline) → after 已扣除 in-flight，after ≈ before
+//	ApplyQuotaState(baseline=Inf)  → 不做 in-flight 校正，after ≈ before - spent
+//
+// 记录里没有标记是哪条路径，所以不能只判「after == before」，
+// 也不能只判「after == before - spent」。
+//
+// ## 判据（四种情形都能分类）
+//
+//	drop = before - after                    （正数 = 余额下跌）
+//	涨（drop < -tolerance）                  → 不报（签到/充值等外部因素）
+//	跌但记账对得上（|drop-spent| <= tol）   → 不报
+//	跌且记账对不上（|drop-spent| > tol）    → 报
+//
+// ## 实测依据（2026-11-22）
+//
+//	签到 +100：      145.2 → 245.2, spent=0   涨 ⇒ 不报
+//	正常消耗：       100   → 97,    spent=3   对得上 ⇒ 不报
+//	漏记一笔：       100   → 97,    spent=1   对不上 ⇒ 报
+//	生产探针吻合：   162.36→162.36,spent=0.56 drop≈0 ⇒ 不报
 func checkQuotaProbeDrift(rec decision.Record, _ *State) []decision.Finding {
 	if rec.Kind != decision.KindQuota || rec.Op != decision.OpRefresh {
 		return nil
@@ -121,19 +136,36 @@ func checkQuotaProbeDrift(rec decision.Record, _ *State) []decision.Finding {
 	if rec.Before == nil || rec.After == nil {
 		return nil // 首次探针（没有基线）或清空（由 I1 管）
 	}
-	drift := *rec.After - *rec.Before
-	if math.Abs(drift) <= driftTolerance {
+
+	drop := *rec.Before - *rec.After
+	// 上涨：签到、返积分、人工充值等外部因素，不可能是记账漏记。
+	if drop < -driftTolerance {
 		return nil
 	}
+	// 两条探针路径，任一匹配即算账对得上：
+	//   |drop| <= tol           → ApplyQuotaProbe 路径（after 已扣除 in-flight）
+	//   |drop - spent| <= tol   → ApplyQuotaState 路径（after 未校正）
+	//
+	// 单判任一条都会误伤另一条 —— 我上一版只判后者，结果
+	// TestI2bComparesBeforeAfterDirectly（drop=0, spent=0.56）与
+	// TestI2bToleratesFloatNoise（drop≈0, spent=4.27）两条生产实测值都报了。
+	if math.Abs(drop) <= driftTolerance {
+		return nil
+	}
+	if math.Abs(drop-rec.SpentSinceCheck) <= driftTolerance {
+		return nil
+	}
+
 	return []decision.Finding{{
 		Subject: rec.AccountID,
-		Detail: fmt.Sprintf("探针余额 %s 与本地快照 %s 相差 %s（同期本地记账 %s）",
-			formatFloat(rec.After), formatFloat(rec.Before),
-			formatFloat(ptr(drift)), formatFloat(ptr(rec.SpentSinceCheck))),
+		Detail: fmt.Sprintf(
+			"余额下跌 %.4g，本地记账 %.4g（差 %.4g，容差 %.4g）",
+			drop, rec.SpentSinceCheck,
+			drop-rec.SpentSinceCheck, driftTolerance),
 		Evidence: map[string]any{
 			"before":          *rec.Before,
 			"after":           *rec.After,
-			"drift":           drift,
+			"drop":            drop,
 			"spentSinceCheck": rec.SpentSinceCheck,
 		},
 	}}
