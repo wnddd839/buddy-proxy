@@ -1177,6 +1177,10 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 	case path == "/direct-admin/api/tok-identity-check" && r.Method == http.MethodPost:
 		s.handleTokIdentityCheck(w, r)
 		return
+	// system 预览：纯本地函数，零网络、零成本。
+	case path == "/direct-admin/api/system-dryrun" && r.Method == http.MethodPost:
+		s.handleSystemDryRun(w, r)
+		return
 	case path == "/direct-admin/api/quota-floor" && r.Method == http.MethodGet:
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "quotaFloor": s.Svc.Config().QuotaFloorCredits,
@@ -1973,6 +1977,115 @@ func invariantSpecs() []map[string]string {
 		invariantSpecsCache = invariant.DefaultRegistry().Specs()
 	})
 	return invariantSpecsCache
+}
+
+// handleSystemDryRun 预览网关会把某段 system 变成什么。
+//
+// 用**当前生效的配置**（mode / strip / echo）跑 DryRun，
+// 所以看到的就是线上真实行为 —— 不需要改配置、不需要发请求。
+//
+// 这是「即插即拔的 system 验证」：贴一段 system，立刻看到：
+//   - keep / strip / fold / echo 各档的输出形态
+//   - system 有没有被剥离、剥了多少
+//   - 有没有触发「出站 system 为空」这类警告
+func (s *Server) handleSystemDryRun(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		// System 是客户端会发的那段 system（必填）。
+		System string `json:"system"`
+		// Messages 可选；不给时自动补一条 "hi" 的 user。
+		Messages []map[string]any `json:"messages"`
+		// Mode 为空时用当前生效模式；给了就按指定档位试算（不改配置）。
+		Mode string `json:"mode"`
+		// Strip / Echo 为空时跟随当前配置。
+		Strip *bool `json:"strip"`
+		Echo  *bool `json:"echo"`
+	}
+	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(body.System) == "" && len(body.Messages) == 0 {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "至少要给 system 或 messages",
+		})
+		return
+	}
+
+	cfg := s.Svc.Config()
+	site := config.NormalizeSite(cfg.Site)
+
+	// 组装 messages：给了 messages 就原样用，否则用 system + 一条 user。
+	messages := body.Messages
+	if len(messages) == 0 {
+		messages = []map[string]any{
+			{"role": "system", "content": body.System},
+			{"role": "user", "content": "hi"},
+		}
+	}
+
+	// 决定档位：body 指定优先，否则用当前。
+	mode := config.NormalizeSystemPromptMode(body.Mode)
+	if mode == "" {
+		mode = config.NormalizeSystemPromptMode(cfg.SystemPromptMode)
+	}
+
+	// 各档位的 keepSystem 语义与生产一致：
+	//   fold        → false（折进 user）
+	//   auto/keep/strip → true（直传）
+	keepSystem := mode != "fold"
+
+	stripEnabled := !cfg.SystemStripDisabled
+	if body.Strip != nil {
+		stripEnabled = *body.Strip
+	}
+	var strip *provider.StripConfig
+	if keepSystem && stripEnabled {
+		strip = &provider.StripConfig{
+			Enabled:       true,
+			Rules:         provider.RulesForSite(site),
+			Contains:      provider.ContainsForSite(site),
+			SkipAssistant: cfg.SystemStripAssistantDisabled,
+		}
+	}
+
+	echoEnabled := cfg.SystemEchoUser
+	if body.Echo != nil {
+		echoEnabled = *body.Echo
+	}
+
+	res := provider.DryRun(provider.DryRunOptions{
+		Messages:         messages,
+		Site:             site,
+		KeepSystem:       keepSystem,
+		Strip:            strip,
+		EchoSystemToUser: echoEnabled,
+		ReasoningReplay:  !cfg.ReasoningReplayDisabled,
+	})
+
+	modeLabel := map[string]string{
+		"auto":  "auto（首试剥离后直传，被 11128 拒则折叠重放）",
+		"keep":  "keep（直传，不剥离不折叠）",
+		"fold":  "fold（每次都折叠进 user）",
+		"strip": "strip（首试剥离后直传，保留 11128 折叠兜底）",
+	}[mode]
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"site":         site,
+		"mode":         mode,
+		"modeLabel":    modeLabel,
+		"keepSystem":   keepSystem,
+		"stripEnabled": strip != nil,
+		"echoEnabled":  echoEnabled,
+		"outbound":     res.Outbound,
+		"stripReport":  res.Report,
+		"inMessages":   res.InMessages,
+		"outMessages":  res.OutMessages,
+		"inSystemLen":  res.InSystemLen,
+		"outSystemLen": res.OutSystemLen,
+		"notes":        res.Notes,
+		"warnings":     res.Warnings,
+	})
 }
 
 // handleTokIdentityCheck 对在役模型跑一次词表身份鉴定。

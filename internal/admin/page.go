@@ -1219,6 +1219,42 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <strong>不保存 system / user 原文</strong>。历史按天写入 <code>proxy-systemprompt-YYYYMMDD.jsonl</code>，保留 7 天。
         </p>
 
+        <section class="panel" style="margin-top:20px">
+          <div class="panel-inner">
+            <div class="section-head" style="border:none;padding:0">
+              <div>
+                <div class="eyebrow">System Dry Run · Zero Cost</div>
+                <h2 style="margin:4px 0 2px">system 预览（不发请求）</h2>
+                <p class="lede" style="margin:0">
+                  贴一段 system，立刻看到<strong>网关会把它变成什么</strong>再发给上游。
+                  纯本地计算，<strong>零网络、零 credit</strong>；用的是当前生效的档位与开关，
+                  也可以临时指定档位试算（不改配置）。
+                </p>
+              </div>
+            </div>
+            <div class="field-grid" style="grid-template-columns:1fr;margin-top:12px">
+              <div>
+                <label for="drySystem">客户端会发的 system</label>
+                <textarea id="drySystem" rows="6" spellcheck="false" style="width:100%;font-family:var(--mono);font-size:var(--fs-xs)"
+                  placeholder="You are Claude Code, Anthropic's official CLI for Claude."></textarea>
+              </div>
+            </div>
+            <div class="section-head" style="border:none;padding:0;margin-top:10px">
+              <div class="seg" id="dryModeSeg" role="group" aria-label="试算档位">
+                <button type="button" data-drymode="" class="active">跟随当前</button>
+                <button type="button" data-drymode="auto">auto</button>
+                <button type="button" data-drymode="keep">keep</button>
+                <button type="button" data-drymode="fold">fold</button>
+                <button type="button" data-drymode="strip">strip</button>
+              </div>
+              <div class="actions">
+                <button class="teal" id="btnDryRun" type="button">预览</button>
+              </div>
+            </div>
+            <div id="dryResult" style="margin-top:12px"></div>
+          </div>
+        </section>
+
         <div class="section-head" style="margin-top:20px;border:none;padding:0">
           <div class="seg" id="spModeSeg" role="group" aria-label="system 提示词处理模式">
             <button type="button" data-mode="auto" class="active">auto · 先直传，被拒再改写</button>
@@ -2577,6 +2613,69 @@ if ($('btnRefreshTok')) $('btnRefreshTok').addEventListener('click', function(){
 if ($('tab-models')) {
   refreshTokBaselines().catch(function(e){ showToast('分词器基线加载失败：' + (e.message || e), 'error'); });
 }
+
+// 预览用的是当前生效配置；档位可按按钮临时试算（不改 .env）。
+let dryMode = '';
+
+function paintDryMode(){
+  const seg = $('dryModeSeg');
+  if (!seg) return;
+  seg.querySelectorAll('button[data-drymode]').forEach(function(b){
+    b.className = b.getAttribute('data-drymode') === dryMode ? 'active' : '';
+  });
+}
+if ($('dryModeSeg')) {
+  $('dryModeSeg').addEventListener('click', function(e){
+    const btn = e.target.closest('button[data-drymode]');
+    if (!btn) return;
+    dryMode = btn.getAttribute('data-drymode') || '';
+    paintDryMode();
+  });
+}
+
+async function runDryRun(){
+  const sysBox = $('drySystem');
+  const host = $('dryResult');
+  if (!host) return;
+  const system = sysBox ? sysBox.value : '';
+  if (!system.trim()){
+    host.innerHTML = '<p class="lede" style="margin:8px 0 0">先在上面贴一段 system。</p>';
+    return;
+  }
+  host.innerHTML = '<div class="empty">计算中…</div>';
+  const body = {system: system};
+  if (dryMode) body.mode = dryMode;
+
+  const d = await api('/direct-admin/api/system-dryrun', {method:'POST', body: JSON.stringify(body)});
+
+  const warn = (d.warnings || []).map(function(w){
+    return '<div class="usage-line"><span class="pill bad">' + escapeHtml(w) + '</span></div>';
+  }).join('');
+  const notes = (d.notes || []).map(function(n){
+    return '<div class="usage-line"><span class="pill muted">' + escapeHtml(n) + '</span></div>';
+  }).join('');
+
+  host.innerHTML =
+    '<div class="watchbar">' +
+      '<span class="state">' + escapeHtml(d.modeLabel || d.mode || '—') + '</span>' +
+      '<span class="num">条数<b>' + d.inMessages + ' → ' + d.outMessages + '</b></span>' +
+      '<span class="num" title="按字符数计，不是 UTF-8 字节">system 长度<b>' + d.inSystemLen + ' → ' + d.outSystemLen + '</b></span>' +
+      '<span class="num">剥离<b>' + (d.stripReport && d.stripReport.stripped ? (d.stripReport.bytes + ' 字符') : '无') + '</b></span>' +
+      '<span class="num">echo<b>' + (d.echoEnabled ? '开' : '关') + '</b></span>' +
+    '</div>' +
+    (warn ? '<div style="margin-top:8px">' + warn + '</div>' : '') +
+    (notes ? '<div style="margin-top:8px">' + notes + '</div>' : '') +
+    '<div class="section-head" style="border:none;padding:0;margin-top:12px"><div>' +
+      '<h3 style="margin:0">最终发给上游的 messages</h3>' +
+      '<p class="lede" style="margin:2px 0 0">这就是模型会看到的内容</p>' +
+    '</div></div>' +
+    '<pre class="checkin-detail" style="margin-top:8px">' +
+      escapeHtml(JSON.stringify(d.outbound, null, 2)) + '</pre>';
+}
+if ($('btnDryRun')) $('btnDryRun').addEventListener('click', function(){
+  runDryRun().catch(function(e){ showToast(e.message || String(e), 'error'); });
+});
+paintDryMode();
 
 // runTokIdCheck 触发一次词表身份校准并渲染结果。
 //
