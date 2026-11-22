@@ -638,16 +638,16 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <p class="lede">监控 OAuth 登录、账号池状态与请求健康度。</p>
         </div><button class="primary" id="btnRefresh" type="button" title="重新拉取每个号的余额；有恢复证据时解除额度冷却，真实限流保持不变">刷新状态</button></div>        <div class="metrics">
           <div class="metric"><div class="k">登录态</div><div class="v sm" id="mLogin">未登录</div></div>
-          <div class="metric"><div class="k">Credits 余额</div><div class="v sm" id="mCredits">—</div></div>
+          <div class="metric" title="只显示首个账号（primary）的余额；全池余额请看 02 账号池每个账号的「查余额」。不限量账号显示「不限量」"><div class="k">Credits 余额</div><div class="v sm" id="mCredits">—</div></div>
           <div class="metric"><div class="k">启用账号</div><div class="v" id="mEnabled">0</div></div>
-          <div class="metric"><div class="k">成功 / 失败</div><div class="v sm" id="mSF">0 / 0</div></div>
-          <div class="metric"><div class="k">总 Tokens</div><div class="v sm" id="mTokens">0</div></div>
+          <div class="metric" title="本次启动以来累计，重启清零（进程内计数，不落盘）。跨重启的统计看 07 用量页"><div class="k">成功 / 失败</div><div class="v sm" id="mSF">0 / 0</div></div>
+          <div class="metric" title="本次启动以来累计（重启清零）；后面的「cache N」是其中命中 prompt 缓存的 token 数。跨重启统计看 07"><div class="k">总 Tokens</div><div class="v sm" id="mTokens">0</div></div>
         </div>
         <div class="watchbar" id="concurrencyBar">
           <span class="state">实时并发</span>
-          <span class="num">全局在途<b id="ccInFlight">—</b></span>
-          <span class="num">1m 峰值<b id="ccPeak">—</b></span>
-          <span class="num">1h 限流<b id="ccLimited">—</b></span>
+          <span class="num" title="此刻正在处理中的请求数（全局）">全局在途<b id="ccInFlight">—</b></span>
+          <span class="num" title="最近 1 小时内各分钟桶峰值的最大值（不是「最近 1 分钟」）">1h 峰值<b id="ccPeak">—</b></span>
+          <span class="num" title="最近 1 小时内的限流事件次数，不是账号数">1h 限流<b id="ccLimited">—</b></span>
         </div>
         <section class="panel" style="margin-top:16px">
           <div class="panel-inner">
@@ -730,6 +730,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           </div>
         </div>
         <p class="seg-hint" id="poolSiteHint">当前号池：—</p>
+        <p class="checkin-hint" style="margin:0 0 12px">下方每个账号的 <strong>success / fail</strong> 是该账号<strong>历史累计</strong>（写入 <code>proxy-accounts.json</code>，重启不清零），与 01 概览「成功/失败」（进程内累计、重启清零）是两个不同的面。<strong>已登录</strong>徽标只表示"有凭据"，token 是否过期看单独的「Token 过期」徽标。</p>
         <div class="settings">
           <div class="setting-row">
             <span class="setting-label">账号维护</span>
@@ -804,7 +805,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
         <div class="section-head">
           <div>
             <h2>选号门槛</h2>
-            <p>账号积分低于这个值时，不再参与选号（防止把号扣穿、或触发上游风控）。按缓存余额判定，余额探测后自动更新。</p>
+            <p>账号积分低于这个值时，不再参与选号（防止把号扣穿、或触发上游风控）。按<strong>缓存的余额快照</strong>判定：快照 6 小时内有效，超过则视为「未知」并放行，等下一次探测刷新；快照里已过重置时刻的也放行。余额探测后自动更新。</p>
           </div>
         </div>
         <div class="settings">
@@ -859,9 +860,12 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="metric"><div class="k">已签到</div><div class="v" id="ckDone">—</div></div>
           <div class="metric"><div class="k">未签到</div><div class="v" id="ckNone">—</div></div>
           <div class="metric"><div class="k">签到失败</div><div class="v" id="ckFailed">—</div></div>
-          <div class="metric"><div class="k">已启用规则 · 本地草稿</div><div class="v" id="ckRules">—</div></div>
+          <div class="metric" title="页面上的本地草稿数量（改过但还没保存时就会变），不是服务端已生效的配置"><div class="k">规则 · 本地草稿</div><div class="v" id="ckRules">—</div></div>
         </div>
-        <p class="checkin-hint" style="margin:0 0 8px">前三项来自服务端今日执行结果；规则数反映本地草稿。范围仅影响统计与批量操作，保存始终包含两站全部规则。</p>
+        <p class="checkin-hint" style="margin:0 0 8px">
+          前三项来自服务端<strong>今日</strong>执行结果（按<strong>北京时间</strong>自然日，不是 UTC，也不按本机时区）；「已签到规则」里第四格<strong>规则数</strong>反映的是页面上的<strong>本地草稿</strong>（改过但还没点保存时就会变），与实际生效的配置可能不一致。<br>
+          范围按钮只影响统计与批量操作，<strong>保存始终包含两站全部规则</strong>。
+        </p>
         <div class="block-title">全局策略</div>
         <div class="settings">
           <div class="setting-row">
@@ -1021,7 +1025,10 @@ button:disabled{opacity:.4;cursor:not-allowed}
             <button class="teal" id="btnNewBoundKey" type="button">新建绑定 Key</button>
           </div>
         </div>
-        <div class="secret-hint" id="clientConfigHint">API Key 点击复制时才会读取明文。Key 默认写入 ~/.codebuddy/proxy.env，与账号池同目录，换文件夹启动也会沿用同一把。绑定 Key 换区不改主 Key。</div>
+        <div class="secret-hint" id="clientConfigHint">
+          三个 URL 是<strong>并列的三个端点</strong>（不是「Base 加路径」的关系，填哪个就用哪个）：<code>Chat Completions</code> 给 ZCode / OpenCode / 多数 SDK；<code>Responses</code> 给 Codex CLI（<code>wire_api = responses</code>）。Base URL 只在客户端要求填「根地址」时才用（多数 SDK 会自动拼 <code>/v1/chat/completions</code>）。<br>
+          API Key 点击复制时才会读取明文。Key 默认写入 <code>~/.codebuddy/proxy.env</code>，与账号池同目录，换文件夹启动也会沿用同一把。绑定 Key 换区不改主 Key。
+        </div>
       </div>
     </section>
 
@@ -1036,7 +1043,13 @@ button:disabled{opacity:.4;cursor:not-allowed}
         <div class="page-head">
           <div>
             <div class="eyebrow">Models · Directional Routing</div><h1>模型编目与路由</h1>
-            <p>展示上游模型名（不含 codebuddy/ 前缀）；点击模型芯片可复制。</p>
+            <p>
+              本页三块<strong>互不依赖</strong>：<br>
+              ① <strong>模型编目</strong>（上半）= 上游<strong>真实存在</strong>哪些模型，从两个站各拉一份；只读，点芯片即复制。<br>
+              ② <strong>模型路由</strong>（中间）= 你<strong>额外配置</strong>的改写规则：某区收到某模型名时改用哪个（可跨区）。没配置的模型一字节不改。<br>
+              ③ <strong>会话标题改写</strong>（下半）= 单独一类请求（新建会话时生成标题）改写到免费轻量模型，省一次主模型计费。<br>
+              显示的是上游模型名，不含 <code>codebuddy/</code> 前缀。
+            </p>
           </div>
           <div class="actions">
             <button id="btnModels" type="button" hidden>刷新模型</button>
@@ -1212,6 +1225,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="metric"><div class="k" id="spTotalLabel">今日事件</div><div class="v" id="spTotal">0</div></div>
           <div class="metric"><div class="k">keep</div><div class="v" id="spKeep">0</div></div>
           <div class="metric"><div class="k">fold</div><div class="v" id="spFold">0</div></div>
+          <div class="metric" title="stripped:true 的事件数，即实际删过已知指纹的请求数。与「降级」是两件事：剥离是主动预防，降级是被拒后的补救"><div class="k">已剥离</div><div class="v" id="spStripped">0</div></div>
           <div class="metric" title="degraded:true 的事件数，即被 11128 拦截的失败尝试次数"><div class="k">降级/被拦截次数</div><div class="v" id="spDegraded">0</div></div>
           <div class="metric"><div class="k">被拦截</div><div class="v" id="spBlocked">0</div></div>
           <div class="metric"><div class="k">失败</div><div class="v" id="spFailed">0</div></div>
@@ -1235,7 +1249,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th title="keep=直传 system；fold=改写 system；keep(已剥离)=auto/strip 档删过已知指纹；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
                   <th title="从请求头推断的客户端类型；「会话」列显示它有没有发会话头（header=有，content=靠内容哈希）">客户端</th>
                   <th>指纹</th>
-                  <th>system 字节</th>
+                  <th title="system 内容的字符数（按 Go 的 len(string) 计，不是 UTF-8 字节数）。中文占比高的 system 会比字节数小很多，这是有意的：用于比较「有没有变短」，与编码无关">system 长度</th>
                   <th>账号</th>
                   <th>模型</th>
                   <th>耗时</th>
@@ -1271,7 +1285,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th title="keep=直传 system；fold=改写 system；keep(已剥离)=auto/strip 档删过已知指纹；带(降级重放)/(被拦截)的是同一次 11128 降级请求的两条事件">形态</th>
                   <th title="从请求头推断的客户端类型；「会话」列显示它有没有发会话头（header=有，content=靠内容哈希）">客户端</th>
                   <th>指纹</th>
-                  <th>system 字节</th>
+                  <th title="system 内容的字符数（按 Go 的 len(string) 计，不是 UTF-8 字节数）。中文占比高的 system 会比字节数小很多，这是有意的：用于比较「有没有变短」，与编码无关">system 长度</th>
                   <th>账号</th>
                   <th>模型</th>
                   <th>耗时</th>
@@ -1319,7 +1333,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           <div class="metric"><div class="k">请求数</div><div class="v" id="uRequests">0</div></div>
           <div class="metric"><div class="k">失败</div><div class="v" id="uFailed">0</div></div>
           <div class="metric"><div class="k">Token 总量</div><div class="v" id="uTotalTokens">0</div></div>
-          <div class="metric"><div class="k">缓存命中率</div><div class="v sm" id="uCacheHit">—</div></div>
+          <div class="metric" title="缓存 token ÷ prompt token（所有模型同一公式）。只含上游返回 cachedTokens 的请求；prompt 为 0 的请求不计入分母"><div class="k">缓存命中率</div><div class="v sm" id="uCacheHit">—</div></div>
           <div class="metric"><div class="k">Credits Σ</div><div class="v sm" id="uCredits">—</div></div>
         </div>
         <div class="usage-filters">
@@ -1345,7 +1359,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
           </div>
           <div id="usageChart"><div class="chart-empty">加载中…</div></div>
         </div>
-        <p class="checkin-hint" id="usageCreditHint">命中率 = 缓存 token ÷ prompt token（所有模型同一公式）。按模型表用来对比 hy3 / DeepSeek 等差异。Credits 仅在上游 usage 返回 <code>credit</code> 时累加。</p>
+        <p class="checkin-hint" id="usageCreditHint">命中率 = 缓存 token ÷ prompt token（所有模型同一公式）。按模型表用来对比不同模型差异。<strong>单次 Credit</strong> 只在上游 usage 返回 <code>credit</code> 时才有值，「Credits Σ」是这些请求的合计（括号里的条数说明有多少笔带了扣费）。<br><strong>与 01 概览的区别</strong>：本页数据落盘（<code>proxy-usage.json</code>，保留 90 日汇总 + 最近 400 条明细），重启不清零；01 概览的「成功/失败」「总 Tokens」是进程内累计，重启清零。</p>
         <div class="log-table-wrap">
           <div class="log-table-window">
             <table class="log-table" aria-label="请求明细">
@@ -1359,7 +1373,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th>System</th>
                   <th>Token 总量</th>
                   <th>缓存命中</th>
-                  <th>Credit</th>
+                  <th title="本次请求上游返回的单次扣费（不是余额）。余额看 01 概览或 02 账号池">单次 Credit</th>
                   <th>耗时</th>
                   <th>账号</th>
                   <th>状态</th>
@@ -2003,10 +2017,10 @@ function formatHitRate(rate){
   if (rate == null || rate < 0) return '—';
   return rate.toFixed(1) + '%';
 }
+// Entry 没有 totalTokens 字段（只有 Summary / ModelStat / ChartPoint 有），
+// 所以这里必须自己加。保留 row.totalTokens 的空值分支会让后人以为字段存在。
 function rowTotalTokens(row){
-  const p = row.promptTokens || 0;
-  const c = row.completionTokens || 0;
-  return row.totalTokens || (p + c);
+  return (row.promptTokens || 0) + (row.completionTokens || 0);
 }
 function rowHitRate(row){
   const p = row.promptTokens || 0;
@@ -2288,6 +2302,7 @@ async function refreshSystemPrompt(){
   $('spTotal').textContent = String(stats.total || 0);
   $('spKeep').textContent = String(stats.keep || 0);
   $('spFold').textContent = String(stats.fold || 0);
+  $('spStripped').textContent = String(stats.stripped || 0);
   $('spDegraded').textContent = String(stats.degraded || 0);
   $('spBlocked').textContent = String(stats.blocked || 0);
   $('spFailed').textContent = String(stats.failed || 0);
