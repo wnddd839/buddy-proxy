@@ -1487,6 +1487,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th>Token 总量</th>
                   <th>缓存命中</th>
                   <th title="上游 SSE 帧里回显的 model 字段。与「模型」列不一致即说明上游换了模型；auto 一族由上游解析，属正常">上游模型</th>
+                  <th title="prompt_tokens ÷ 入站字符数。同一模型对同类文本应当稳定；突变说明实际跑的模型被换了。按内容成分分桶：中文 / 数字 / ASCII（不同类别的 token 密度差 2~3 倍，不可混算）">分词器比例</th>
                   <th title="本次请求上游返回的单次扣费（不是余额）。余额看 01 概览或 02 账号池">单次 Credit</th>
                   <th>耗时</th>
                   <th>账号</th>
@@ -1494,7 +1495,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                 </tr>
               </thead>
               <tbody id="usageRows">
-                <tr><td colspan="13" class="empty" style="border:none">加载中…</td></tr>
+                <tr><td colspan="14" class="empty" style="border:none">加载中…</td></tr>
               </tbody>
             </table>
           </div>
@@ -2149,6 +2150,19 @@ function rowHitRate(row){
 //   —              上游没回显（旧数据 / 非 openai 形态）
 //   同名           与请求一致
 //   不同名         红字 + tooltip 说明差在哪；auto 一族标「解析」而非异常
+// tokRatioCell 渲染 07 明细的「分词器比例」列。
+//
+// 三种状态：
+//   —              未观测（旧数据 / 短 prompt / 采样路径 / 开关关闭）
+//   0.xxxx + 桶标   已观测
+//   偏高/偏低配色   与同一模型的基线明显偏离时提示（真正的判定在 I9/I10/I11）
+function tokRatioCell(row){
+  const r = row.tokRatio;
+  if (!r) return '<span style="color:var(--fg-40)">—</span>';
+  const bucket = row.tokBucket || '';
+  const label = bucket ? '<span class="badge muted" style="margin-left:4px">' + escapeHtml(bucket) + '</span>' : '';
+  return r.toFixed(4) + label;
+}
 function upstreamModelCell(row){
   const up = row.upstreamModel || '';
   if (!up) return '<span style="color:var(--fg-40)">—</span>';
@@ -2239,7 +2253,7 @@ function paintUsage(data){
   const tbody = $('usageRows');
   if (!tbody) return;
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="13" style="color:var(--fg-40);padding:24px;text-align:center">暂无记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14" style="color:var(--fg-40);padding:24px;text-align:center">暂无记录</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(function(row){
@@ -2263,6 +2277,7 @@ function paintUsage(data){
       '<td class="mono">' + String(totalTok) + '</td>' +
       '<td class="mono">' + escapeHtml(hit) + '</td>' +
       '<td class="mono">' + upstreamModelCell(row) + '</td>' +
+      '<td class="mono">' + tokRatioCell(row) + '</td>' +
       '<td class="mono">' + escapeHtml(credit) + '</td>' +
       '<td class="mono">' + (row.durationMs != null ? (row.durationMs + 'ms') : '—') + '</td>' +
       '<td>' + escapeHtml(account || '—') + '</td>' +

@@ -229,10 +229,10 @@ func TestUsageTableHasSystemColumn(t *testing.T) {
 	if !strings.Contains(page, "<th>System</th>") {
 		t.Fatal("用量明细表应新增 System 列")
 	}
-	// 用量表（07）现在应为 13 列：在 System 之后新增了「上游模型」列。
+	// 用量表（07）现在应为 14 列：System / 上游模型 / 分词器比例 三列陆续加进来。
 	// 注意 06 事件表是 11 列，所以不能再用全局断言 —— 会误伤 06。
-	if !strings.Contains(page, `colspan="13"`) {
-		t.Fatal("用量表空态应为 colspan=13（13 列：新增了上游模型列）")
+	if !strings.Contains(page, `colspan="14"`) {
+		t.Fatal("用量表空态应为 colspan=14（14 列：含上游模型与分词器比例）")
 	}
 	if !strings.Contains(page, "上游模型") {
 		t.Fatal("用量表应新增「上游模型」列（I8 模型偷换检测）")
