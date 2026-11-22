@@ -94,17 +94,17 @@ func tokKey(model, bucket string) string {
 // ObserveTokRatio 记录一次分词器比例观测，返回是否触发异常。
 //
 // 返回 (baseline, ok)：ok=false 表示样本不足，不做判定。
-func (s *State) ObserveTokRatio(model, bucket string, ratio float64) (*tokBaseline, bool) {
+func (s *State) ObserveTokRatio(model, bucket string, ratio float64) (tokBaseline, bool) {
 	if s == nil || ratio <= 0 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
-		return nil, false
+		return tokBaseline{}, false
 	}
 	// 不合理比例一律拒收（见 tokRatioPlausible 的注释）。
 	if !tokRatioPlausible(ratio) {
-		return nil, false
+		return tokBaseline{}, false
 	}
 	key := tokKey(model, bucket)
 	if key == "" {
-		return nil, false
+		return tokBaseline{}, false
 	}
 
 	s.mu.Lock()
@@ -139,17 +139,19 @@ func (s *State) ObserveTokRatio(model, bucket string, ratio float64) (*tokBaseli
 	}
 
 	// 样本不足不做判定：前两次只用来建立区间。
+	//
+	// 返回**值副本**：调用方在锁外读，若返回 map 内指针就是数据竞争。
 	if b.Samples < tokMinSamples {
-		return b, false
+		return *b, false
 	}
-	return b, true
+	return *b, true
 }
 
 // Deviates 报告该比例是否偏离基线超过容忍度。
 //
 // 只判「超出区间」，不判「在区间内的偏移」——后者可能只是样本成分变化。
-func (b *tokBaseline) Deviates(ratio float64) bool {
-	if b == nil || b.Samples < tokMinSamples {
+func (b tokBaseline) Deviates(ratio float64) bool {
+	if b.Samples < tokMinSamples {
 		return false
 	}
 	if ratio < b.Fast {

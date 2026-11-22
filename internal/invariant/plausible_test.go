@@ -42,7 +42,7 @@ func TestTokRatioPlausibleGate(t *testing.T) {
 // 闸门必须真的挡住 ObserveTokRatio：不合理值不建基线。
 func TestObserveTokRatioRejectsImplausible(t *testing.T) {
 	st := NewState(8, 8)
-	if b, _ := st.ObserveTokRatio("m", tokfp.BucketASCII, 2.11); b != nil {
+	if b, _ := st.ObserveTokRatio("m", tokfp.BucketASCII, 2.11); b.Samples != 0 {
 		t.Fatalf("2.11 不该建立基线：%+v", b)
 	}
 	if _, ok := st.TokBaseline("m", tokfp.BucketASCII); ok {
@@ -50,7 +50,7 @@ func TestObserveTokRatioRejectsImplausible(t *testing.T) {
 	}
 
 	// 合理值正常建立
-	if b, _ := st.ObserveTokRatio("m", tokfp.BucketASCII, 0.31); b == nil {
+	if b, _ := st.ObserveTokRatio("m", tokfp.BucketASCII, 0.31); b.Samples == 0 {
 		t.Fatal("0.31 应正常建立基线")
 	}
 }

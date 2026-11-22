@@ -43,7 +43,7 @@ type tokObservation struct {
 	model    string
 	bucket   string
 	ratio    float64
-	base     *tokBaseline
+	base     tokBaseline
 	ready    bool
 	justMade bool // 本次恰好达到判定所需样本数
 }
@@ -66,7 +66,8 @@ func observeTokOnce(rec decision.Record, st *State) (tokObservation, bool) {
 		return tokObservation{}, false
 	}
 	base, ready := st.ObserveTokRatio(model, rec.TokBucket, rec.TokRatio)
-	if base == nil {
+	// 值副本：ObserveTokRatio 已按值返回，这里不再持有 map 内指针。
+	if base.Samples == 0 {
 		return tokObservation{}, false
 	}
 	return tokObservation{
