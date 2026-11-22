@@ -2414,7 +2414,10 @@ async function refreshInvariants(){
 if ($('btnRefreshInv')) $('btnRefreshInv').addEventListener('click', function(){
   refreshInvariants().catch(function(e){ showToast(e.message,'error'); });
 });
-if ($('tab-overview')) { refreshInvariants().catch(function(){}); }
+if ($('tab-overview')) {
+  // 不能吞错：接口挂了就永远显示「—」，与「确实没命中」不可区分。
+  refreshInvariants().catch(function(e){ showToast('静默失效体检加载失败：' + (e.message || e), 'error'); });
+}
 if ($('btnRefreshSp')) $('btnRefreshSp').addEventListener('click', function(){
   refreshSystemPrompt().then(function(){ return refreshSpHistory(); }).catch(function(e){ showToast(e.message,'error'); });
 });

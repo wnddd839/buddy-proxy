@@ -67,6 +67,15 @@ func TestQuotaPredicatesAgree(t *testing.T) {
 			wantBlocked: false,
 		},
 		{
+			// 高于 0 但低于阈值：这是 floor 语义的**合法差异**，不是分叉。
+			// QuotaBelowFloor(floor=20) 拦住（积分不够选号），
+			// QuotaBlocked(floor=0) 放行（余额没耗尽，还能用）。
+			name:        "余额 10 + 阈值 20（合法差异）",
+			acct:        Account{QuotaRemaining: rem(10), QuotaCheckedAt: now - 1000, QuotaResetAt: future},
+			wantBelow:   true,
+			wantBlocked: false,
+		},
+		{
 			name:        "不限量",
 			acct:        Account{QuotaUnlimited: true, QuotaRemaining: rem(0), QuotaCheckedAt: now - 1000, QuotaResetAt: future},
 			wantBelow:   false,
@@ -84,8 +93,11 @@ func TestQuotaPredicatesAgree(t *testing.T) {
 			if blocked != c.wantBlocked {
 				t.Errorf("QuotaBlocked = %v, want %v", blocked, c.wantBlocked)
 			}
-			if below != blocked {
-				t.Errorf("两个判定分叉：below=%v blocked=%v", below, blocked)
+			// 真正的不变量是「快照值不值得信」这一维必须一致：
+			// 不可信 ⇒ 两者都必须放行。可信时两者**允许**结论不同，
+			// 因为一个是「低于阈值」、另一个是「已耗尽」，语义本就不同。
+			if !quotaSnapshotAuthoritative(c.acct, now) && (below || blocked) {
+				t.Errorf("快照不可信时两个判定都必须放行，实际 below=%v blocked=%v", below, blocked)
 			}
 		})
 	}

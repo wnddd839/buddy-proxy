@@ -1950,6 +1950,19 @@ func (s *Server) handleSystemPromptEvents(w http.ResponseWriter, r *http.Request
 //   - stripAssistant：只控制 assistant 正文这一路，system 仍照剥。
 //
 // 指针字段 = 「没传就不动」，这样只改模式不会把开关顺手重置。
+// invariantSpecsOnce 保证「面板展示的断言清单」与「实际跑的注册表」同源，
+// 且只构造一次（DefaultRegistry() 每次调用都会重新注册全部断言）。
+var invariantSpecsOnce sync.Once
+
+var invariantSpecsCache []map[string]string
+
+func invariantSpecs() []map[string]string {
+	invariantSpecsOnce.Do(func() {
+		invariantSpecsCache = invariant.DefaultRegistry().Specs()
+	})
+	return invariantSpecsCache
+}
+
 // handleInvariants 返回静默失效体检数据。
 func (s *Server) handleInvariants(w http.ResponseWriter, r *http.Request) {
 	sink := s.Svc.InvariantSink()
@@ -1984,7 +1997,7 @@ func (s *Server) handleInvariants(w http.ResponseWriter, r *http.Request) {
 		"suppressed":  sink.Suppressed(),
 		"writeErrors": sink.WriteErrors(),
 		"coverage":    "自 " + time.UnixMilli(sink.StartedAt()).Format("2006-01-02 15:04") + " 起（含回扫的近 24h）",
-		"specs":       invariant.DefaultRegistry().Specs(),
+		"specs":       invariantSpecs(),
 	})
 }
 

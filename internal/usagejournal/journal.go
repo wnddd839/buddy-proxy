@@ -71,7 +71,9 @@ type Entry struct {
 	SystemFp string `json:"systemFp,omitempty"`
 	// SystemDegraded 表示本次请求因 11128 从 keep 降级为 fold。
 	SystemDegraded bool `json:"systemDegraded,omitempty"`
-	// SystemLen 是 system 的字节数（出站口径），SystemStripped 表示删过指纹。
+	// SystemLen 是 system 的**字符数**（出站口径，按 len(string) 计，不是 UTF-8 字节数）。
+	// 与 provider.MessagesIO 的 OutSystemLen 同源同口径：用于比较「有没有变短」。
+	// SystemStripped 表示删过已知指纹。
 	SystemLen      int    `json:"systemLen,omitempty"`
 	SystemStripped bool   `json:"systemStripped,omitempty"`
 	StripScope     string `json:"stripScope,omitempty"`
