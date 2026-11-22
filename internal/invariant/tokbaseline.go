@@ -51,13 +51,22 @@ const tokMinSamples = 3
 // 8% 的真正用途是「同一模型的分词器变了」，而不是「换了个模型」。
 const tokTolerance = 0.08
 
-// tokKey 拼出基线的键：模型 + 分桶。
+// tokKey 拼出基线的键：归一化模型名 + 分桶。
+//
+// 模型名必须归一化（剥 cn:/global: 站点前缀）：
+// 实测部署后首条基线被记成 "cn:deepseek-v4.1-flash"，而不带前缀的请求
+// 又建了第二条 —— 同一模型分裂成两条基线，各自样本不足，I9 形同废纸。
 //
 // 分桶必须进键：不同桶的比例差异是 2~3 倍（ASCII 0.22 vs 中文 0.64），
 // 混在一起算基线毫无意义。
 func tokKey(model, bucket string) string {
 	model = strings.TrimSpace(model)
 	if model == "" || bucket == "" {
+		return ""
+	}
+	// 用与 I8 同一套剥离逻辑，保证「面板上看到的模型名」与「基线键」一致。
+	model = stripSitePrefix(model)
+	if model == "" {
 		return ""
 	}
 	return model + "|" + bucket
