@@ -236,14 +236,29 @@ func modelMismatch(requested, routed, upstream string) bool {
 	return normalizeModelName(sent) != normalizeModelName(upstream)
 }
 
-// isAutoFamily：auto / auto-* / 空。
+// isAutoFamily：auto / auto-* / 空（先剥站点前缀，cn:auto 也是 auto）。
 func isAutoFamily(model string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
+	m := strings.ToLower(strings.TrimSpace(stripModelSitePrefix(strings.TrimSpace(model))))
 	return m == "auto" || strings.HasPrefix(m, "auto-")
 }
 
-// normalizeModelName 去掉大小写与分隔符差异。
+// sitePrefixes 是客户端可显式指定的站点前缀（cn: / global:）。
+// 它们是语法前缀，不属于模型名 —— 不剥掉会让每个带前缀的请求都被判成替换。
+var sitePrefixes = []string{"cn:", "global:"}
+
+// stripModelSitePrefix 只剥开头的、已知的两个前缀。
+func stripModelSitePrefix(model string) string {
+	for _, p := range sitePrefixes {
+		if len(model) > len(p) && model[:len(p)] == p {
+			return model[len(p):]
+		}
+	}
+	return model
+}
+
+// normalizeModelName 去掉站点前缀、大小写与分隔符差异。
 func normalizeModelName(model string) string {
+	model = stripModelSitePrefix(model)
 	var b strings.Builder
 	for _, r := range strings.ToLower(model) {
 		switch r {

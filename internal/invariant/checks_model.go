@@ -23,11 +23,29 @@ func registerModel(r *Registry) {
 		SeverityInfo, checkModelEcho)
 }
 
-// modelNameNormalized 去掉大小写与分隔符差异。
+// sitePrefixes 是客户端可显式指定的站点前缀（见 05 模型页的「区域怎么定的」）。
+// 它们是**语法前缀**，不属于模型名。
+var sitePrefixes = []string{"cn:", "global:"}
+
+// stripSitePrefix 剥掉开头的站点前缀。
+//
+// 只在开头、只认已知的两个值：模型名里若真有冒号（自定义名），
+// 不能当成前缀削掉，否则会掩盖真正的替换。
+func stripSitePrefix(model string) string {
+	for _, p := range sitePrefixes {
+		if len(model) > len(p) && model[:len(p)] == p {
+			return model[len(p):]
+		}
+	}
+	return model
+}
+
+// modelNameNormalized 去掉站点前缀、大小写与分隔符差异。
 //
 // 实测：我们发 hy4flash-free，上游回显 hy4-flash-free —— 只差一个连字符，
 // 是同一个模型。直接相等比较会把它当成偷换。
 func modelNameNormalized(name string) string {
+	name = stripSitePrefix(name)
 	var b []rune
 	for _, r := range name {
 		switch r {
@@ -44,6 +62,9 @@ func modelNameNormalized(name string) string {
 
 // isAutoModel：auto / auto-* 由上游选模型，不判偷换。
 func isAutoModel(name string) bool {
+	// 先剥站点前缀：cn:auto / global:auto 同样是 auto 一族。
+	// 实测（2026-11-22）：不剥的话 cn:auto 会被判成「被换成 glm-5.3-flash」。
+	name = stripSitePrefix(name)
 	return name == "auto" || len(name) > 5 && name[:5] == "auto-"
 }
 
