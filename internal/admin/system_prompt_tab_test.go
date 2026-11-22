@@ -229,11 +229,13 @@ func TestUsageTableHasSystemColumn(t *testing.T) {
 	if !strings.Contains(page, "<th>System</th>") {
 		t.Fatal("用量明细表应新增 System 列")
 	}
-	// 用量表（07）应为 12 列：12 个 <th> 对应 colspan="12" 空态。
-	// 注意 06 事件表现在是 11 列（原 10 列 + 客户端），所以不能再用
-	// 「页面里不得出现 colspan=11」这种全局断言 —— 会误伤 06。
-	if !strings.Contains(page, `colspan="12"`) {
-		t.Fatal("用量表空态应为 colspan=12（12 列）")
+	// 用量表（07）现在应为 13 列：在 System 之后新增了「上游模型」列。
+	// 注意 06 事件表是 11 列，所以不能再用全局断言 —— 会误伤 06。
+	if !strings.Contains(page, `colspan="13"`) {
+		t.Fatal("用量表空态应为 colspan=13（13 列：新增了上游模型列）")
+	}
+	if !strings.Contains(page, "上游模型") {
+		t.Fatal("用量表应新增「上游模型」列（I8 模型偷换检测）")
 	}
 	if !strings.Contains(page, "systemForm") {
 		t.Fatal("用量表应渲染 systemForm")

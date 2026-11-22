@@ -70,6 +70,9 @@ func (s *Server) recordChatJournal(
 		input.StripScope = outcome.StripScope
 		input.IO = outcome.IO
 	}
+	if result != nil {
+		input.UpstreamModel = result.UpstreamModel
+	}
 	input.TitleRewrite = opts.RoutedFrom != "" && opts.TitleRewrite
 	input.UsageSource = usage.Source
 	s.Svc.RecordChat(input)

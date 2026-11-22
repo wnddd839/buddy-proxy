@@ -301,7 +301,11 @@ type Result struct {
 	DeltaCount int
 	Status     int
 	Model      string
-	Trace      RequestTrace
+	// UpstreamModel 是上游 SSE 回显的模型名（未观测时为空）。
+	// 与 Model（我们发出去的）并列：不一致即说明上游换了模型，
+	// 或我们发的是 auto 一族、由上游解析成具体模型。
+	UpstreamModel string
+	Trace         RequestTrace
 }
 
 // ChatError 保留上游 HTTP 状态与 Retry-After，Error() 维持原本文本以便换号正则匹配。
@@ -1452,6 +1456,11 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 		var events []Event
 		var chunk openAISSEChunk
 		if err := json.Unmarshal(raw, &chunk); err == nil && chunk.looksOpenAI() {
+			// 上游回显的模型名：取首次出现的那个并锁定。
+			// 不锁死的话，流中若有多个值（理论上不该有）会来回覆盖。
+			if acc.upstreamModel == "" {
+				acc.upstreamModel = strings.TrimSpace(chunk.Model)
+			}
 			events = eventsFromOpenAIChunk(chunk)
 		} else {
 			var payload any
@@ -1558,15 +1567,19 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 	// 客户端也可能已经收到过增量。
 	turn.Delivered = delivered
 	return Result{
-		Turn:       turn,
-		Bytes:      bytesRead,
-		EventCount: eventCount,
-		DeltaCount: deltaCount,
+		Turn:          turn,
+		Bytes:         bytesRead,
+		EventCount:    eventCount,
+		DeltaCount:    deltaCount,
+		UpstreamModel: acc.upstreamModel,
 	}, nil
 }
 
 // openAISSEChunk 覆盖 protocol_direct 主流式帧，避免每事件 Unmarshal(map)。
 type openAISSEChunk struct {
+	// Model 是上游回显的模型名。用于 I8：与请求的模型不一致即说明
+	// 上游替换了模型（或请求的是 auto 一族、由上游解析）。
+	Model   string            `json:"model"`
 	Choices []openAISSEChoice `json:"choices"`
 	Usage   map[string]any    `json:"usage"`
 }
@@ -1759,6 +1772,9 @@ type accumulator struct {
 	stopReason string
 	usage      Usage
 	hasUsage   bool
+	// upstreamModel 是上游在 SSE 帧里回显的模型名（首次出现即定）。
+	// 只在 openai 形态的 chunk 里取；别的形态留空表示「未观测」。
+	upstreamModel string
 }
 
 func newAccumulator() *accumulator {

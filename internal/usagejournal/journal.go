@@ -89,6 +89,11 @@ type Entry struct {
 	OutMessages int `json:"outMessages,omitempty"`
 	InBytes     int `json:"inBytes,omitempty"`
 	OutBytes    int `json:"outBytes,omitempty"`
+	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测或旧数据）。
+	// 与 Model 并列：前者是客户端要的，后者是上游说它跑了哪个。
+	UpstreamModel string `json:"upstreamModel,omitempty"`
+	// ModelMismatch 标记「上游回显的模型与请求的不一致且不是 auto 一族」。
+	ModelMismatch bool `json:"modelMismatch,omitempty"`
 }
 
 // Summary rolls up token / credit totals for a time window.

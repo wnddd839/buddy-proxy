@@ -125,5 +125,6 @@ func DefaultRegistry() *Registry {
 	registerIO(r)
 	registerSession(r)
 	registerSelection(r)
+	registerModel(r)
 	return r
 }

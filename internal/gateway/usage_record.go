@@ -55,6 +55,9 @@ type ChatRecordInput struct {
 	ErrorCode string
 	// UsageSource 区分上游真实值与本地估算（空 → upstream）。
 	UsageSource string
+	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测）。
+	// 与 RoutedModel 不同：后者是「我们发出去的」，这个是「上游说它跑了哪个」。
+	UpstreamModel string
 }
 
 // RecordChat appends a usage journal row (persisted via usage journal flush).
@@ -119,6 +122,8 @@ func (s *Service) RecordChat(input ChatRecordInput) {
 		OutMessages:                   ioInt(input.IO, func(m *provider.MessagesIO) int { return m.OutMessages }),
 		InBytes:                       ioInt(input.IO, func(m *provider.MessagesIO) int { return m.InBytes }),
 		OutBytes:                      ioInt(input.IO, func(m *provider.MessagesIO) int { return m.OutBytes }),
+		UpstreamModel:                 input.UpstreamModel,
+		ModelMismatch:                 modelMismatch(input.Model, input.RoutedModel, input.UpstreamModel),
 	})
 }
 
@@ -139,6 +144,7 @@ func (s *Service) submitInvariantRecord(input ChatRecordInput) {
 		AccountID:        input.AccountID,
 		Model:            input.Model,
 		RoutedModel:      input.RoutedModel,
+		UpstreamModel:    input.UpstreamModel,
 		PromptTokens:     int64(input.Usage.PromptTokens),
 		CompletionTokens: int64(input.Usage.CompletionTokens),
 		UsageSource:      input.UsageSource,
@@ -194,6 +200,60 @@ func classifyForDecision(ok, canceled bool, errMsg, provided string) (code, kind
 		return "", "empty"
 	}
 	return "", "unclassified"
+}
+
+// modelMismatch 判定「上游是否真的跑了另一个模型」。
+//
+// 实测口径（2026-11-22 真实请求）：
+//
+//	deepseek-v4.1-flash → deepseek-v4.1-flash   一致
+//	hy4flash-free       → hy4-flash-free        差一个连字符
+//	wb-lite             → wb-lite               一致
+//	auto                → glm-5.3-flash         上游解析
+//
+// 所以判据不能是简单相等：
+//   - 上游没回显（空）                 → 不判（未观测）
+//   - 请求的是 auto 一族               → 不判（上游有权选）
+//   - 其余：归一化后必须相等
+//
+// 归一化 = 小写 + 去掉 - _ . 空白。这样 hy4flash-free 与 hy4-flash-free
+// 视为同一个，但 deepseek 与 glm 不会混。
+func modelMismatch(requested, routed, upstream string) bool {
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return false
+	}
+	sent := strings.TrimSpace(routed)
+	if sent == "" {
+		sent = strings.TrimSpace(requested)
+	}
+	if sent == "" {
+		return false
+	}
+	if isAutoFamily(sent) {
+		return false
+	}
+	return normalizeModelName(sent) != normalizeModelName(upstream)
+}
+
+// isAutoFamily：auto / auto-* / 空。
+func isAutoFamily(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return m == "auto" || strings.HasPrefix(m, "auto-")
+}
+
+// normalizeModelName 去掉大小写与分隔符差异。
+func normalizeModelName(model string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(model) {
+		switch r {
+		case '-', '_', '.', ' ', '/', ':':
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // ioSystemLen 取出站 system 的字节数（未观测时 0）。

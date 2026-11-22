@@ -61,12 +61,15 @@ type Record struct {
 	At   int64  `json:"at"`
 
 	// request
-	RequestID        string `json:"requestId,omitempty"`
-	SessionKey       string `json:"sessionKey,omitempty"`
-	AccountID        string `json:"accountId,omitempty"`
-	Site             string `json:"site,omitempty"`
-	Model            string `json:"model,omitempty"`
-	RoutedModel      string `json:"routedModel,omitempty"`
+	RequestID   string `json:"requestId,omitempty"`
+	SessionKey  string `json:"sessionKey,omitempty"`
+	AccountID   string `json:"accountId,omitempty"`
+	Site        string `json:"site,omitempty"`
+	Model       string `json:"model,omitempty"`
+	RoutedModel string `json:"routedModel,omitempty"`
+	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测）。
+	// 与 Model/RoutedModel 三者并列：客户端要的 / 我们发的 / 上游说它跑的。
+	UpstreamModel    string `json:"upstreamModel,omitempty"`
 	PromptTokens     int64  `json:"promptTokens,omitempty"`
 	CompletionTokens int64  `json:"completionTokens,omitempty"`
 	UsageSource      string `json:"usageSource,omitempty"`

@@ -1109,6 +1109,32 @@ button:disabled{opacity:.4;cursor:not-allowed}
       <div class="panel-inner">
         <div class="section-head">
           <div>
+            <h2>上游模型回显对照</h2>
+            <p>
+              发出去的模型与上游 SSE 实际回显的模型是否一致。<strong>不一致即说明模型被替换</strong>，
+              此时所有按模型做的分析（思考占比、档位效果、缓存命中率）都会失效，且不会有任何报错。<br>
+              归一化后比较：<code>hy4flash-free</code> 与 <code>hy4-flash-free</code> 视为同一模型（实测上游确实少一个连字符）；
+              <code>auto</code> 一族由上游选模型，标为「解析」，不算替换。
+            </p>
+          </div>
+          <div class="actions">
+            <button class="ghost" id="btnRefreshEcho" type="button">刷新对照</button>
+          </div>
+        </div>
+        <div class="metrics" id="echoMetrics">
+          <div class="metric" title="最近 7 天里带上游回显的请求数"><div class="k">观测到的请求</div><div class="v" id="echoTotal">—</div></div>
+          <div class="metric"><div class="k">一致</div><div class="v" id="echoMatch">—</div></div>
+          <div class="metric" title="归一化后仍不一致 —— 这才是真的模型替换"><div class="k">不一致</div><div class="v" id="echoMismatch">—</div></div>
+          <div class="metric" title="auto 一族由上游解析成具体模型，不算异常"><div class="k">上游解析</div><div class="v" id="echoAuto">—</div></div>
+        </div>
+        <div class="bound-keys" id="echoTable"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-inner">
+        <div class="section-head">
+          <div>
             <h2>会话标题改写</h2>
             <p>dsh 宿主每新建一个会话，会额外发一次「生成会话标题」的请求，走当前选中的付费模型。打开这一项后，这类请求会被改写到<strong>免费模型</strong>上，每个新会话省一次主模型计费。<br>识别是 fail-closed 的：只有<strong>一条 user 消息、没有 assistant/tool、且以标题模板开头</strong>才改写；模板改了就自动停止识别，不会误伤正常对话。请求里的 messages、stream、max_tokens、任何 header 都不动，只改模型名。</p>
           </div>
@@ -1373,6 +1399,8 @@ button:disabled{opacity:.4;cursor:not-allowed}
                   <th>System</th>
                   <th>Token 总量</th>
                   <th>缓存命中</th>
+                  <th title="上游 SSE 帧里回显的 model 字段。与「模型」列不一致即说明上游换了模型；auto 一族由上游解析，属正常">上游模型</th>
+                  <th title="上游 SSE 帧里回显的 model 字段。与「模型」列不一致即说明上游换了模型；auto 一族由上游解析，属正常">上游模型</th>
                   <th title="本次请求上游返回的单次扣费（不是余额）。余额看 01 概览或 02 账号池">单次 Credit</th>
                   <th>耗时</th>
                   <th>账号</th>
@@ -1380,7 +1408,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
                 </tr>
               </thead>
               <tbody id="usageRows">
-                <tr><td colspan="12" class="empty" style="border:none">加载中…</td></tr>
+                <tr><td colspan="13" class="empty" style="border:none">加载中…</td></tr>
               </tbody>
             </table>
           </div>
@@ -2029,6 +2057,26 @@ function rowHitRate(row){
 }
 // systemCell 渲染 07 用量明细的 System 列。
 // 旧条目没有 systemForm（omitempty），显示 — 而不是假装 fold。
+// upstreamModelCell 渲染 07 明细的「上游模型」列。
+//
+// 三种状态：
+//   —              上游没回显（旧数据 / 非 openai 形态）
+//   同名           与请求一致
+//   不同名         红字 + tooltip 说明差在哪；auto 一族标「解析」而非异常
+function upstreamModelCell(row){
+  const up = row.upstreamModel || '';
+  if (!up) return '<span style="color:var(--fg-40)">—</span>';
+  const sent = row.routedModel || row.model || '';
+  if (row.modelMismatch) {
+    return '<span class="badge bad" title="发出去 ' + escapeHtml(sent) + '，上游回显 ' +
+      escapeHtml(up) + ' —— 模型被替换">' + escapeHtml(up) + '</span>';
+  }
+  if ((sent || '').toLowerCase().indexOf('auto') === 0) {
+    return '<span class="badge muted" title="请求的是 ' + escapeHtml(sent) +
+      '，由上游解析成 ' + escapeHtml(up) + '（正常）">' + escapeHtml(up) + ' / 解析</span>';
+  }
+  return escapeHtml(up);
+}
 function systemCell(row){
   const form = row.systemForm || '';
   if (!form) return '<span style="color:var(--fg-40)">—</span>';
@@ -2105,7 +2153,7 @@ function paintUsage(data){
   const tbody = $('usageRows');
   if (!tbody) return;
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="12" style="color:var(--fg-40);padding:24px;text-align:center">暂无记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" style="color:var(--fg-40);padding:24px;text-align:center">暂无记录</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(function(row){
@@ -2128,6 +2176,7 @@ function paintUsage(data){
       '<td class="mono">' + systemCell(row) + '</td>' +
       '<td class="mono">' + String(totalTok) + '</td>' +
       '<td class="mono">' + escapeHtml(hit) + '</td>' +
+      '<td class="mono">' + upstreamModelCell(row) + '</td>' +
       '<td class="mono">' + escapeHtml(credit) + '</td>' +
       '<td class="mono">' + (row.durationMs != null ? (row.durationMs + 'ms') : '—') + '</td>' +
       '<td>' + escapeHtml(account || '—') + '</td>' +
@@ -2379,6 +2428,55 @@ if ($('spEchoUser')) $('spEchoUser').addEventListener('change', function(){
     showToast(e.message,'error'); paintSpStrip();
   });
 });
+// refreshModelEcho 用 07 的用量明细算回显对照。
+//
+// 不新增后端接口：明细里已经有 model / routedModel / upstreamModel / modelMismatch，
+// 直接从最近 100 条统计即可。
+async function refreshModelEcho(){
+  const data = await api('/direct-admin/api/usage?range=week&limit=100');
+  const rows = (data.requests || []).filter(function(r){ return r.upstreamModel; });
+  let match = 0, mismatch = 0, auto = 0;
+  const bad = [];
+  rows.forEach(function(r){
+    if (r.modelMismatch) { mismatch++; bad.push(r); return; }
+    const sent = (r.routedModel || r.model || '').toLowerCase();
+    if (sent.indexOf('auto') === 0) { auto++; return; }
+    match++;
+  });
+  if ($('echoTotal')) $('echoTotal').textContent = String(rows.length);
+  if ($('echoMatch')) $('echoMatch').textContent = String(match);
+  if ($('echoMismatch')) $('echoMismatch').textContent = String(mismatch);
+  if ($('echoAuto')) $('echoAuto').textContent = String(auto);
+  const host = $('echoTable');
+  if (!host) return;
+  if (!rows.length){
+    host.innerHTML = '<p class="lede" style="margin:8px 0 0">最近 7 天没有带上游回显的记录（旧数据不含该字段）。</p>';
+    return;
+  }
+  if (!bad.length){
+    host.innerHTML = '<p class="lede" style="margin:8px 0 0">最近 ' + rows.length +
+      ' 条带回显的请求里没有模型替换。</p>';
+    return;
+  }
+  host.innerHTML = '<table aria-label="模型替换明细"><thead><tr>' +
+    '<th>时间</th><th>请求 ID</th><th>发出去</th><th>上游回显</th><th>账号</th>' +
+    '</tr></thead><tbody>' + bad.slice(0, 20).map(function(r){
+      return '<tr>' +
+        '<td class="mono">' + escapeHtml(formatTime(r.at)) + '</td>' +
+        '<td class="mono">' + escapeHtml(shortId(r.proxyRequestId)) + '</td>' +
+        '<td class="mono">' + escapeHtml(r.routedModel || r.model || '—') + '</td>' +
+        '<td class="mono"><span class="badge bad">' + escapeHtml(r.upstreamModel) + '</span></td>' +
+        '<td>' + escapeHtml(r.accountLabel || shortId(r.accountId)) + '</td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>';
+}
+if ($('btnRefreshEcho')) $('btnRefreshEcho').addEventListener('click', function(){
+  refreshModelEcho().catch(function(e){ showToast(e.message,'error'); });
+});
+if ($('tab-models')) {
+  refreshModelEcho().catch(function(e){ showToast('模型回显对照加载失败：' + (e.message || e), 'error'); });
+}
+
 async function refreshInvariants(){
   const data = await api('/direct-admin/api/invariants?limit=20');
   const hits = $('invHits'), sup = $('invSuppressed'), drop = $('invDropped'), cov = $('invCoverage'), list = $('invList');
