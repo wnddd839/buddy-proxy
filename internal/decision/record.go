@@ -93,6 +93,8 @@ type Record struct {
 	Credit    *float64 `json:"credit,omitempty"`
 
 	// selection
+	// SelSource 是选号路径：pin / prefer_quota / rotation。
+	SelSource  string         `json:"selSource,omitempty"`
 	Candidates int            `json:"candidates,omitempty"`
 	Examined   int            `json:"examined,omitempty"`
 	Chosen     string         `json:"chosen,omitempty"`

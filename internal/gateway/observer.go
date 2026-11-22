@@ -68,6 +68,7 @@ func (o *InvariantObserver) ObserveSelection(e accounts.SelectionEvent) {
 		Model:      e.Model,
 		Candidates: e.Candidates,
 		Examined:   e.Examined,
+		SelSource:  e.Source,
 		Chosen:     e.Chosen,
 		Skipped:    e.Skipped,
 	})

@@ -63,3 +63,9 @@ func checkSelectionExplained(rec decision.Record, _ *State) []decision.Finding {
 	}
 	return nil
 }
+
+// I7 的新判据补充：pin 路径（会话软钉 / 固定 Key）只检查 1 个号、
+// 没有跳过任何人，不得因为它「Candidates 很多但无原因」而误报。
+//
+// 这条已在 checkSelectionExplained 里通过 Examined==1 满足，
+// 但显式标注 Source 后，将来若 pin 路径加入跳过逻辑可以被识别。

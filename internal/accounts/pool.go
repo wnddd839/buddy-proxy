@@ -225,6 +225,13 @@ type QuotaEvent struct {
 	Skipped string
 }
 
+// 选号路径来源。用于回答「多少流量走会话亲和，多少真正轮转」。
+const (
+	SelSourcePin         = "pin"
+	SelSourcePreferQuota = "prefer_quota"
+	SelSourceRotation    = "rotation"
+)
+
 // 选号跳过原因。I7 只校验「有跳过就必须有原因」，不校验具体 key，
 // 但 key 必须稳定，否则面板的历史聚合会碎成很多行。
 const (
@@ -253,6 +260,11 @@ type SelectionEvent struct {
 	Examined int
 	Chosen   string
 	Skipped  map[string]int
+	// Source 说明这次选号走的是哪条路径：
+	//   pin          会话软钉（指定账号，本就不检查别人）
+	//   prefer_quota 按剩余额度最大选（快路径）
+	//   rotation     顺序轮转（主循环）
+	Source string
 }
 
 // Observer 接收额度与选号事件。
@@ -930,6 +942,18 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			store.Accounts[i].LastSelectedAt = now
 			p.mem = store
 			p.markDirtyLocked()
+			// 指定账号（会话软钉 / 固定 Key）也是「选号」：只检查了 1 个号、
+			// 没有跳过任何人，但仍必须记录 —— 否则这条路径的流量在决策日志里
+			// 完全不可见（实测占多数请求）。
+			p.emitSelection(SelectionEvent{
+				RequestID:  opts.RequestID,
+				Site:       opts.Site,
+				Model:      opts.Model,
+				Candidates: len(store.Accounts),
+				Examined:   1,
+				Chosen:     store.Accounts[i].ID,
+				Source:     SelSourcePin,
+			})
 			return Selection{Source: "pool", Account: cloneAccount(store.Accounts[i]), Index: i, Store: cloneStore(store), Model: opts.Model, RequestID: opts.RequestID}, nil
 		}
 		return Selection{}, fmt.Errorf("%w: %s", ErrAccountNotFound, opts.AccountID)
@@ -1025,12 +1049,12 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		store.NextIndex = (idx + 1) % len(store.Accounts)
 		p.mem = store
 		p.markDirtyLocked()
-		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Chosen: store.Accounts[idx].ID, Skipped: cloneCounts(skipped)})
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Chosen: store.Accounts[idx].ID, Skipped: cloneCounts(skipped), Source: SelSourceRotation})
 		return Selection{Source: "pool", Account: cloneAccount(store.Accounts[idx]), Index: idx, Store: cloneStore(store), Model: opts.Model, RequestID: opts.RequestID}, nil
 	}
 	// 全部候选都只是「这个模型」在限流窗口内 ⇒ 不降级、明确报错。
 	if modelResetAt > 0 && fallbackIdx < 0 {
-		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Skipped: cloneCounts(skipped)})
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Skipped: cloneCounts(skipped), Source: SelSourceRotation})
 		return Selection{}, &ModelCooldownError{Model: opts.Model, Until: modelResetAt}
 	}
 	if fallbackIdx >= 0 {
@@ -1038,7 +1062,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 		store.NextIndex = (fallbackIdx + 1) % len(store.Accounts)
 		p.mem = store
 		p.markDirtyLocked()
-		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Chosen: store.Accounts[fallbackIdx].ID, Skipped: cloneCounts(skipped)})
+		p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Chosen: store.Accounts[fallbackIdx].ID, Skipped: cloneCounts(skipped), Source: SelSourceRotation})
 		return Selection{
 			Source:           "pool",
 			Account:          cloneAccount(store.Accounts[fallbackIdx]),
@@ -1049,7 +1073,7 @@ func (p *Pool) selectFloor(opts SelectOptions, floor float64) (Selection, error)
 			RequestID:        opts.RequestID,
 		}, nil
 	}
-	p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Skipped: cloneCounts(skipped)})
+	p.emitSelection(SelectionEvent{RequestID: opts.RequestID, Site: opts.Site, Model: opts.Model, Candidates: candidates, Examined: examined, Skipped: cloneCounts(skipped), Source: SelSourceRotation})
 	// 报错带上计数：「真没配账号」与「全被额度/冷却拦住」必须能区分，
 	// 否则排查时会先怀疑配置而不是额度。errors.Is(ErrNoAccounts) 仍成立。
 	detail := formatSkipCounts(skipped)
@@ -1148,6 +1172,7 @@ func (p *Pool) pickHighestQuotaLocked(store *Store, now int64, site, model, requ
 		RequestID: requestID, Site: site, Model: model,
 		Candidates: len(store.Accounts), Examined: 1,
 		Chosen: store.Accounts[bestIdx].ID,
+		Source: SelSourcePreferQuota,
 	})
 	return Selection{
 		Source: "pool", Account: cloneAccount(store.Accounts[bestIdx]),
