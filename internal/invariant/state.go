@@ -50,6 +50,16 @@ type State struct {
 	deduct     map[string]deductRec
 	deductRing []string
 
+	// sessionTok 是「会话|模型|分桶 → 上一次的比例」，供 I10 做会话内前后对比。
+	//
+	// 与 tokBaseline 是**两套状态**，不能复用：
+	//   tokBaseline：全局，每 (模型,分桶) 一条，需要 3 样本才判定
+	//   sessionTok ：会话级，每 (会话,模型,分桶) 一条，两次即可判定
+	//
+	// 上限与会话容量共用 sessionCap（默认 512）。
+	sessionTok     map[string]float64
+	sessionTokRing []string
+
 	// tokBaseline 是「(模型, 分桶) → 快/慢双基线」的分词器比例基线。
 	//
 	// 它的用途是**发现模型被悄悄换掉**：回显的 model 字段（I8）只能
@@ -72,6 +82,7 @@ func NewState(sessionCap, errCap int) *State {
 		errCount:    make(map[string]int),
 		deduct:      make(map[string]deductRec),
 		tokBaseline: make(map[string]*tokBaseline),
+		sessionTok:  make(map[string]float64),
 	}
 }
 
@@ -219,4 +230,41 @@ func SessionKey(sessionKey, accountID, model string) string {
 		return ""
 	}
 	return sessionKey + "|" + accountID + "|" + model
+}
+
+// ObserveSessionRatio 记录该会话本次的比例，返回上次的值与是否存在。
+//
+// 与 SetPrompt 同一套 LRU 逻辑：会话数超过 sessionCap 时淘汰最旧的。
+func (s *State) ObserveSessionRatio(key string, ratio float64) (float64, bool) {
+	if s == nil || key == "" {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessionTok == nil {
+		s.sessionTok = make(map[string]float64)
+	}
+	prev, had := s.sessionTok[key]
+	if !had && s.sessionCap > 0 {
+		for len(s.sessionTokRing) >= s.sessionCap {
+			oldest := s.sessionTokRing[0]
+			s.sessionTokRing = s.sessionTokRing[1:]
+			delete(s.sessionTok, oldest)
+		}
+	}
+	if !had {
+		s.sessionTokRing = append(s.sessionTokRing, key)
+	}
+	s.sessionTok[key] = ratio
+	return prev, had
+}
+
+// SessionTokCount 返回当前会话参照条数（测试与面板用）。
+func (s *State) SessionTokCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.sessionTok)
 }
