@@ -75,6 +75,9 @@ type Record struct {
 	TokASCII  int     `json:"tokASCII,omitempty"`
 	TokBucket string  `json:"tokBucket,omitempty"`
 	TokRatio  float64 `json:"tokRatio,omitempty"`
+	// HasTools / SystemEchoed 让 I10/I11 跳过「分子含额外 token」的请求。
+	HasTools     bool `json:"hasTools,omitempty"`
+	SystemEchoed bool `json:"systemEchoed,omitempty"`
 
 	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测）。
 	// 与 Model/RoutedModel 三者并列：客户端要的 / 我们发的 / 上游说它跑的。

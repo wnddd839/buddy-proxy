@@ -362,6 +362,14 @@ func (s *Service) SetSystemPromptMode(mode string) config.Config {
 //
 // 与 SetSystemStripSwitches 分开的原因：这是独立的实验开关，不该和
 // 剥离策略混在一次调用里 —— 改剥离时不能顺手把实验开关也覆写掉。
+// TokFingerprintEchoed 报告 system 是否被复制进 user（影响比例判据）。
+func (s *Service) TokFingerprintEchoed() bool {
+	if s == nil {
+		return false
+	}
+	return s.Config().SystemEchoUser
+}
+
 func (s *Service) SetSystemEchoUser(on bool) config.Config {
 	return s.updateConfig(func(c *config.Config) {
 		c.SystemEchoUser = on

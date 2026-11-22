@@ -52,6 +52,11 @@ func checkSessionTokJump(rec decision.Record, st *State) []decision.Finding {
 	if rec.TokRatio <= 0 {
 		return nil
 	}
+	// 与 I11 同一理由：分子含额外 token（tools schema / system echo）时
+	// 比例虚高，会话内前后对比同样会被污染。
+	if rec.HasTools || rec.SystemEchoed {
+		return nil
+	}
 	// tiny / none 桶不参与：模板开销占比过高，比例失真。
 	if rec.TokBucket == tokfp.BucketTiny || rec.TokBucket == tokfp.BucketNone {
 		return nil

@@ -55,6 +55,11 @@ func observeTokOnce(rec decision.Record, st *State) (tokObservation, bool) {
 	if rec.TokRatio <= 0 || rec.TokBucket == "" || st == nil {
 		return tokObservation{}, false
 	}
+	// 分子含额外 token（tools schema / system echo）时比例虚高，
+	// 全局基线同样会被污染 —— 三条比例断言必须同时跳过。
+	if rec.HasTools || rec.SystemEchoed {
+		return tokObservation{}, false
+	}
 	if rec.TokBucket == tokfp.BucketTiny || rec.TokBucket == tokfp.BucketNone {
 		return tokObservation{}, false
 	}

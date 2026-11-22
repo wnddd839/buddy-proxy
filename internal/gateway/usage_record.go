@@ -59,6 +59,15 @@ type ChatRecordInput struct {
 	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测）。
 	// 与 RoutedModel 不同：后者是「我们发出去的」，这个是「上游说它跑了哪个」。
 	UpstreamModel string
+	// HasTools 表示本次请求带了 tools 定义。
+	//
+	// I10/I11 用 TokRatio（prompt_tokens ÷ 入站字符数）判定，而
+	// prompt_tokens 含工具定义 token（通常几千），TotalChars 不含 ——
+	// 带 tools 时比例会虚高，必须跳过这两条断言。
+	HasTools bool
+	// SystemEchoed 表示 system 被复制进了 user（EchoSystemToUser 开启）。
+	// 同样让分子多一份 system 长度，比例虚高。
+	SystemEchoed bool
 	// Tok* 是分词器指纹：入站字符成分 + 上游 prompt_tokens 的比值。
 	// 由 IO.Composition 与 IO.PromptTokens 算出，这里用结构体携带便于传递。
 	Tok *provider.MessagesIO
@@ -161,6 +170,8 @@ func (s *Service) submitInvariantRecord(input ChatRecordInput) {
 		TokASCII:         tokEnabledInt(s, tokASCII, input),
 		TokBucket:        tokEnabledStr(s, tokBucket, input),
 		TokRatio:         tokEnabledFloat(s, tokRatio, input),
+		HasTools:         input.HasTools,
+		SystemEchoed:     input.SystemEchoed,
 		PromptTokens:     int64(input.Usage.PromptTokens),
 		CompletionTokens: int64(input.Usage.CompletionTokens),
 		UsageSource:      input.UsageSource,

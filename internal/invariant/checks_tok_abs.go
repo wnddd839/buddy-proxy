@@ -69,6 +69,12 @@ func checkTokAbsoluteReference(rec decision.Record, _ *State) []decision.Finding
 	if rec.TokRatio <= 0 || rec.TokChars <= 0 {
 		return nil
 	}
+	// 分子含额外 token 的请求不判 —— 见 HasTools 的注释。
+	// 带 tools 时 prompt_tokens 含工具 schema（几千 token），
+	// 而 TotalChars 只算 messages content ⇒ 比例虚高，必然误报。
+	if rec.HasTools || rec.SystemEchoed {
+		return nil
+	}
 	if !tokRatioPlausible(rec.TokRatio) {
 		return nil
 	}

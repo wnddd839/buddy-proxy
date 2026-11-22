@@ -77,6 +77,11 @@ func (s *Server) recordChatJournal(
 	if outcome := opts.SystemOutcome; outcome != nil {
 		input.Tok = outcome.IO
 	}
+	// 带 tools 的请求：prompt_tokens 含工具定义，入站字符数不含 ⇒
+	// I10/I11 的比例判据会被虚高污染，必须标记。
+	input.HasTools = opts.Tools != nil
+	// system 被复制进 user 时同理（分子多一份 system 长度）。
+	input.SystemEchoed = s.Svc.TokFingerprintEchoed()
 	input.TitleRewrite = opts.RoutedFrom != "" && opts.TitleRewrite
 	input.UsageSource = usage.Source
 	s.Svc.RecordChat(input)
