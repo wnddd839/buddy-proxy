@@ -8,13 +8,16 @@ import (
 
 // fold 是合法的条数 -1；strip 不改条数；echo 只增不减。全都不许报。
 func TestI3IgnoresRecordedTransforms(t *testing.T) {
+	// Ok: true —— I3 现在只判成功请求（失败请求可能压根没发出去，
+	// 「出站 0 条」不代表丢历史）。下面这些验证的是成功路径上的豁免，
+	// 当初写的时候还没有这条前置条件。
 	ok := []decision.Record{
-		{Kind: decision.KindRequest, At: 1, InMessages: 3, OutMessages: 2, InSystemLen: 50, SystemForm: "fold"},
+		{Kind: decision.KindRequest, At: 1, Ok: true, InMessages: 3, OutMessages: 2, InSystemLen: 50, SystemForm: "fold"},
 		// strip 只删身份句：条数与 system 都还在。
-		{Kind: decision.KindRequest, At: 1, InMessages: 3, OutMessages: 3, InSystemLen: 50, OutSystemLen: 42, Stripped: true, StripScope: "system"},
+		{Kind: decision.KindRequest, At: 1, Ok: true, InMessages: 3, OutMessages: 3, InSystemLen: 50, OutSystemLen: 42, Stripped: true, StripScope: "system"},
 		// echo：system 位不变，user 里多一份（只增不减）。
-		{Kind: decision.KindRequest, At: 1, InMessages: 3, OutMessages: 3, InSystemLen: 50, OutSystemLen: 50},
-		{Kind: decision.KindRequest, At: 1, InMessages: 0, OutMessages: 0}, // 老调用方未观测
+		{Kind: decision.KindRequest, At: 1, Ok: true, InMessages: 3, OutMessages: 3, InSystemLen: 50, OutSystemLen: 50},
+		{Kind: decision.KindRequest, At: 1, Ok: true, InMessages: 0, OutMessages: 0}, // 老调用方未观测
 	}
 	for i, rec := range ok {
 		if got := DefaultRegistry().Run(rec, NewState(8, 8)); len(got) != 0 {
@@ -22,7 +25,7 @@ func TestI3IgnoresRecordedTransforms(t *testing.T) {
 		}
 	}
 
-	bad := decision.Record{Kind: decision.KindRequest, At: 1, InMessages: 5, OutMessages: 3}
+	bad := decision.Record{Kind: decision.KindRequest, At: 1, Ok: true, InMessages: 5, OutMessages: 3}
 	got := DefaultRegistry().Run(bad, NewState(8, 8))
 	if len(got) != 1 || got[0].Invariant != "I3" {
 		t.Fatalf("应命中 I3：%+v", got)
@@ -31,7 +34,9 @@ func TestI3IgnoresRecordedTransforms(t *testing.T) {
 
 // 条数对但内容全空，同样是丢历史。
 func TestI3DetectsEmptiedContent(t *testing.T) {
-	rec := decision.Record{Kind: decision.KindRequest, At: 1, InMessages: 2, OutMessages: 2, InBytes: 900, OutBytes: 0}
+	// Ok: true —— 验证的是成功路径的字节归零判据；失败请求根本没出站，
+	// 由 TestI3SkipsFailedBytesZero 单独覆盖。
+	rec := decision.Record{Kind: decision.KindRequest, At: 1, Ok: true, InMessages: 2, OutMessages: 2, InBytes: 900, OutBytes: 0}
 	got := DefaultRegistry().Run(rec, NewState(8, 8))
 	if len(got) != 1 || got[0].Invariant != "I3" {
 		t.Fatalf("应命中 I3：%+v", got)

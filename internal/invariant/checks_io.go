@@ -23,7 +23,16 @@ func registerIO(r *Registry) {
 
 // checkHistoryShrunk 检查出站消息条数是否低于「入站 - 策略预期」。
 func checkHistoryShrunk(rec decision.Record, _ *State) []decision.Finding {
-	if rec.Kind != decision.KindRequest || rec.Canceled {
+	// 失败请求不判：很多失败发生在「出站之前」（参数校验失败、
+	// 消息全被过滤成空、上游连接都没建立）。那些路径上出站根本没发生，
+	// 「出站 0 条」不是「历史被丢了」，而是「根本没发」。
+	//
+	// 实测证据（2026-11-22）：一条带 tools 的请求因
+	// "no valid messages after normalization" 在出站前就返回错误，
+	// 但 recording 里 outMessages=0，I3 把它误判成「入站 1 条 → 出站 0 条」。
+	//
+	// 失败请求的历史处理由 I4（system 消失）与错误分类负责，不归 I3。
+	if rec.Kind != decision.KindRequest || rec.Canceled || !rec.Ok {
 		return nil
 	}
 	// 没有观测数据（老调用方 / 未接线）时不能判 —— 零值不等于「零条消息」。

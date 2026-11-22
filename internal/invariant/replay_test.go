@@ -22,8 +22,12 @@ func TestReplayGroupsByInvariantAndSubject(t *testing.T) {
 	}
 	now := time.Now().UnixMilli()
 	// 两条 I3（同 RequestID 不同时间仍在同一组？Subject 是 RequestID，故两条同 ID 才归组）
-	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now - 2000, RequestID: "same", InMessages: 5, OutMessages: 2})
-	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now - 1000, RequestID: "same", InMessages: 5, OutMessages: 2})
+	//
+	// Ok: true —— I3 现在只判成功请求（失败请求可能压根没发出去，
+	// 「出站 0 条」不代表丢历史）。这两条构造的是「丢历史」样本，
+	// 本来就应该是成功请求，当初写的时候还没有这条前置条件。
+	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now - 2000, RequestID: "same", Ok: true, InMessages: 5, OutMessages: 2})
+	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now - 1000, RequestID: "same", Ok: true, InMessages: 5, OutMessages: 2})
 	// 一条 I4（不同对象）
 	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now, RequestID: "other", InSystemLen: 100, OutSystemLen: 0})
 
