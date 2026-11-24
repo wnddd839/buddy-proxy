@@ -586,6 +586,15 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 	}
 }
 
+// ensureIO 确保本次请求的 IO 统计指针已分配（必要时创建）。
+//
+// 语义从 systemIOFor 的「取一个指针」变成「确保它存在」：这条链上
+// 唯一的分配点，删掉就会让入站统计永远为空（I3/I4/I9/I10/I11 全失明，
+// 2026-11-24 踩过）。测试见 TestCompleteFromPoolFillsInboundIO。
+func ensureIO(opts CompleteOptions) {
+	systemIOFor(opts)
+}
+
 // systemIOFor 返回本次请求共享的 IO 统计指针（调用方不需要时返回 nil）。
 //
 // 惰性分配挂在 SystemOutcome 上：CompleteFromPool 每轮重试都调用
@@ -835,7 +844,10 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	// systemIOFor 的唯一实参来自 chatOptionsFromAccount（比这里晚 50 行）。
 	// 不先分配的话 primeInboundIO 会因 IO==nil 直接 return —— 上一版
 	// 就是这样把入站统计整个丢掉、连带 I3/I4/I9/I10/I11 全失明的。
-	_ = systemIOFor(opts)
+	//
+	// ensureIO 是这条链里唯一的分配点，别删：删了整条入站观测会静默失效。
+	// TestCompleteFromPoolFillsInboundIO 会立刻抓到。
+	ensureIO(opts)
 	primeInboundIO(opts)
 	selection, err := s.Pool.Select(accounts.SelectOptions{
 		AccountID:     opts.AccountID,

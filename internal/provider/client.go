@@ -1134,6 +1134,15 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	// 每次尝试都从干净的出站态开始：共用 IO 指针的重试里，
 	// 上一次尝试可能已经填过 Out* 并把 OutObserved 置 true，
 	// 若这一次在 len 检查处早退，记录会带着上一轮的旧值。
+	//
+	// 语义：最终记录保留**最后一次尝试**的出站态，与 SystemForm /
+	// Degraded（同样取最后一轮）一致。
+	//
+	// 「第 1 次出站有值、第 2 次在 len 检查处早退」这种掩蔽在当前重试
+	// 集合里不可达：重试只有「同号重连（messages 完全相同）」与
+	// 「11128 后 fold 重试（KeepSystem true→false，消息只增不减）」两种，
+	// 构造不出「非空 → 空」的转变。若将来新增了会缩减消息的重试路径，
+	// 必须在这里重新评估。
 	if opts.IOReport != nil {
 		opts.IOReport.OutMessages = 0
 		opts.IOReport.OutBytes = 0
