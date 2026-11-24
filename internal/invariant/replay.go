@@ -32,10 +32,33 @@ type ReplayGroup struct {
 // Replay 用给定注册表重跑历史记录。
 //
 // 重要：这里**重跑断言**，而不是读取当时落盘的结论 ——
-// 只有重跑才能回答「新加一条断言，历史上有没有中过」，
-// 也才能让断言改进后回溯旧数据。Kind=finding 的记录被跳过（那是输出，不是输入）。
+// 只有重跑才能回答「新加一条断言，历史上有没有中过」。
+// Kind=finding 的记录被跳过（那是输出，不是输入）。
 //
-// only 非空时只保留这些断言的命中。
+// ## 两阶段（顺序是必需的）
+//
+// 同一个请求的两个记录时间戳口径不同：
+//
+//	request 的 At      = 请求**开始**时刻（input.Started）
+//	quota deduct 的 At = 请求**结束**时（MarkResult 调用时）
+//
+// 实测 deduct - request：最小 402ms、中位 3323ms、最大 63.6s，
+// 812 条全部为正、0 条为负。
+//
+// 若按 At 升序直接逐条跑，request 永远先到、deduct 后到 ⇒
+// request 到达时 TakeDeduct 找不到记录 ⇒ 每条正常扣费都报一次
+// I2a「没有对应的扣减记录」（实测 1942 次全是假象）。
+//
+// 线上没这个问题：MarkResult 先于 recordChatJournal 执行。
+// 这是回放工具的顺序缺陷。
+//
+// 所以分两阶段：
+//
+//	① 先扫全部记录，只对 KindQuota 调 PrimeFromRecord（建状态，不判）
+//	② 再按 At 顺序扫全部记录，跑断言
+//
+// quota 自身的断言（I1 清空无理由、I2b 探针漂移）在阶段②照常跑 ——
+// 它们只依赖本条记录的 Before/After，不依赖扣减状态。
 func Replay(store *decision.Store, from, to time.Time, only []string) (ReplayReport, error) {
 	report := ReplayReport{From: from.UnixMilli(), To: to.UnixMilli()}
 	if store == nil {
@@ -58,6 +81,13 @@ func Replay(store *decision.Store, from, to time.Time, only []string) (ReplayRep
 	state.SetDeductCap(0)
 	reg := DefaultRegistry()
 
+	// 阶段①：先把所有 quota 状态就位（见函数注释）。
+	for _, rec := range recs {
+		if rec.Kind == decision.KindQuota {
+			state.PrimeFromRecord(rec)
+		}
+	}
+
 	groups := make(map[string]*ReplayGroup)
 	var order []string
 
@@ -73,7 +103,8 @@ func Replay(store *decision.Store, from, to time.Time, only []string) (ReplayRep
 		if rec.At > last {
 			last = rec.At
 		}
-		state.PrimeFromRecord(rec)
+		// 不再调用 PrimeFromRecord：阶段①已就位。重复 Prime 会覆盖同一条
+		// deduct（金额相同、无实际影响），但语义上该由阶段①负责。
 		for _, f := range reg.Run(rec, state) {
 			if len(allow) > 0 {
 				if _, ok := allow[f.Invariant]; !ok {
@@ -120,7 +151,7 @@ func Replay(store *decision.Store, from, to time.Time, only []string) (ReplayRep
 //
 // 必须如实：决策日志是这套机制上线后才开始写的，更早的历史
 // **确实看不见** —— 声称覆盖了没读的东西，会让「以前没发生过」
-// 变成一句无法验证的话，正是本体系要消灭的那种误导。
+// 变成一句无法验证的话。
 func coverageText(scanned int, firstAt, lastAt int64, store *decision.Store) string {
 	since := "(未知)"
 	if store != nil {
