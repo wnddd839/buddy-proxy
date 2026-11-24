@@ -1130,6 +1130,16 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	}
 	// PromptTokens 在拿到 usage 后才能填，所以先在 Complete 返回前回填。
 	// 这里不填：见 completeFingerprint 的注释。
+	//
+	// 每次尝试都从干净的出站态开始：共用 IO 指针的重试里，
+	// 上一次尝试可能已经填过 Out* 并把 OutObserved 置 true，
+	// 若这一次在 len 检查处早退，记录会带着上一轮的旧值。
+	if opts.IOReport != nil {
+		opts.IOReport.OutMessages = 0
+		opts.IOReport.OutBytes = 0
+		opts.IOReport.OutSystemLen = 0
+		opts.IOReport.OutObserved = false
+	}
 	if len(messages) == 0 {
 		return Result{}, fmt.Errorf("CodeBuddy chat completion failed: no valid messages after normalization")
 	}

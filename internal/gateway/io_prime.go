@@ -17,7 +17,8 @@ func primeInboundIO(opts CompleteOptions) {
 	if opts.SystemOutcome == nil || opts.SystemOutcome.IO == nil {
 		return
 	}
+	// 只填入站侧（out 传 nil）：出站侧由 provider.Complete 在真正发出请求后
+	// 填充，并同时置 OutObserved。两阶段分开是 I3/I4 区分「没发出去」与
+	// 「发出去了但丢光了」的依据。
 	provider.FillMessagesIO(opts.SystemOutcome.IO, opts.Messages, nil)
-	// FillMessagesIO 会把 out 侧清零，这里恢复成「未观测」语义：
-	// 出站侧由 provider 稍后覆盖，零值不参与任何判断。
 }

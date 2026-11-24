@@ -830,6 +830,12 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	// 入站快照必须取在网关入口：provider 内部的 opts.Messages 已经过
 	// 网关侧一切准备，若历史缩减发生在网关，那里看到的 In==Out 就永远
 	// 发现不了（I3 会结构性失明）。
+	//
+	// 必须先分配 IO 再 prime：IO 只在 systemIOFor 里惰性分配，而
+	// systemIOFor 的唯一实参来自 chatOptionsFromAccount（比这里晚 50 行）。
+	// 不先分配的话 primeInboundIO 会因 IO==nil 直接 return —— 上一版
+	// 就是这样把入站统计整个丢掉、连带 I3/I4/I9/I10/I11 全失明的。
+	_ = systemIOFor(opts)
 	primeInboundIO(opts)
 	selection, err := s.Pool.Select(accounts.SelectOptions{
 		AccountID:     opts.AccountID,
