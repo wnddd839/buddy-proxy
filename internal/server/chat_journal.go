@@ -69,6 +69,11 @@ func (s *Server) recordChatJournal(
 		input.SystemStripped = outcome.Stripped
 		input.StripScope = outcome.StripScope
 		input.IO = outcome.IO
+		// OutObserved 是「出站确实发生过」的显式证据（provider 在构造出站
+		// payload 之后置位）。没有它，I3/I4 分不开「没发」与「发出去但丢光了」。
+		if outcome.IO != nil {
+			input.OutObserved = outcome.IO.OutObserved
+		}
 	}
 	if result != nil {
 		input.UpstreamModel = result.UpstreamModel

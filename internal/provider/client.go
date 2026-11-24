@@ -1128,13 +1128,25 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 		out = append(out, map[string]any{"role": "system", "content": canonicalUpstreamSystem})
 		messages = append(out, messages...)
 	}
-	// 统计必须放在所有改写之后（剥离 / echo / fold / system 注入），
-	// 否则量到的是中间态，I3/I4 会把合法的策略变换当成丢失。
-	FillMessagesIO(opts.IOReport, opts.Messages, messages)
 	// PromptTokens 在拿到 usage 后才能填，所以先在 Complete 返回前回填。
 	// 这里不填：见 completeFingerprint 的注释。
 	if len(messages) == 0 {
 		return Result{}, fmt.Errorf("CodeBuddy chat completion failed: no valid messages after normalization")
+	}
+	// 出站统计放在 len 检查**之后**：消息全被过滤成空时请求根本没发出去，
+	// 此时不该产生任何出站统计（OutMessages=0 会被 I3/I4 误读成「丢光了」）。
+	//
+	// 统计本身仍必须放在所有改写之后（剥离 / echo / fold / system 注入），
+	// 否则量到的是中间态，I3/I4 会把合法的策略变换当成丢失。
+	//
+	// 同时置 OutObserved：它是「出站确实发生过」的唯一显式证据 ——
+	// 上游 5xx/429/流中断这类失败，出站是发生过的，Out* 已填充，
+	// 那些路径上的「条数变少」是真缺陷，必须继续判。
+	//
+	// 只填出站侧（in 传 nil）：入站侧在网关入口已由 primeInboundIO 填好。
+	if opts.IOReport != nil {
+		FillMessagesIO(opts.IOReport, nil, messages)
+		opts.IOReport.OutObserved = true
 	}
 	body := map[string]any{
 		"model":    model,

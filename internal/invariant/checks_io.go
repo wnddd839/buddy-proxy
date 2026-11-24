@@ -23,16 +23,21 @@ func registerIO(r *Registry) {
 
 // checkHistoryShrunk 检查出站消息条数是否低于「入站 - 策略预期」。
 func checkHistoryShrunk(rec decision.Record, _ *State) []decision.Finding {
-	// 失败请求不判：很多失败发生在「出站之前」（参数校验失败、
-	// 消息全被过滤成空、上游连接都没建立）。那些路径上出站根本没发生，
-	// 「出站 0 条」不是「历史被丢了」，而是「根本没发」。
+	if rec.Kind != decision.KindRequest || rec.Canceled {
+		return nil
+	}
+	// 出站闸门：只在出站真的发生过时才判。
 	//
-	// 实测证据（2026-11-22）：一条带 tools 的请求因
-	// "no valid messages after normalization" 在出站前就返回错误，
-	// 但 recording 里 outMessages=0，I3 把它误判成「入站 1 条 → 出站 0 条」。
+	// 为什么不能按 Ok 判（上一版的做法，已撤销）：
+	//   出站**之前**失败（消息全被过滤成空、参数校验失败）→ Out* 从未产生，
+	//     「出站 0 条」不是丢历史，而是根本没发。这类必须跳过。
+	//   出站**之后**失败（上游 5xx / 429 / 流中断）→ Out* 已填充，
+	//     那些路径上的「条数变少」是真缺陷，必须继续判。
+	//   两种都是 Ok=false，所以 Ok 分不开它们 —— 只有 OutObserved 能。
 	//
-	// 失败请求的历史处理由 I4（system 消失）与错误分类负责，不归 I3。
-	if rec.Kind != decision.KindRequest || rec.Canceled || !rec.Ok {
+	// 旧记录兜底：加字段之前的记录没有 OutObserved，但若 OutMessages>0
+	// 说明出站显然发生过，照常判。
+	if !rec.OutObserved && rec.OutMessages == 0 {
 		return nil
 	}
 	// 没有观测数据（老调用方 / 未接线）时不能判 —— 零值不等于「零条消息」。
@@ -72,6 +77,13 @@ func checkHistoryShrunk(rec decision.Record, _ *State) []decision.Finding {
 // checkSystemVanished 检查「入站有 system、出站没有」是否被策略解释过。
 func checkSystemVanished(rec decision.Record, _ *State) []decision.Finding {
 	if rec.Kind != decision.KindRequest || rec.Canceled {
+		return nil
+	}
+	// 与 I3 同一把出站闸门：出站前失败的请求 OutSystemLen 恒为 0，
+	// 那不是「system 被移除」，而是「根本没发」。
+	// 结构上可达：账号选中后、provider 调用前失败（OAuth 刷新耗尽、
+	// body 构建失败）时 InSystemLen 已填而 OutSystemLen 未填。
+	if !rec.OutObserved && rec.OutSystemLen == 0 && rec.OutMessages == 0 {
 		return nil
 	}
 	if rec.InSystemLen <= 0 || rec.OutSystemLen > 0 {

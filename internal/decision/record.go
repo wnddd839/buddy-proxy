@@ -78,6 +78,9 @@ type Record struct {
 	// HasTools / SystemEchoed 让 I10/I11 跳过「分子含额外 token」的请求。
 	HasTools     bool `json:"hasTools,omitempty"`
 	SystemEchoed bool `json:"systemEchoed,omitempty"`
+	// OutObserved 表示这次请求真的发往了上游（出站统计已产生）。
+	// I3/I4 靠它区分「没发出去」与「发出去了但丢光了」。
+	OutObserved bool `json:"outObserved,omitempty"`
 
 	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测）。
 	// 与 Model/RoutedModel 三者并列：客户端要的 / 我们发的 / 上游说它跑的。

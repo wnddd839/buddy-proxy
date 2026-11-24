@@ -33,6 +33,12 @@ type MessagesIO struct {
 	Composition tokfp.Composition `json:"composition,omitempty"`
 	// PromptTokens 是上游返回的 prompt_tokens（0 = 未观测）。
 	PromptTokens int `json:"promptTokens,omitempty"`
+	// OutObserved 表示出站侧真的被统计过（= 请求确实发往上游）。
+	//
+	// 为什么需要它：出站前失败的请求（消息全被过滤成空、参数校验失败）
+	// 从未构造过出站 payload，此时 OutMessages=0 不代表「发出去了但丢光了」，
+	// 而是「根本没发」。I3/I4 必须靠这个标志区分两者。
+	OutObserved bool `json:"outObserved,omitempty"`
 }
 
 // FillMessagesIO 把 in / out 两侧的统计写进 dst（dst 为 nil 时是空操作）。

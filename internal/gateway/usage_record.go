@@ -68,6 +68,9 @@ type ChatRecordInput struct {
 	// SystemEchoed 表示 system 被复制进了 user（EchoSystemToUser 开启）。
 	// 同样让分子多一份 system 长度，比例虚高。
 	SystemEchoed bool
+	// OutObserved 来自 IO.OutObserved：出站统计是否真的产生过。
+	// I3/I4 靠它区分「没发出去」与「发出去了但丢光了」。
+	OutObserved bool
 	// Tok* 是分词器指纹：入站字符成分 + 上游 prompt_tokens 的比值。
 	// 由 IO.Composition 与 IO.PromptTokens 算出，这里用结构体携带便于传递。
 	Tok *provider.MessagesIO
@@ -172,6 +175,7 @@ func (s *Service) submitInvariantRecord(input ChatRecordInput) {
 		TokRatio:         tokEnabledFloat(s, tokRatio, input),
 		HasTools:         input.HasTools,
 		SystemEchoed:     input.SystemEchoed,
+		OutObserved:      input.OutObserved,
 		PromptTokens:     int64(input.Usage.PromptTokens),
 		CompletionTokens: int64(input.Usage.CompletionTokens),
 		UsageSource:      input.UsageSource,

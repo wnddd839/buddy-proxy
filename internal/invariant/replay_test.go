@@ -23,13 +23,12 @@ func TestReplayGroupsByInvariantAndSubject(t *testing.T) {
 	now := time.Now().UnixMilli()
 	// 两条 I3（同 RequestID 不同时间仍在同一组？Subject 是 RequestID，故两条同 ID 才归组）
 	//
-	// Ok: true —— I3 现在只判成功请求（失败请求可能压根没发出去，
-	// 「出站 0 条」不代表丢历史）。这两条构造的是「丢历史」样本，
-	// 本来就应该是成功请求，当初写的时候还没有这条前置条件。
-	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now - 2000, RequestID: "same", Ok: true, InMessages: 5, OutMessages: 2})
-	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now - 1000, RequestID: "same", Ok: true, InMessages: 5, OutMessages: 2})
-	// 一条 I4（不同对象）
-	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now, RequestID: "other", InSystemLen: 100, OutSystemLen: 0})
+	// OutObserved: true —— 出站确实发生过且条数变少，这正是 I3 要判的样本。
+	// 出站前失败（Out* 从未产生）的请求由 I3 的出站闸门跳过。
+	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now - 2000, RequestID: "same", Ok: true, OutObserved: true, InMessages: 5, OutMessages: 2})
+	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now - 1000, RequestID: "same", Ok: true, OutObserved: true, InMessages: 5, OutMessages: 2})
+	// 一条 I4（不同对象）。OutObserved: true —— 出站发生过，system 确实在出站里丢了。
+	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now, RequestID: "other", OutObserved: true, InMessages: 2, OutMessages: 2, InSystemLen: 100, OutSystemLen: 0})
 
 	rep, err := Replay(st, time.UnixMilli(now-10000), time.UnixMilli(now+1000), nil)
 	if err != nil {
@@ -68,8 +67,10 @@ func TestReplayOnlyFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UnixMilli()
-	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now, RequestID: "a", InMessages: 5, OutMessages: 2})
-	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now, RequestID: "b", InSystemLen: 100, OutSystemLen: 0})
+	// Ok: true + OutObserved: true —— 出站确实发生过且条数变少，必须产 I3，
+	// 否则下面「only:I4 只留 I4」的断言就没有可过滤的对象（空转）。
+	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now, RequestID: "a", Ok: true, OutObserved: true, InMessages: 5, OutMessages: 2})
+	appendRec(t, st, decision.Record{Kind: decision.KindRequest, At: now, RequestID: "b", OutObserved: true, InMessages: 2, OutMessages: 2, InSystemLen: 100, OutSystemLen: 0})
 
 	rep, err := Replay(st, time.UnixMilli(now-1000), time.UnixMilli(now+1000), []string{"I4"})
 	if err != nil {
