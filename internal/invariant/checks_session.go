@@ -36,7 +36,19 @@ func checkSessionContextDrop(rec decision.Record, st *State) []decision.Finding 
 	if !rec.Ok || rec.PromptTokens <= 0 {
 		return nil
 	}
+	// 键必须含 systemFp：opencode 的父会话与其子 agent 共用一个
+	// X-Opencode-Session（所以 sessionKey 相同），但两者 promptTokens
+	// 相差一个数量级（实测父 355K / 子 125K）。不含 systemFp 就把
+	// 「两个分支」当成「同一分支的前后两条」，每次切换都报一次骤降 ——
+	// 线上实测报出 123 + 108 条假的 -91% / -65%。
+	//
+	//
+	// systemFp 为空时保持旧键（不拼）：空 fp 本来就分不出分支，
+	// 拼一个空尾巴既无信息增益，又让任何按旧键形态种下的状态对不上。
 	key := SessionKey(rec.SessionKey, rec.AccountID, rec.Model)
+	if key != "" && rec.SystemFp != "" {
+		key += "|" + rec.SystemFp
+	}
 	if key == "" {
 		return nil
 	}
