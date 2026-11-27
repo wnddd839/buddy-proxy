@@ -125,3 +125,30 @@ func TestViewByModelAndFilters(t *testing.T) {
 		t.Fatalf("account filter %+v", bob.Requests)
 	}
 }
+
+func TestAllRangeIncludesOlderThan30Days(t *testing.T) {
+	j := usagejournal.New(20)
+	older := time.Now().AddDate(0, 0, -40)
+	j.Record(usagejournal.Entry{
+		At:               older.UnixMilli(),
+		ProxyRequestID:   "old-1",
+		Model:            "claude-4-sonnet",
+		Ok:               true,
+		PromptTokens:     500,
+		CompletionTokens: 100,
+		CachedTokens:     250,
+	})
+
+	month := j.View("month", 20, 0)
+	if month.Summary.Requests != 0 || month.RequestsTotal != 0 {
+		t.Fatalf("expected 40-day-old record excluded from month view, got reqs=%d total=%d", month.Summary.Requests, month.RequestsTotal)
+	}
+
+	all := j.View("all", 20, 0)
+	if all.Summary.Range != "all" || all.Summary.Requests != 1 || all.RequestsTotal != 1 {
+		t.Fatalf("expected all view to include 40-day-old record, got %+v total=%d", all.Summary, all.RequestsTotal)
+	}
+	if len(all.Series) < 40 {
+		t.Fatalf("expected all series to span back to earliest record, got len=%d", len(all.Series))
+	}
+}

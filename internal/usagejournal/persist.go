@@ -206,11 +206,16 @@ func (j *Journal) writeDisk(snap fileSnapshot) error {
 	return atomicwrite.Write(j.path, payload, 0o600)
 }
 
+func retentionStart(now time.Time) time.Time {
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return startOfDay.AddDate(0, 0, -usageRetentionDays)
+}
+
 func (j *Journal) pruneRetention(now time.Time) {
 	if j == nil || len(j.byDay) == 0 {
 		return
 	}
-	cutoff := now.AddDate(0, 0, -usageRetentionDays).Format("2006-01-02")
+	cutoff := retentionStart(now).Format(time.DateOnly)
 	for day := range j.byDay {
 		if day < cutoff {
 			delete(j.byDay, day)

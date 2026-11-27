@@ -37,3 +37,6 @@ proxy-accounts*.json
 proxy-usage*.json
 
 .superpowers/
+
+# frontend dependencies
+web/node_modules/

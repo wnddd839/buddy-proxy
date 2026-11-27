@@ -273,6 +273,8 @@ func (j *Journal) Query(q Query) View {
 
 	if rangeName == "month" {
 		from, to = monthWindowOrWeek(now, j.byDay)
+	} else if rangeName == "all" {
+		from, to = allWindow(now, j.byDay, j.entries)
 	}
 
 	windowed := make([]Entry, 0, len(j.entries))
@@ -538,18 +540,38 @@ func monthWindowOrWeek(now time.Time, byDay map[string]dayBucket) (time.Time, ti
 	loc := now.Location()
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 	monthFrom := startOfDay.AddDate(0, 0, -29)
-	earliest := earliestDataDay(byDay, loc)
+	earliest := earliestDataDay(byDay, loc, time.Time{}, now)
 	if earliest.IsZero() || earliest.After(monthFrom) {
 		return windowBounds("week", now)
 	}
 	return monthFrom, now
 }
 
-func earliestDataDay(byDay map[string]dayBucket, loc *time.Location) time.Time {
+func allWindow(now time.Time, byDay map[string]dayBucket, entries []Entry) (time.Time, time.Time) {
+	loc := now.Location()
+	cutoff := retentionStart(now)
+	earliest := earliestDataDay(byDay, loc, cutoff, now)
+	for _, e := range entries {
+		t := time.UnixMilli(e.At).In(loc)
+		if t.Before(cutoff) || t.After(now) {
+			continue
+		}
+		day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+		if earliest.IsZero() || day.Before(earliest) {
+			earliest = day
+		}
+	}
+	if earliest.IsZero() {
+		return windowBounds("month", now)
+	}
+	return earliest, now
+}
+
+func earliestDataDay(byDay map[string]dayBucket, loc *time.Location, from, to time.Time) time.Time {
 	var earliest time.Time
 	for key := range byDay {
 		t, err := time.ParseInLocation("2006-01-02", key, loc)
-		if err != nil {
+		if err != nil || t.Before(from) || t.After(to) {
 			continue
 		}
 		if earliest.IsZero() || t.Before(earliest) {
