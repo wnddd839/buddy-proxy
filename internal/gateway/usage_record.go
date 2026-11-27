@@ -178,6 +178,8 @@ func (s *Service) submitInvariantRecord(input ChatRecordInput) {
 		OutObserved:      input.OutObserved,
 		PromptTokens:     int64(input.Usage.PromptTokens),
 		CompletionTokens: int64(input.Usage.CompletionTokens),
+		ReasoningTokens:  int64(reasoningTokens(input.Usage)),
+		ReasoningTier:    input.ReasoningTier,
 		UsageSource:      input.UsageSource,
 		Canceled:         input.Canceled,
 		TitleRewrite:     input.TitleRewrite,

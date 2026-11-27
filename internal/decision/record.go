@@ -87,22 +87,33 @@ type Record struct {
 	UpstreamModel    string `json:"upstreamModel,omitempty"`
 	PromptTokens     int64  `json:"promptTokens,omitempty"`
 	CompletionTokens int64  `json:"completionTokens,omitempty"`
-	UsageSource      string `json:"usageSource,omitempty"`
-	Canceled         bool   `json:"canceled,omitempty"`
-	TitleRewrite     bool   `json:"titleRewrite,omitempty"`
-	InMessages       int    `json:"inMessages,omitempty"`
-	OutMessages      int    `json:"outMessages,omitempty"`
-	InBytes          int    `json:"inBytes,omitempty"`
-	OutBytes         int    `json:"outBytes,omitempty"`
-	InSystemLen      int    `json:"inSystemLen,omitempty"`
-	OutSystemLen     int    `json:"outSystemLen,omitempty"`
-	SystemFp         string `json:"systemFp,omitempty"`
-	SystemForm       string `json:"systemForm,omitempty"`
-	Stripped         bool   `json:"stripped,omitempty"`
-	StripScope       string `json:"stripScope,omitempty"`
-	Degraded         bool   `json:"degraded,omitempty"`
-	Ok               bool   `json:"ok,omitempty"`
-	ErrorCode        string `json:"errorCode,omitempty"`
+	// ReasoningTokens 是 completion_tokens 里用于思考的那部分（DeepSeek 思考模式）。
+	//
+	// 单列的理由：它计入 completion_tokens，所以只看总量无法区分
+	// 「模型想了很多但答得短」与「模型压根没想」—— 这两件事对用户
+	// 是完全不同的体验（后者就是「逐渐不思考、废话变多」）。
+	ReasoningTokens int64 `json:"reasoningTokens,omitempty"`
+	// ReasoningTier 是收敛后**上游实际生效**的档位（low/high/max；空 = 未声明）。
+	//
+	// 与 UsageRecord 的 ReasoningEffort（客户端原值）分开：未知档位会被
+	// 网关回落成 high，只看原值无法判断「客户端到底有没有要求思考」。
+	ReasoningTier string `json:"reasoningTier,omitempty"`
+	UsageSource   string `json:"usageSource,omitempty"`
+	Canceled      bool   `json:"canceled,omitempty"`
+	TitleRewrite  bool   `json:"titleRewrite,omitempty"`
+	InMessages    int    `json:"inMessages,omitempty"`
+	OutMessages   int    `json:"outMessages,omitempty"`
+	InBytes       int    `json:"inBytes,omitempty"`
+	OutBytes      int    `json:"outBytes,omitempty"`
+	InSystemLen   int    `json:"inSystemLen,omitempty"`
+	OutSystemLen  int    `json:"outSystemLen,omitempty"`
+	SystemFp      string `json:"systemFp,omitempty"`
+	SystemForm    string `json:"systemForm,omitempty"`
+	Stripped      bool   `json:"stripped,omitempty"`
+	StripScope    string `json:"stripScope,omitempty"`
+	Degraded      bool   `json:"degraded,omitempty"`
+	Ok            bool   `json:"ok,omitempty"`
+	ErrorCode     string `json:"errorCode,omitempty"`
 	// ErrorKind 是粗分类（canceled / coded / empty / unclassified）。
 	// 与 ErrorCode 分开：I5 只关心「有原文但没有码」，需要把
 	// 取消、空回包、有码这几种情况摘出去。
