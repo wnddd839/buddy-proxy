@@ -71,12 +71,17 @@ func checkReasoningSegments(rec decision.Record, st *State) []decision.Finding {
 	if silent {
 		// 起点：只在段长刚满阈值时报一次（之后 RunLen 会继续涨，不会重复报）。
 		if snap.RunLen == minSilentRun && snap.PriorThink > 0 {
+			// 段之前的可判条数 = 历史总量 - 当前段长（当前段也是可判记录）。
+			before := snap.PriorJudged - snap.RunLen
+			if before < 1 {
+				before = 1
+			}
 			out = append(out, decision.Finding{
 				Invariant: "I12a", Severity: SeverityInfo,
 				Subject: fmt.Sprintf("%s@%d", key, snap.RunStart), At: rec.At,
 				Detail: fmt.Sprintf("此前 %d 条中 %d 条思考（%.0f%%）；自 %s 起连续 %d 条静默",
-					snap.PriorJudged, snap.PriorThink,
-					100.0*float64(snap.PriorThink)/float64(snap.PriorJudged),
+					before, snap.PriorThink,
+					100.0*float64(snap.PriorThink)/float64(before),
 					formatMillis(snap.RunStart)[11:], snap.RunLen),
 				Evidence: map[string]any{
 					"sessionKey": rec.SessionKey, "accountId": rec.AccountID,
@@ -92,7 +97,7 @@ func checkReasoningSegments(rec decision.Record, st *State) []decision.Finding {
 				Subject: fmt.Sprintf("%s@%d", key, snap.RunStart), At: rec.At,
 				Detail: fmt.Sprintf("自 %s 起连续 %d 条实质回合零思考（此前 %d 条中 %d 条思考）",
 					formatMillis(snap.RunStart)[11:], snap.RunLen,
-					snap.PriorJudged, snap.PriorThink),
+					snap.PriorJudged-snap.RunLen, snap.PriorThink),
 				Evidence: map[string]any{
 					"sessionKey": rec.SessionKey, "systemFp": rec.SystemFp,
 					"runStart": snap.RunStart, "runLen": snap.RunLen,

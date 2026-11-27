@@ -271,8 +271,8 @@ type ReasoningSnapshot struct {
 	RunStart     int64 // 当前段的起始毫秒
 	LastRunLen   int   // 上一条把段打断时该段有多长（I12c 报「恢复」用）
 	LastRunStart int64 // 上一条被打断段的起始毫秒
-	PriorThink   int   // 退化前「可判且思考过」的条数（静默不计）
-	PriorJudged  int   // 退化前的可判条数（静默不计）
+	PriorThink   int   // 历史上思考过的条数
+	PriorJudged  int   // 历史上可判的条数（含静默；静默也是可判记录）
 	IsNewRun     bool  // 本次是否新开了一段
 }
 
@@ -281,8 +281,8 @@ type reasoningRun struct {
 	runStartAt  int64
 	lastLen     int
 	lastStart   int64
-	priorThink  int
-	priorJudged int
+	priorThink  int // 历史上思考过的条数
+	priorJudged int // 历史上可判的条数（含静默）
 }
 
 // ObserveReasoning 更新该键的思考退化段状态，返回**值快照**。
@@ -319,15 +319,19 @@ func (s *State) ObserveReasoning(key string, judged, silent bool, at int64) (Rea
 				newRun = true
 			}
 			cur.runLen++
+			// 静默也是「可判」记录：必须计入 priorJudged，否则
+			// 「此前 X 条中 Y 条思考」的 X 会退化成等于分子、百分比恒 100%，
+			// 读不出「退化前它其实已经只剩 21% 在思考」这个关键事实。
+			// （2026-11-27 用真实会话数据发现：线上口径 6 条 vs 标定口径 15 条。）
+			cur.priorJudged++
 		} else {
 			// 归档刚被打断的段，供 I12c 报「恢复」时使用。
 			if cur.runLen > 0 {
 				cur.lastLen = cur.runLen
 				cur.lastStart = cur.runStartAt
 			}
-			// priorThink / priorJudged 只统计「可判且思考过」的条数：静默段不计入，
-			// 否则「此前 X 条中 Y 条思考」的百分比会被静默条稀释，读不出
-			// 「退化前它本来是在思考的」这个关键事实。
+			// priorJudged 已在上面的 silent 分支按「全部可判记录」累计；
+			// 这里只额外把「思考过的」计入 priorThink。两者之差就是静默条数。
 			cur.priorJudged++
 			cur.priorThink++
 			cur.runLen = 0
