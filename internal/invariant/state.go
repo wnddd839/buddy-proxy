@@ -36,13 +36,6 @@ type State struct {
 	mu sync.Mutex
 
 	sessionCap int
-	prompt     map[string]promptSnap
-	promptRing []string
-
-	errCap   int
-	errCount map[string]int
-	errRing  []string
-
 	// prompt 存的是「该键上一次的 (token, 消息条数) 快照」。
 	//
 	// 为什么必须带消息条数：只比 token 分不出「换了另一个历史分支」
@@ -50,7 +43,13 @@ type State struct {
 	// 分支切换必然换一整套消息（条数一起变），压缩则条数不减。
 	// 实测（2026-11-27，101 条同 fp 骤降）：88 条条数一起掉（换分支），
 	// 13 条条数持平（真骤降）。
-	//
+	prompt     map[string]promptSnap
+	promptRing []string
+
+	errCap   int
+	errCount map[string]int
+	errRing  []string
+
 	// deduct 只在「请求结束 → 记录写入」这段窗口内有值，窗口远小于
 	// 一次请求的生命周期。仍然设上限：一旦某个入口的 RequestID 与
 	// ProxyRequestID 不同源，没有上限就会变成慢性内存泄漏。
