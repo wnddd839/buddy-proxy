@@ -27,6 +27,22 @@ func (s *Server) recordChatJournal(
 	if s == nil || s.Svc == nil {
 		return
 	}
+	// reasoningRequested 是「客户端到底有没有要求思考」的唯一权威判定：
+	// provider.ReasoningRequested 会看 thinking:{type:disabled}，
+	// 而 effortTier 只看档位字符串。
+	//
+	// 为什么必须先用它过滤 tier：客户端同时发 reasoning_effort:"high" 与
+	// thinking:{"type":"disabled"} 时，只看档位会记成 tier=high 并纳入 I12 ——
+	// 但模型正确地不思考（客户端自己关的），会被误判成「退化」。
+	// （评审 Important 5）
+	reasoningRequested := provider.ReasoningRequested(provider.ChatOptions{
+		ReasoningEffort: opts.ReasoningEffort, Reasoning: opts.Reasoning, Thinking: opts.Thinking,
+	})
+	reasoningTier := ""
+	if reasoningRequested {
+		reasoningTier = effortTier(effectiveEffort(opts.ReasoningEffort, opts.Reasoning))
+	}
+
 	input := gateway.ChatRecordInput{
 		Started:        started,
 		ProxyRequestID: proxyID,
@@ -43,16 +59,16 @@ func (s *Server) recordChatJournal(
 		Stream: stream,
 		Ok:     ok,
 		// 成功但没有结果的记录来自客户端取消，仍记账，但不作为完成样本监测。
-		Canceled: ok && result == nil,
-		ErrMsg:   strings.TrimSpace(errMsg),
-		Usage:    usage,
-		ReasoningRequested: provider.ReasoningRequested(provider.ChatOptions{
-			ReasoningEffort: opts.ReasoningEffort, Reasoning: opts.Reasoning, Thinking: opts.Thinking,
-		}),
+		Canceled:           ok && result == nil,
+		ErrMsg:             strings.TrimSpace(errMsg),
+		Usage:              usage,
+		ReasoningRequested: reasoningRequested,
 		// 原值 + 实际档位并排落盘：前者回答「客户端要了什么」，
 		// 后者回答「上游真按哪档跑」——拼错的档位只有并排才看得出来。
+		//
+		// tier 只在**真的要求了思考**时才有值（见上方 reasoningRequested 的注释）。
 		ReasoningEffort: effectiveEffort(opts.ReasoningEffort, opts.Reasoning),
-		ReasoningTier:   effortTier(effectiveEffort(opts.ReasoningEffort, opts.Reasoning)),
+		ReasoningTier:   reasoningTier,
 	}
 	if result != nil {
 		input.Trace = result.Trace

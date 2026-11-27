@@ -49,6 +49,23 @@ func registerReasoning(r *Registry) {
 		SeverityInfo, checkReasoningSegments)
 }
 
+// clockText 把毫秒时间戳渲染成 HH:MM:SS，0 返回 "-"。
+//
+// 为什么不能直接 formatMillis(ms)[11:]：formatMillis(0) 返回 "-"（长度 1），
+// [11:] 会 panic。而 runOne 的 recover 会把 panic 转成 violation 级的
+// invariant-panic —— 一条缺 At 的记录就能把断言变成假告警。
+// Service.RecordChat 是公开入口，Sink.Submit 也只在 reg.Run **之后**填 At。
+func clockText(ms int64) string {
+	if ms == 0 {
+		return "-"
+	}
+	t := formatMillis(ms)
+	if len(t) < 11 {
+		return t
+	}
+	return t[11:]
+}
+
 // checkReasoningSegments 一次观测、按快照产出 I12a / I12b / I12c。
 //
 // 为什么是一条注册 + 多个 Finding（而不是三条 Check）：
@@ -82,7 +99,7 @@ func checkReasoningSegments(rec decision.Record, st *State) []decision.Finding {
 				Detail: fmt.Sprintf("此前 %d 条中 %d 条思考（%.0f%%）；自 %s 起连续 %d 条静默",
 					before, snap.PriorThink,
 					100.0*float64(snap.PriorThink)/float64(before),
-					formatMillis(snap.RunStart)[11:], snap.RunLen),
+					clockText(snap.RunStart), snap.RunLen),
 				Evidence: map[string]any{
 					"sessionKey": rec.SessionKey, "accountId": rec.AccountID,
 					"systemFp": rec.SystemFp, "runStart": snap.RunStart,
@@ -96,7 +113,7 @@ func checkReasoningSegments(rec decision.Record, st *State) []decision.Finding {
 				Invariant: "I12b", Severity: SeverityViolation,
 				Subject: fmt.Sprintf("%s@%d", key, snap.RunStart), At: rec.At,
 				Detail: fmt.Sprintf("自 %s 起连续 %d 条实质回合零思考（此前 %d 条中 %d 条思考）",
-					formatMillis(snap.RunStart)[11:], snap.RunLen,
+					clockText(snap.RunStart), snap.RunLen,
 					snap.PriorJudged-snap.RunLen, snap.PriorThink),
 				Evidence: map[string]any{
 					"sessionKey": rec.SessionKey, "systemFp": rec.SystemFp,
@@ -108,17 +125,27 @@ func checkReasoningSegments(rec decision.Record, st *State) []decision.Finding {
 	}
 
 	// 恢复：本条思考了，且刚被打断的那段够长。
-	if snap.LastRunLen >= minSilentRun && snap.PriorThink > 0 {
+	//
+	// 三个条件缺一不可（缺任何一个都会退化成刷屏或假报）：
+	//   RecoveryPending   本次是「刚打断」的那一条。不判它，恢复之后的
+	//                     每一条思考都会再报一次（4 静默 + 30 思考 ⇒ 30 条）
+	//   LastRunLen        刚断的那段够长
+	//   PriorThinkBefore  段之前确实思考过。必须用**更新前**的计数：
+	//                     PriorThink 已被本条自己 +1，用它当守卫永远为真，
+	//                     「开局静默 4 条后首次思考」也会误报「恢复」
+	if snap.RecoveryPending && snap.LastRunLen >= minSilentRun && snap.PriorThinkBefore > 0 {
 		out = append(out, decision.Finding{
 			Invariant: "I12c", Severity: SeverityInfo,
 			Subject: fmt.Sprintf("%s@%d", key, snap.LastRunStart), At: rec.At,
 			Detail: fmt.Sprintf("静默段结束：%s 起连续 %d 条后恢复思考（本次 reasoning=%d）",
-				formatMillis(snap.LastRunStart)[11:], snap.LastRunLen, rec.ReasoningTokens),
+				clockText(snap.LastRunStart), snap.LastRunLen, rec.ReasoningTokens),
 			Evidence: map[string]any{
 				"sessionKey": rec.SessionKey, "systemFp": rec.SystemFp,
 				"lastRunLen": snap.LastRunLen, "requestId": rec.RequestID,
 			},
 		})
+		// 报了才消费：一次退化节点一条 finding。
+		st.ConsumeRecovery(key)
 	}
 	return out
 }

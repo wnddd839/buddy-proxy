@@ -271,18 +271,31 @@ type ReasoningSnapshot struct {
 	RunStart     int64 // 当前段的起始毫秒
 	LastRunLen   int   // 上一条把段打断时该段有多长（I12c 报「恢复」用）
 	LastRunStart int64 // 上一条被打断段的起始毫秒
-	PriorThink   int   // 历史上思考过的条数
+	PriorThink   int   // 历史上思考过的条数（**含本条**）
 	PriorJudged  int   // 历史上可判的条数（含静默；静默也是可判记录）
 	IsNewRun     bool  // 本次是否新开了一段
+
+	// PriorThinkBefore 是**本条之前**思考过的条数。
+	//
+	// 为什么单列：PriorThink 取的是更新后的值，本条自己就把计数 +1，
+	// 于是任何「此前思考过」的守卫都会永远为真（评审 Important：
+	// 开局静默 4 条后首次思考也会误报「恢复」）。
+	PriorThinkBefore int
+	// RecoveryPending 表示「刚打断一段够长的静默」这件事**还没被报过**。
+	//
+	// 不消费掉的话，恢复之后的每一条思考都会再报一次 I12c
+	// （评审 Critical：4 静默 + 30 思考 ⇒ 30 条 I12c）。
+	RecoveryPending bool
 }
 
 type reasoningRun struct {
-	runLen      int
-	runStartAt  int64
-	lastLen     int
-	lastStart   int64
-	priorThink  int // 历史上思考过的条数
-	priorJudged int // 历史上可判的条数（含静默）
+	runLen       int
+	runStartAt   int64
+	lastLen      int
+	lastStart    int64
+	priorThink   int  // 历史上思考过的条数
+	priorJudged  int  // 历史上可判的条数（含静默）
+	recoveryPend bool // 刚打断的段还没被报过
 }
 
 // ObserveReasoning 更新该键的思考退化段状态，返回**值快照**。
@@ -312,6 +325,9 @@ func (s *State) ObserveReasoning(key string, judged, silent bool, at int64) (Rea
 		cur = &reasoningRun{runStartAt: at}
 		s.reasoning[key] = cur
 	}
+	// 先捕获「本条之前」的计数：本条若思考会把 priorThink +1，
+	// 取更新后的值当守卫会让守卫永远为真。
+	priorThinkBefore := cur.priorThink
 	if judged {
 		if silent {
 			if cur.runLen == 0 {
@@ -325,10 +341,11 @@ func (s *State) ObserveReasoning(key string, judged, silent bool, at int64) (Rea
 			// （2026-11-27 用真实会话数据发现：线上口径 6 条 vs 标定口径 15 条。）
 			cur.priorJudged++
 		} else {
-			// 归档刚被打断的段，供 I12c 报「恢复」时使用。
+			// 归档刚被打断的段，供 I12c 报「恢复」时使用，并标记待报。
 			if cur.runLen > 0 {
 				cur.lastLen = cur.runLen
 				cur.lastStart = cur.runStartAt
+				cur.recoveryPend = true
 			}
 			// priorJudged 已在上面的 silent 分支按「全部可判记录」累计；
 			// 这里只额外把「思考过的」计入 priorThink。两者之差就是静默条数。
@@ -341,8 +358,25 @@ func (s *State) ObserveReasoning(key string, judged, silent bool, at int64) (Rea
 		RunLen: cur.runLen, RunStart: cur.runStartAt,
 		LastRunLen: cur.lastLen, LastRunStart: cur.lastStart,
 		PriorThink: cur.priorThink, PriorJudged: cur.priorJudged,
-		IsNewRun: newRun,
+		PriorThinkBefore: priorThinkBefore,
+		RecoveryPending:  cur.recoveryPend,
+		IsNewRun:         newRun,
 	}, true
+}
+
+// ConsumeRecovery 把「刚打断的段」标记为已报，避免恢复之后每条思考都重报。
+//
+// 只在 I12c 真的产出了 finding 之后调用：这样「报了才消费」，
+// 语义是「一次退化节点一条 finding」。
+func (s *State) ConsumeRecovery(key string) {
+	if s == nil || key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cur, ok := s.reasoning[key]; ok {
+		cur.recoveryPend = false
+	}
 }
 
 // ReasoningObserveCount 返回当前观测键数（测试与面板用）。
