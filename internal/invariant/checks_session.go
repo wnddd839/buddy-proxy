@@ -52,13 +52,27 @@ func checkSessionContextDrop(rec decision.Record, st *State) []decision.Finding 
 	if key == "" {
 		return nil
 	}
-	prev, ok := st.PrevPrompt(key)
-	st.SetPrompt(key, rec.PromptTokens)
-	if !ok || prev < minContextForDrop {
+	prevSnap, ok := st.PrevPrompt(key)
+	st.SetPromptWithIO(key, rec.PromptTokens, rec.InMessages)
+	if !ok || prevSnap.Tokens < minContextForDrop {
 		return nil
 	}
+	prev := prevSnap.Tokens
 	// 掉不到 3/4 不算骤降。
 	if rec.PromptTokens >= prev*3/4 {
+		return nil
+	}
+	// 第二道闸门：消息条数也一起掉 ⇒ 换了另一个历史分支，不是骤降。
+	//
+	// 实测（2026-11-27，101 条同 systemFp 骤降对）：
+	//   88 条 InMessages 一起掉（37→25 / 42→27 / 44→29），形态是 prompt
+	//     90-100K 与 65-70K 在一秒内交替 —— 同一 systemFp 下的两个并行
+	//     历史分支。systemFp 分不出，消息条数分得出。
+	//   13 条 InMessages 持平或增长（48→60 / 51→51）—— 真骤降：同一分支
+	//     历史条数不减，token 却掉一半（客户端压成摘要等）。
+	//
+	// prevSnap.InMessages == 0 表示未观测，退化成只比 token。
+	if prevSnap.InMessages > 0 && rec.InMessages > 0 && rec.InMessages < prevSnap.InMessages {
 		return nil
 	}
 	return []decision.Finding{{

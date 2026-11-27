@@ -36,13 +36,21 @@ type State struct {
 	mu sync.Mutex
 
 	sessionCap int
-	prompt     map[string]int64
+	prompt     map[string]promptSnap
 	promptRing []string
 
 	errCap   int
 	errCount map[string]int
 	errRing  []string
 
+	// prompt 存的是「该键上一次的 (token, 消息条数) 快照」。
+	//
+	// 为什么必须带消息条数：只比 token 分不出「换了另一个历史分支」
+	// 与「同一分支内容被压缩」—— 两者都表现为 token 骤降。
+	// 分支切换必然换一整套消息（条数一起变），压缩则条数不减。
+	// 实测（2026-11-27，101 条同 fp 骤降）：88 条条数一起掉（换分支），
+	// 13 条条数持平（真骤降）。
+	//
 	// deduct 只在「请求结束 → 记录写入」这段窗口内有值，窗口远小于
 	// 一次请求的生命周期。仍然设上限：一旦某个入口的 RequestID 与
 	// ProxyRequestID 不同源，没有上限就会变成慢性内存泄漏。
@@ -86,7 +94,7 @@ func NewState(sessionCap, errCap int) *State {
 		errCap:      errCap,
 		deductCap:   defaultDeductCap,
 		tokCap:      defaultTokCap,
-		prompt:      make(map[string]int64),
+		prompt:      make(map[string]promptSnap),
 		errCount:    make(map[string]int),
 		deduct:      make(map[string]deductRec),
 		tokBaseline: make(map[string]*tokBaseline),
@@ -105,10 +113,16 @@ func (s *State) SetDeductCap(n int) {
 	s.mu.Unlock()
 }
 
-// PrevPrompt 返回该会话上一次的 promptTokens。
-func (s *State) PrevPrompt(key string) (int64, bool) {
+// promptSnap 是某键上一次的上下文快照。
+type promptSnap struct {
+	Tokens     int64
+	InMessages int
+}
+
+// PrevPrompt 返回该会话上一次的上下文快照。
+func (s *State) PrevPrompt(key string) (promptSnap, bool) {
 	if s == nil || key == "" {
-		return 0, false
+		return promptSnap{}, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -116,8 +130,16 @@ func (s *State) PrevPrompt(key string) (int64, bool) {
 	return v, ok
 }
 
-// SetPrompt 记录该会话本次的 promptTokens。
+// SetPrompt 只记 token（历史调用点与既有测试用）。
 func (s *State) SetPrompt(key string, tokens int64) {
+	s.SetPromptWithIO(key, tokens, 0)
+}
+
+// SetPromptWithIO 记录该会话本次的 (promptTokens, 消息条数)。
+//
+// inMessages 只用于「换分支 vs 真骤降」的判别；传 0 表示未观测，
+// 此时 I3b 会退化成「只比 token」（与加闸门前等价，不误报）。
+func (s *State) SetPromptWithIO(key string, tokens int64, inMessages int) {
 	if s == nil || key == "" {
 		return
 	}
@@ -131,7 +153,7 @@ func (s *State) SetPrompt(key string, tokens int64) {
 		}
 		s.promptRing = append(s.promptRing, key)
 	}
-	s.prompt[key] = tokens
+	s.prompt[key] = promptSnap{Tokens: tokens, InMessages: inMessages}
 }
 
 // PrimeFromRecord 把一条决策记录里「对后续断言有影响的状态」写入 State。
