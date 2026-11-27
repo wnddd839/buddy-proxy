@@ -50,6 +50,14 @@ type State struct {
 	deduct     map[string]deductRec
 	deductRing []string
 
+	// reasoning 是「键 → 思考退化段状态」，供 I12 判「声明要思考却持续不思考」。
+	//
+	// 为什么必须按段（而不是单条）：单条静默在正常账号也占 1.5–10%
+	// （实测 256 条可判样本），逐条报等于天天误报；而「连续成段」
+	// 才是用户真正感知到的「逐渐不思考」。
+	reasoning     map[string]*reasoningRun
+	reasoningRing []string
+
 	// sessionTok 是「会话|模型|分桶 → 上一次的比例」，供 I10 做会话内前后对比。
 	//
 	// 与 tokBaseline 是**两套状态**，不能复用：
@@ -83,6 +91,7 @@ func NewState(sessionCap, errCap int) *State {
 		deduct:      make(map[string]deductRec),
 		tokBaseline: make(map[string]*tokBaseline),
 		sessionTok:  make(map[string]float64),
+		reasoning:   make(map[string]*reasoningRun),
 	}
 }
 
@@ -230,6 +239,95 @@ func SessionKey(sessionKey, accountID, model string) string {
 		return ""
 	}
 	return sessionKey + "|" + accountID + "|" + model
+}
+
+// ReasoningSnapshot 是段状态的**值快照**。
+//
+// 只返回值、不返回指针：断言在请求路径上与多个 goroutine 并发执行，
+// 交出内部指针就是数据竞争（评审 C1 已因此修过一次）。
+type ReasoningSnapshot struct {
+	RunLen       int   // 当前静默段的长度（0 = 已恢复）
+	RunStart     int64 // 当前段的起始毫秒
+	LastRunLen   int   // 上一条把段打断时该段有多长（I12c 报「恢复」用）
+	LastRunStart int64 // 上一条被打断段的起始毫秒
+	PriorThink   int   // 退化前「可判且思考过」的条数（静默不计）
+	PriorJudged  int   // 退化前的可判条数（静默不计）
+	IsNewRun     bool  // 本次是否新开了一段
+}
+
+type reasoningRun struct {
+	runLen      int
+	runStartAt  int64
+	lastLen     int
+	lastStart   int64
+	priorThink  int
+	priorJudged int
+}
+
+// ObserveReasoning 更新该键的思考退化段状态，返回**值快照**。
+//
+// judged=false 表示这条请求不可判（tiny / 取消 / 未声明思考），此时既不计数
+// 也不断段 —— 坏会话里大量 tiny 回复会把长段切成碎片，段长永远到不了阈值。
+func (s *State) ObserveReasoning(key string, judged, silent bool, at int64) (ReasoningSnapshot, bool) {
+	if s == nil || key == "" {
+		return ReasoningSnapshot{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reasoning == nil {
+		s.reasoning = make(map[string]*reasoningRun)
+	}
+	cur, had := s.reasoning[key]
+	if !had && s.sessionCap > 0 {
+		for len(s.reasoningRing) >= s.sessionCap {
+			oldest := s.reasoningRing[0]
+			s.reasoningRing = s.reasoningRing[1:]
+			delete(s.reasoning, oldest)
+		}
+	}
+	newRun := !had
+	if newRun {
+		s.reasoningRing = append(s.reasoningRing, key)
+		cur = &reasoningRun{runStartAt: at}
+		s.reasoning[key] = cur
+	}
+	if judged {
+		if silent {
+			if cur.runLen == 0 {
+				cur.runStartAt = at
+				newRun = true
+			}
+			cur.runLen++
+		} else {
+			// 归档刚被打断的段，供 I12c 报「恢复」时使用。
+			if cur.runLen > 0 {
+				cur.lastLen = cur.runLen
+				cur.lastStart = cur.runStartAt
+			}
+			// priorThink / priorJudged 只统计「可判且思考过」的条数：静默段不计入，
+			// 否则「此前 X 条中 Y 条思考」的百分比会被静默条稀释，读不出
+			// 「退化前它本来是在思考的」这个关键事实。
+			cur.priorJudged++
+			cur.priorThink++
+			cur.runLen = 0
+		}
+	}
+	return ReasoningSnapshot{
+		RunLen: cur.runLen, RunStart: cur.runStartAt,
+		LastRunLen: cur.lastLen, LastRunStart: cur.lastStart,
+		PriorThink: cur.priorThink, PriorJudged: cur.priorJudged,
+		IsNewRun: newRun,
+	}, true
+}
+
+// ReasoningObserveCount 返回当前观测键数（测试与面板用）。
+func (s *State) ReasoningObserveCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.reasoning)
 }
 
 // ObserveSessionRatio 记录该会话本次的比例，返回上次的值与是否存在。
