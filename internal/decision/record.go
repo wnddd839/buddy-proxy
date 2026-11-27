@@ -16,6 +16,21 @@ const (
 	UsageUpstream = "upstream"
 )
 
+// ReasoningTier 的取值：**落盘的线值**，与上游真实档位一一对应。
+//
+// 为什么放在 decision 而不是 provider：这些值是决策日志里的字符串，
+// 属于本包的领域。I12 只吃 decision.Record、不能 import provider，
+// 若在这里不留常量，判据只能硬编码字面串 —— provider 侧改名就会
+// 让 I12 静默失明（永远 0 命中，面板却显示一切正常）。
+//
+// 与 provider.Effort* 的一致性由 internal/gateway 的跨包测试钉住
+// （TestReasoningTierConstantsMatchProvider）：gateway 同时 import 两侧。
+const (
+	ReasoningTierLow  = "low"
+	ReasoningTierHigh = "high"
+	ReasoningTierMax  = "max"
+)
+
 // 额度变更的操作类型。
 const (
 	OpDeduct  = "deduct"

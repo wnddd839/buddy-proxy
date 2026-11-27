@@ -159,7 +159,7 @@ func reasoningJudged(rec decision.Record) (judged, silent bool) {
 		return false, false
 	}
 	switch rec.ReasoningTier {
-	case "low", "high", "max":
+	case decision.ReasoningTierLow, decision.ReasoningTierHigh, decision.ReasoningTierMax:
 	default:
 		return false, false // 未声明思考 / 部署前的老记录
 	}
