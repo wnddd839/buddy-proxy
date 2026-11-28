@@ -22,9 +22,19 @@ type Event struct {
 	// SessionSource 是会话键来源（header / cachekey / content / none），
 	// 用来判断客户端有没有发会话头（影响账号亲和与上游 prompt cache）。
 	SessionSource string `json:"sessionSource,omitempty"`
-	// Stripped 表示 strip 档删掉了身份句；StrippedBytes 是删除字节数。
-	Stripped      bool `json:"stripped,omitempty"`
-	StrippedBytes int  `json:"strippedBytes,omitempty"`
+	// Stripped 表示本次请求删过已知指纹；StrippedBytes 是总字节数。
+	//
+	// StripScope 说明删在哪一侧：
+	//   system    = system 被削（客户端看到的人设与模型看到的不一致）
+	//   assistant = 只动了历史输出，system 仍 100% 原样
+	//   both      = 两侧都删过
+	// 分开记的原因：只看 stripped=true 无法回答「我的 system 有没有被改」，
+	// 而这是排查「注入是否原样」时最关键的一条。
+	Stripped            bool   `json:"stripped,omitempty"`
+	StrippedBytes       int    `json:"strippedBytes,omitempty"`
+	StripScope          string `json:"stripScope,omitempty"`
+	StripSystemBytes    int    `json:"stripSystemBytes,omitempty"`
+	StripAssistantBytes int    `json:"stripAssistantBytes,omitempty"`
 
 	Status     int    `json:"status"`
 	ErrorCode  string `json:"errorCode,omitempty"`

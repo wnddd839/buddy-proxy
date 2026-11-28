@@ -287,10 +287,18 @@ export interface ModelRouteRule {
   note: string;
 }
 
+export interface TitleRoute {
+  enabled?: boolean;
+  domestic?: string;
+  global?: string;
+}
+
 export interface ModelRoutesPayload {
   ok?: boolean;
   rules?: ModelRouteRule[];
   catalog?: { domestic?: string[]; global?: string[] };
+  titleRoute?: TitleRoute;
+  freeModels?: Record<string, string[]>;
 }
 
 export interface SystemPromptEvent {
@@ -318,6 +326,8 @@ export interface SystemPromptStats {
   total?: number;
   keep?: number;
   fold?: number;
+  /** 首试前剥离（或剥离后直传）发生的事件数。后端一直返回，旧面板有展示。 */
+  stripped?: number;
   degraded?: number;
   blocked?: number;
   failed?: number;
@@ -326,7 +336,15 @@ export interface SystemPromptStats {
 
 export interface SystemPromptOverview {
   ok?: boolean;
-  mode: SystemPromptMode;
+  /** 未知（尚未加载 / 加载失败）时为 null，不要默认成 auto。 */
+  mode?: SystemPromptMode | null;
+  /**
+   * 实时生效的剥离开关。面板用它给「system 预览」的勾选框做默认显示，
+   * 试算请求不指定时后端也会按这三个值执行。
+   */
+  strip?: boolean;
+  stripAssistant?: boolean;
+  echoUser?: boolean;
   stats: SystemPromptStats;
   statsScope?: string;
   recent: SystemPromptEvent[];
@@ -341,6 +359,51 @@ export interface SystemPromptHistoryResponse {
   events: SystemPromptEvent[];
 }
 
+/** 一次剥离的实测结果（对应后端 provider.StripReport）。 */
+export interface SystemDryRunStripReport {
+  Stripped: boolean;
+  Bytes: number;
+  SystemBytes: number;
+  AssistantBytes: number;
+}
+
+/**
+ * POST /direct-admin/api/system-dryrun 的 200 响应。
+ * 失败时后端回 {"ok":false,"error":"..."}（400），由 apiRequest 转成 Error 抛出。
+ */
+export interface SystemDryRunResponse {
+  ok?: boolean;
+  /** 本次试算实际生效的站点（可能来自跟随当前，也可能是显式指定）。 */
+  site?: 'domestic' | 'global' | string;
+  mode?: string;
+  modeLabel?: string;
+  keepSystem?: boolean;
+  stripEnabled?: boolean;
+  echoEnabled?: boolean;
+  outbound?: Array<Record<string, unknown>>;
+  stripReport?: SystemDryRunStripReport | null;
+  inMessages?: number;
+  outMessages?: number;
+  inSystemLen?: number;
+  outSystemLen?: number;
+  notes?: string[] | null;
+  warnings?: string[] | null;
+}
+
+/** 试算请求体：mode 为空表示跟随当前生效档位；strip / echo 不传即跟随配置。 */
+export interface SystemDryRunRequest {
+  system?: string;
+  messages?: Array<{ role: string; content: string }>;
+  mode?: string;
+  strip?: boolean;
+  echo?: boolean;
+  /**
+   * 试算站点。**不传** = 跟随当前号池站点（服务端读实时配置）；
+   * 传值只接受 'domestic' / 'global'，其它值服务端回 400。
+   */
+  site?: 'domestic' | 'global' | string;
+}
+
 export interface UsageEntry {
   at: number;
   proxyRequestId?: string;
@@ -348,19 +411,33 @@ export interface UsageEntry {
   sessionKey?: string;
   sessionLabel?: string;
   model?: string;
+  /** 实际发给上游的模型名（被模型路由 / 标题改写改过时才有值） */
+  routedModel?: string;
+  /** 上游 SSE 帧里回显的 model 字段（空 = 未观测或旧数据） */
+  upstreamModel?: string;
+  /** 上游回显与请求不一致且不是 auto 一族（后端 internal/gateway/modelMismatch 判定） */
+  modelMismatch?: boolean;
   ok: boolean;
   error?: string;
   accountId?: string;
   accountLabel?: string;
   promptTokens?: number;
   completionTokens?: number;
-  totalTokens?: number;
   cachedTokens?: number;
   credit?: number | null;
   durationMs?: number;
   systemForm?: string;
   systemFp?: string;
   systemDegraded?: boolean;
+  /** 分词器指纹：入站内容的字符成分（未观测时为 0 / 缺省） */
+  tokChars?: number;
+  tokCJK?: number;
+  tokDigits?: number;
+  tokASCII?: number;
+  /** 分桶：cjk / digits / ascii / tiny / none */
+  tokBucket?: string;
+  /** prompt_tokens ÷ 入站字符数（保留 4 位小数；0 = 未观测） */
+  tokRatio?: number;
 }
 
 export interface UsageChartPoint {

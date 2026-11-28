@@ -10,7 +10,7 @@ import (
 // meaningful change to the embedded console bundle so operators can tell
 // the rebuilt binary carries the new UI (independent of the release tag
 // injected via ldflags).
-const UIRevision = "2026.11.20-atelier-v3"
+const UIRevision = "2026.11.28-react-port"
 
 //go:embed dist/index.html
 var embeddedConsoleHTML string

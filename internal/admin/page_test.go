@@ -85,6 +85,11 @@ func TestAdminCoreEndpointsWired(t *testing.T) {
 		"/direct-admin/api/quota-floor",
 		"/direct-admin/api/system-prompt",
 		"/direct-admin/api/system-prompt/events",
+		"/direct-admin/api/system-dryrun",
+		"/direct-admin/api/invariants",
+		"/direct-admin/api/tok-baselines",
+		"/direct-admin/api/tok-fingerprint",
+		"/direct-admin/api/tok-identity-check",
 		"/direct-admin/api/codebuddy/proxies",
 		"/direct-admin/api/codebuddy/accounts/import",
 	} {

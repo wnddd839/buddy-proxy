@@ -12,6 +12,7 @@ import { useToast } from '@/hooks/useToast';
 import { useConfirm } from '@/hooks/useConfirm';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, PageHeader } from '@/components/ui/Card';
+import { ScopeNote } from '@/components/ui/ScopeNote';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 
@@ -219,6 +220,11 @@ export function ClientPage({
           </>
         }
       />
+
+      <ScopeNote>
+        口径：Base / Chat / Responses 是并列的三个端点，不是「Base 加路径」的包含关系，
+        配置客户端时要按协议类型选对应的那一个。
+            </ScopeNote>
 
       <div id="client-config" className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* 左 5 栏：端点与绑定 Key 管理 */}

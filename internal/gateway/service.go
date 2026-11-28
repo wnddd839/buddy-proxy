@@ -21,6 +21,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/concurrency"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/egress"
+	"github.com/wnddd839/codebuddy-proxy/internal/invariant"
 	"github.com/wnddd839/codebuddy-proxy/internal/modelroute"
 	"github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
@@ -132,7 +133,11 @@ type Service struct {
 	modelsCacheMu sync.Mutex
 	modelsCache   map[string]modelsCacheEntry
 	modelsFlight  modelsFlight
-	Pins          *sessionpin.Table
+	// efforts 是「站点|模型 → 档位画像」的只读快照，由编目刷新时写入。
+	// 请求路径只读它，绝不在请求上触发编目拉取（那会把上游调用塞进热路径）。
+	effortsMu sync.RWMutex
+	efforts   map[string]provider.EffortProfile
+	Pins      *sessionpin.Table
 	// Conversations 让钉住的会话在账号不变时复用上游 X-Conversation-ID。
 	Conversations *sessionpin.ConversationTable
 	Journal       *usagejournal.Journal
@@ -150,6 +155,26 @@ type Service struct {
 
 	// systemPrunedAt 是上次清理按天事件文件的时间（毫秒），惰性清理用。
 	systemPrunedAt atomic.Int64
+
+	// Invariants 是静默失效断言的在线执行器；nil 表示未启用（全部跳过）。
+	// 用原子指针而不是普通字段：SetInvariants 可能在请求进行中被调用。
+	invariants atomic.Pointer[invariant.Sink]
+}
+
+// SetInvariants 注入在线执行器（启动装配时调用一次）。
+func (s *Service) SetInvariants(sink *invariant.Sink) {
+	if s == nil {
+		return
+	}
+	s.invariants.Store(sink)
+}
+
+// InvariantSink 返回当前的执行器（未启用时为 nil）。
+func (s *Service) InvariantSink() *invariant.Sink {
+	if s == nil {
+		return nil
+	}
+	return s.invariants.Load()
 }
 
 type modelsCacheEntry struct {
@@ -203,8 +228,11 @@ func New(cfg config.Config, logger *slog.Logger) *Service {
 	}
 	// 并发观测始终启用：只做计数，成本可忽略。
 	svc.modelsCache = map[string]modelsCacheEntry{}
+	svc.efforts = map[string]provider.EffortProfile{}
 	svc.probeCache = map[string]provider.Reachability{}
 	svc.storeConfig(cfg)
+	// 静默失效观测：失败只 WARN，绝不拦住服务启动。
+	svc.startInvariants(cfg.AccountsPath)
 	return svc
 }
 
@@ -213,6 +241,12 @@ func (s *Service) Close() error {
 		return nil
 	}
 	var err error
+	// 先停观测写协程，再关 store：反过来的话，Sink 可能在目录已删后
+	// 还在往里写（测试里表现为 TempDir cleanup 报 directory not empty，
+	// 生产里表现为进程退出瞬间丢最后几条 finding）。
+	if sink := s.InvariantSink(); sink != nil {
+		sink.Stop()
+	}
 	if s.Journal != nil {
 		err = s.Journal.Close()
 	}
@@ -273,6 +307,11 @@ type BehaviorSwitches struct {
 	CheckinAllowDirectFallback bool
 	// SystemPromptMode 是 system 提示词策略：auto / keep / fold。
 	// 传空值时保留当前值（管理台只改别的开关时不会意外重置）。
+	//
+	// ⚠️ 剥离开关不在这里：本结构的字段是值语义，每次调用都会把没传的字段
+	// 写成零值。剥离开关是「跳过式」（零值=启用），放进来会导致「保存签到
+	// 设置」这类无关操作把用户关掉的剥离又悄悄打开。它们走独立方法
+	// SetSystemStripSwitches（指针语义，nil=本次不涉及）。
 	SystemPromptMode  string
 	QuotaFloorCredits float64
 	// 签到失败重试：间隔 0 = 不重试。
@@ -300,10 +339,66 @@ func (s *Service) SetBehaviorSwitches(next BehaviorSwitches) config.Config {
 }
 
 // SetSystemPromptMode 仅原子更新运行中的 system 提示词策略，不覆写并发修改的其他行为开关。
+// SetReasoningReplayDisabled 切换「历史 thinking 回传」。
+func (s *Service) SetReasoningReplayDisabled(disabled bool) config.Config {
+	return s.updateConfig(func(cfg *config.Config) {
+		cfg.ReasoningReplayDisabled = disabled
+	})
+}
+
 func (s *Service) SetSystemPromptMode(mode string) config.Config {
 	normalized := config.NormalizeSystemPromptMode(mode)
 	return s.updateConfig(func(c *config.Config) {
 		c.SystemPromptMode = normalized
+	})
+}
+
+// SetSystemStripSwitches 只改剥离开关，不动其它行为开关（尤其是积分下限）。
+//
+// 与 SetBehaviorSwitches 分开的原因：后者的字段是值语义，没传的字段会被
+// 写成零值 —— 用它单独改开关会把积分下限顺手清零。这里用指针，
+// nil = 本次不涉及。
+// SetSystemEchoUser 热更新「把 system 复制一份进 user」的临时实验开关。
+//
+// 与 SetSystemStripSwitches 分开的原因：这是独立的实验开关，不该和
+// 剥离策略混在一次调用里 —— 改剥离时不能顺手把实验开关也覆写掉。
+// TokFingerprintEchoed 报告 system 是否被复制进 user（影响比例判据）。
+func (s *Service) TokFingerprintEchoed() bool {
+	if s == nil {
+		return false
+	}
+	return s.Config().SystemEchoUser
+}
+
+func (s *Service) SetSystemEchoUser(on bool) config.Config {
+	return s.updateConfig(func(c *config.Config) {
+		c.SystemEchoUser = on
+	})
+}
+
+// SetTokFingerprintEnabled 热切换分词器指纹检测（默认开）。
+func (s *Service) SetTokFingerprintEnabled(on bool) config.Config {
+	return s.updateConfig(func(c *config.Config) {
+		c.TokFingerprintDisabled = !on
+	})
+}
+
+// TokFingerprintEnabled 报告当前是否启用。
+func (s *Service) TokFingerprintEnabled() bool {
+	if s == nil {
+		return false
+	}
+	return !s.Config().TokFingerprintDisabled
+}
+
+func (s *Service) SetSystemStripSwitches(stripOff, stripAssistantOff *bool) config.Config {
+	return s.updateConfig(func(c *config.Config) {
+		if stripOff != nil {
+			c.SystemStripDisabled = *stripOff
+		}
+		if stripAssistantOff != nil {
+			c.SystemStripAssistantDisabled = *stripAssistantOff
+		}
 	})
 }
 
@@ -380,7 +475,11 @@ type CompleteOptions struct {
 	// 避免 429/流重置/OAuth 刷新等无关失败提前耗尽）。
 	EmptyTurnReplays int
 	// RoutedFrom 记录路由改写前的原始模型名（未命中路由时为空）。
-	RoutedFrom     string
+	RoutedFrom string
+	// TitleRewrite 标记本次是「会话标题生成」被改写到轻量模型。
+	// 与 RoutedFrom 分开的原因：普通模型路由不算标题请求，
+	// 会话级统计（I3b）只豁免后者。
+	TitleRewrite   bool
 	routeFallbacks []modelroute.Rule // Remaining rules from the original source/model snapshot.
 	// RequestID 是本次请求的代理 ID，用来把 system 事件与用量明细对上。
 	RequestID string
@@ -393,6 +492,11 @@ type CompleteOptions struct {
 	// systemMode 是请求首次进入 CompleteFromPool 时快照的 system 模式，
 	// 沿递归重试原样传递（opts 按值传递），调用方不要设置。
 	systemMode string
+	// stripSnapshot 是入口快照的剥离开关（总开关 + assistant 子开关）。
+	// 与 systemMode 同理：管理员拨开关不该改变在途请求已发出的形态，
+	// 否则同一次请求的两条事件可能一个剥过、一个没剥。
+	stripTotal, stripAsst bool
+	stripSnapshotted      bool
 	// FoldedRetry 表示已经因 11128 降级过一次；置位后强制 fold，防止无限重试。
 	FoldedRetry      bool
 	sameAccountRetry bool
@@ -405,12 +509,15 @@ type CompleteOptions struct {
 
 // ImageOptions is one pooled image generation or edit.
 type ImageOptions struct {
-	Site         string
-	Model        string
-	Prompt       string
-	ImageURLs    []string
-	ImageData    []string
-	AccountID    string
+	Site      string
+	Model     string
+	Prompt    string
+	ImageURLs []string
+	ImageData []string
+	AccountID string
+	// RequestID 是本次代理请求的 ID，透传给 Pool.Select 供决策日志配对。
+	// 没有它的话，出图请求的 selection 记录 requestId 为空，无法与 request 配对。
+	RequestID    string
 	FixedAccount bool
 	ExcludeIDs   []string
 	RefreshRetry bool
@@ -467,24 +574,117 @@ func (s *Service) chatOptionsFromAccount(account accounts.Account, opts Complete
 		OnEvent:            opts.OnEvent,
 		DeliverToolDeltas:  opts.DeliverToolDeltas,
 		// system 策略：fold 永远折叠；auto/keep/strip 原样透传；已降级过的重试强制折叠。
-		KeepSystem: s.keepSystemFor(opts),
+		KeepSystem:       s.keepSystemFor(opts),
+		EchoSystemToUser: s.Config().SystemEchoUser,
+		// 进/出统计：只有调用方要了 SystemOutcome 才统计（生产入口都会要，
+		// 单测可省）。同一请求的多次尝试共用同一个指针，重试覆盖而非累加。
+		IOReport: systemIOFor(opts),
+		// 历史 thinking 回传：默认开（DeepSeek 规范要求带 tools 时回传）。
+		ReasoningReplay: !s.Config().ReasoningReplayDisabled,
+		// 该模型的档位画像（快照里没有时 Known=false，退回全局三档）。
+		EffortProfile: s.effortProfileFor(site, opts.Model),
 	}
 }
 
-// applyStripConfig 给上游请求挂上「身份句剥离」配置。
+// ensureIO 确保本次请求的 IO 统计指针已分配（必要时创建）。
 //
-// 只有 strip 档才启用：auto/keep/fold 的 system 形态必须与改动前完全一致。
+// 语义从 systemIOFor 的「取一个指针」变成「确保它存在」：这条链上
+// 唯一的分配点，删掉就会让入站统计永远为空（I3/I4/I9/I10/I11 全失明，
+// 2026-11-24 踩过）。测试见 TestCompleteFromPoolFillsInboundIO。
+func ensureIO(opts CompleteOptions) {
+	systemIOFor(opts)
+}
+
+// systemIOFor 返回本次请求共享的 IO 统计指针（调用方不需要时返回 nil）。
+//
+// 惰性分配挂在 SystemOutcome 上：CompleteFromPool 每轮重试都调用
+// chatOptionsFor，但 SystemOutcome 是跨轮共享的同一个指针，
+// 所以只有第一次会分配。
+func systemIOFor(opts CompleteOptions) *provider.MessagesIO {
+	if opts.SystemOutcome == nil {
+		return nil
+	}
+	if opts.SystemOutcome.IO == nil {
+		opts.SystemOutcome.IO = &provider.MessagesIO{}
+	}
+	return opts.SystemOutcome.IO
+}
+
+// effortProfileFor 从只读快照里取该模型的思考档位画像。
+//
+// 这是一次 map 查找，不发任何请求：请求路径绝不能因为「缓存过期」而
+// 阻塞在编目拉取上。取不到时返回零值（Known=false），调用方退回全局三档。
+func (s *Service) effortProfileFor(site, model string) provider.EffortProfile {
+	if model == "" {
+		return provider.EffortProfile{}
+	}
+	key := config.NormalizeSite(site) + "|" + model
+	s.effortsMu.RLock()
+	defer s.effortsMu.RUnlock()
+	return s.efforts[key]
+}
+
+// noteModelEfforts 把一次成功编目的档位画像写进快照。
+//
+// 同时写 ModelID / ID / UpstreamID 三个键：请求里的模型名可能来自其中任意一个。
+func (s *Service) noteModelEfforts(site string, listed models.ListResult) {
+	if len(listed.Models) == 0 {
+		return
+	}
+	normalizedSite := config.NormalizeSite(site)
+	next := make(map[string]provider.EffortProfile, len(listed.Models)*3)
+	for _, m := range listed.Models {
+		profile := provider.ProfileFromReasoning(m.Reasoning)
+		if !profile.Known {
+			continue
+		}
+		for _, name := range []string{m.ModelID, m.ID, m.UpstreamID} {
+			if name == "" {
+				continue
+			}
+			next[normalizedSite+"|"+name] = profile
+		}
+	}
+	if len(next) == 0 {
+		return
+	}
+	s.effortsMu.Lock()
+	defer s.effortsMu.Unlock()
+	if s.efforts == nil {
+		s.efforts = map[string]provider.EffortProfile{}
+	}
+	for k, v := range next {
+		s.efforts[k] = v
+	}
+}
+
+// applyStripConfig 给上游请求挂上「指纹剥离」配置。
+//
+// auto 与 strip 档都会调到这里，是否真的剥离由**两个运行时开关**决定：
+//   - cfg.SystemStripEnabled：总开关。关掉后退回 v0.7.6 行为 ——
+//     先原样直传，被 11128 拒收才折叠重试（每个请求多一次 400）。
+//   - cfg.SystemStripAssistant：只控制 assistant 正文这一路。
+//     system 仍照剥；关掉它可以保留完整历史，代价是被污染的会话会永久 502。
+//   - keep / fold：永远不启用，保持与改动前完全一致的形态。
+//
 // 剥离规则按**账号所在站点**取（与 chatOptionsFromAccount 的 site 同源），
 // 因为黑名单本身按站点分流（DeepSeek 身份句只在 domestic 拦）。
 //
 // 剥离在 provider 层执行，晚于 sessionpin.Key —— 会话键始终用原始 system 计算。
-func applyStripConfig(chatOpts *provider.ChatOptions, mode, site string, report *provider.StripReport) {
-	if mode != config.SystemPromptModeStrip {
+func applyStripConfig(chatOpts *provider.ChatOptions, mode, site string, stripEnabled, stripAssistant bool, report *provider.StripReport) {
+	if mode != config.SystemPromptModeStrip && mode != config.SystemPromptModeAuto {
+		return
+	}
+	if !stripEnabled {
+		// 总开关关掉：不挂 Strip，走「先直传、被拒再折叠」的老路。
 		return
 	}
 	chatOpts.Strip = &provider.StripConfig{
-		Enabled: true,
-		Rules:   provider.RulesForSite(site),
+		Enabled:  true,
+		Rules:    provider.RulesForSite(site),
+		Contains: provider.ContainsForSite(site),
+		// 关掉 assistant 剥离时只跳过 assistant，system 仍照剥。
+		SkipAssistant: !stripAssistant,
 	}
 	chatOpts.StripReport = report
 }
@@ -509,10 +709,23 @@ func (s *Service) systemPromptMode() string {
 	return config.NormalizeSystemPromptMode(s.Config().SystemPromptMode)
 }
 
+// stripEnabled 报告「首试前剥离已知指纹」总开关是否打开（跳过式的反面）。
+func (s *Service) stripEnabled() bool {
+	return !s.Config().SystemStripDisabled
+}
+
+// stripAssistant 报告是否连 assistant 正文一起剥（跳过式的反面）。
+func (s *Service) stripAssistant() bool {
+	return !s.Config().SystemStripAssistantDisabled
+}
+
 type CompleteResult struct {
 	provider.Result
 	Account   accounts.Summary `json:"account"`
 	AccountID string           `json:"accountId"`
+	// RoutedModel 是实际发给上游的模型名（被模型路由/标题改写改过时才有值）。
+	// 空表示与客户端请求的模型一致。
+	RoutedModel string `json:"routedModel,omitempty"`
 }
 
 func (s *Service) requestSite(opts CompleteOptions) string {
@@ -537,6 +750,11 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	// 切换模式不改变本次请求实际发出的形态，事件归因与降级判定都以它为准。
 	if opts.systemMode == "" {
 		opts.systemMode = s.systemPromptMode()
+	}
+	// 剥离开关同样只在入口快照一次（见 stripTotal/stripAsst 的注释）。
+	if !opts.stripSnapshotted {
+		opts.stripTotal, opts.stripAsst = s.stripEnabled(), s.stripAssistant()
+		opts.stripSnapshotted = true
 	}
 	// 模型路由：用户在管理台配置「源站点 + 源模型名 → 目标站点 + 目标模型名」。
 	//
@@ -572,6 +790,31 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 			}
 		}
 	}
+	// 会话标题请求改写：dsh 宿主每新建一个会话就发一次标题请求，走当前
+	// 选中的付费模型。把它改写到轻量模型上，每个新会话省一次主模型计费。
+	//
+	// 只改模型名与站点，messages / stream / max_tokens / header 全部不动。
+	// 触发条件是请求体形状（IsSessionTitleRequest，fail-closed），
+	// 宿主改了文案就自动停止识别 —— 失败方向是安全的。
+	if s.ModelRoutes != nil && !opts.FixedAccount && opts.RetryDepth == 0 && opts.RoutedFrom == "" {
+		if store, err := s.ModelRoutes.Read(); err == nil && store.TitleRoute != nil && store.TitleRoute.Enabled {
+			requestSite := config.NormalizeSite(s.requestSite(opts))
+			target := store.TitleRoute.TargetFor(requestSite)
+			if target != "" && modelroute.IsSessionTitleRequest(opts.Messages) {
+				orig := opts.Model
+				opts.Model = target
+				opts.RoutedFrom = orig
+				opts.TitleRewrite = true
+				// 标题生成不需要思考预算，而且轻量模型不接受这些字段
+				// （竞品 rewriteSessionTitleModel 同样删掉这两项）。
+				// 留着会让逐模型档位逻辑去收敛一个对目标无意义的档位。
+				opts.ReasoningEffort = ""
+				opts.Reasoning = nil
+				s.Log.Info("session title request routed to lightweight model",
+					"from", orig, "to", target, "site", requestSite)
+			}
+		}
+	}
 	if opts.FixedAccount && opts.AccountID == "" {
 		return CompleteResult{}, errors.New("固定账号请求缺少账号约束")
 	}
@@ -593,12 +836,26 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	if opts.AccountID == "" && opts.RetryDepth == 0 && s.needsQuotaRefresh(opts.ExcludeIDs, site) {
 		s.refreshCandidateQuotas(ctx, opts.ExcludeIDs, true, site)
 	}
+	// 入站快照必须取在网关入口：provider 内部的 opts.Messages 已经过
+	// 网关侧一切准备，若历史缩减发生在网关，那里看到的 In==Out 就永远
+	// 发现不了（I3 会结构性失明）。
+	//
+	// 必须先分配 IO 再 prime：IO 只在 systemIOFor 里惰性分配，而
+	// systemIOFor 的唯一实参来自 chatOptionsFromAccount（比这里晚 50 行）。
+	// 不先分配的话 primeInboundIO 会因 IO==nil 直接 return —— 上一版
+	// 就是这样把入站统计整个丢掉、连带 I3/I4/I9/I10/I11 全失明的。
+	//
+	// ensureIO 是这条链里唯一的分配点，别删：删了整条入站观测会静默失效。
+	// TestCompleteFromPoolFillsInboundIO 会立刻抓到。
+	ensureIO(opts)
+	primeInboundIO(opts)
 	selection, err := s.Pool.Select(accounts.SelectOptions{
 		AccountID:     opts.AccountID,
 		Site:          site,
 		ExcludeIDs:    opts.ExcludeIDs,
 		PreferQuota:   opts.AccountID == "",
 		Model:         opts.Model,
+		RequestID:     opts.RequestID,
 		CheckCooldown: !opts.FixedAccount && !opts.sameAccountRetry,
 	})
 	if err != nil {
@@ -647,11 +904,13 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		opts.SystemOutcome.Fingerprint = att.fp
 	}
 	chatOpts := s.chatOptionsFromAccount(account, opts)
-	// strip 档：挂上身份句剥离配置（auto/keep/fold 不启用）。
+	// auto/strip 档：按运行时开关决定是否挂指纹剥离（keep/fold 永远不挂）。
 	// site 用本次实际选中的账号所在站点，与黑名单的站点分流口径一致。
 	// 每次尝试使用局部 stripReport，避免跨递归重试累加或跨区重试残留假阳性。
+	// 开关取请求入口快照（att.strip/systemStrip*），与 mode 同一口径：
+	// 管理员在请求进行中拨开关，不改变本次请求已发出的形态。
 	var stripReport provider.StripReport
-	applyStripConfig(&chatOpts, att.mode, chatOpts.Site, &stripReport)
+	applyStripConfig(&chatOpts, att.mode, chatOpts.Site, opts.stripTotal, opts.stripAsst, &stripReport)
 	// 同会话复用上游会话 ID；仅在有账号钉（pinKey 非空）时注入，与钉号生命周期一致。
 	if pinKey != "" {
 		chatOpts.ConversationID = s.Conversations.ID(pinKey+"\x1e"+chatOpts.Product, account.ID)
@@ -668,9 +927,15 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 	// 否则事件里的 stripped / strippedBytes 永远是零值。
 	att.stripped = stripReport.Stripped
 	att.strippedBytes = stripReport.Bytes
+	att.stripScope = stripReport.Scope()
+	att.stripSystemBytes = stripReport.SystemBytes
+	att.stripAssistantBytes = stripReport.AssistantBytes
 	if opts.SystemOutcome != nil {
 		opts.SystemOutcome.Stripped = stripReport.Stripped
 		opts.SystemOutcome.StrippedBytes = stripReport.Bytes
+		opts.SystemOutcome.StripScope = stripReport.Scope()
+		opts.SystemOutcome.StripSystemBytes = stripReport.SystemBytes
+		opts.SystemOutcome.StripAssistantBytes = stripReport.AssistantBytes
 	}
 	if err != nil {
 		// 客户端主动断开 SSE/HTTP，不算账号或上游故障。
@@ -682,7 +947,14 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		if result.Turn.Delivered {
 			_ = s.Pool.MarkResult(selection, false, err.Error(), 0, 0)
 			s.recordSystemPromptAttempt(opts, account, site, att, err, false)
-			return CompleteResult{Result: result, Account: accounts.SummarizeAccount(account), AccountID: account.ID}, err
+			routed := ""
+			if opts.RoutedFrom != "" {
+				routed = opts.Model
+			}
+			return CompleteResult{
+				Result: result, Account: accounts.SummarizeAccount(account),
+				AccountID: account.ID, RoutedModel: routed,
+			}, err
 		}
 		// system 原样优先（auto / strip 模式）：上游以 11128 拒收时，把 system
 		// 折叠进 <client_instructions> 用**同一账号**重试一次。折叠后不再命中竞品
@@ -796,10 +1068,17 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 		s.Pins.Remember(pinKey, account.ID)
 	}
 	s.recordSystemPromptAttempt(opts, account, site, att, nil, false)
+	// 实际发给上游的模型：opts.Model 此时已是改写后的值（模型路由 / 标题改写）。
+	// 与客户端请求的模型不同时才有意义，Server 层据此记 routedModel。
+	routed := ""
+	if opts.RoutedFrom != "" {
+		routed = opts.Model
+	}
 	return CompleteResult{
-		Result:    result,
-		Account:   accounts.SummarizeAccount(account),
-		AccountID: account.ID,
+		Result:      result,
+		Account:     accounts.SummarizeAccount(account),
+		AccountID:   account.ID,
+		RoutedModel: routed,
 	}, nil
 }
 
@@ -1453,9 +1732,14 @@ func (s *Service) listModelsForSite(ctx context.Context, activeSite string, fres
 		})
 		if out.OK && len(out.Models) > 0 {
 			s.storeModelsCache(cacheKey, out)
+			s.noteModelEfforts(site, out)
 		}
 		return out, nil
 	})
+	// 缓存命中路径也要写一次：进程刚启动时快照为空，而缓存可能已在。
+	if listed.OK && len(listed.Models) > 0 {
+		s.noteModelEfforts(site, listed)
+	}
 	return listed, err
 }
 
@@ -1475,7 +1759,15 @@ func (s *Service) storeModelsCache(key string, result models.ListResult) {
 	if s.modelsCache == nil {
 		s.modelsCache = map[string]modelsCacheEntry{}
 	}
-	s.modelsCache[key] = modelsCacheEntry{result: result, expiresAt: time.Now().Add(modelsCacheTTL)}
+	now := time.Now()
+	// 顺手清过期项。读路径只判断 TTL 不删除，而缓存键里含 account.ID，
+	// 账号一换就永久留一条，长期运行会只增不减。
+	for k, entry := range s.modelsCache {
+		if now.After(entry.expiresAt) {
+			delete(s.modelsCache, k)
+		}
+	}
+	s.modelsCache[key] = modelsCacheEntry{result: result, expiresAt: now.Add(modelsCacheTTL)}
 }
 
 func (s *Service) invalidateModelsCache() {
@@ -2115,6 +2407,11 @@ func (s *Service) RefreshHTTPFor(account accounts.Account) *http.Client {
 // 只认额度/限流：换号确实有用；其余错误换号只是烧配额。
 func isQuotaExhausted(err error) bool {
 	if err == nil {
+		return false
+	}
+	// 排队类不是「额度耗尽」：换号只会换一个同样排队的账号再排一次。
+	// 交给上面的 429 + Retry-After 路径，让客户端按标准退避。
+	if billing.IsQueueError(err) {
 		return false
 	}
 	if billing.IsQuotaExhaustedError(err) || billing.IsModelRateLimitError(err) {

@@ -33,8 +33,45 @@ func testServer(t *testing.T, requireAPIKey bool, adminPassword, apiKey string) 
 	})
 }
 
+// isolateEnvFile 把写入目标 .env 指到测试临时目录。
+//
+// ResolveEnvFilePath 的兜底是 ~/.codebuddy/proxy.env，任何「保存配置」
+// 端点（system-prompt / checkin-config / quota-floor / client-config /
+// tok-fingerprint）都会写它。不隔离时测试会改掉开发者真实配置
+// （2026-11-28 的评审就被 TestAdminCheckinConfigRoundTrip 等写过一次）。
+//
+// 所有造 Server 的测试助手都必须调用它；测试已显式指定路径时保持不动。
+func isolateEnvFile(t *testing.T, dir string) {
+	t.Helper()
+	// 只有「已经指向测试临时目录」才保持不动（个别测试会直接读那个文件）；
+	// 其它任何值（包括开发者 shell 里 export 的真实配置）一律覆盖 ——
+	// 否则测试是否污染真实配置取决于调用者的环境变量。
+	current := strings.TrimSpace(os.Getenv("CODEBUDDY_PROXY_ENV_FILE"))
+	tmpRoot := strings.TrimRight(os.TempDir(), string(os.PathSeparator)) + string(os.PathSeparator)
+	if current != "" && strings.HasPrefix(current, tmpRoot) {
+		return
+	}
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", filepath.Join(dir, ".env"))
+}
+
+// isolateConfigHome 把 config.Load() 的 env 搜索根（cwd / HOME）挪到临时目录。
+//
+// config.Load 内部会调 LoadDotEnv，候选里固定含 ~/.codebuddy/proxy.env ——
+// 只设 CODEBUDDY_PROXY_ENV_FILE 挡不住它（那个变量只是「多一个优先候选」）。
+// 不隔离时测试会读进开发者真实的 proxy.env（含 API Key 与各开关），
+// 断言随本机文件变化，键还会泄漏到后续测试的进程环境里。
+func isolateConfigHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows 上 os.UserHomeDir 用它
+	t.Chdir(home)
+	return home
+}
+
 func testServerCfg(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
+	isolateEnvFile(t, t.TempDir())
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
 	}
@@ -1219,4 +1256,27 @@ func envAPIKeysValue(envText string) string {
 		}
 	}
 	return ""
+}
+
+// 回归：所有造 Server 的测试助手都必须隔离 .env。
+//
+// 背景：2026-11-28 的评审跑测试时，checkin / tok 两个助手把配置写进了
+// /home/ova/.codebuddy/proxy.env（ResolveEnvFilePath 的兜底路径）。
+// 这条测试逐个构造助手，确认写入目标已不在真实 HOME 下 —— 新增助手
+// 忘了调 isolateEnvFile 时，这里会直接红。
+func TestTestHelpersIsolateEnvFile(t *testing.T) {
+	// 模拟开发者 shell 里 export 了真实配置路径：助手必须覆盖它。
+	realish := "/home/ova/.codebuddy/proxy.env"
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", realish)
+	if srv := testServer(t, false, "", ""); srv == nil {
+		t.Fatal("server 为 nil")
+	}
+	got := config.ResolveEnvFilePath()
+	if got == realish {
+		t.Fatalf("测试仍然指向真实 .env：%s（会污染开发者配置）", got)
+	}
+	tmpRoot := strings.TrimRight(os.TempDir(), string(os.PathSeparator)) + string(os.PathSeparator)
+	if !strings.HasPrefix(got, tmpRoot) {
+		t.Fatalf("测试 .env 不在临时目录：%s", got)
+	}
 }

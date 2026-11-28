@@ -16,9 +16,54 @@ var failureDumpMu sync.Mutex
 const (
 	// 只留最近若干份，避免长期开启把磁盘写满。
 	maxFailureDumps = 6
-	// 单份上限。真实排障样本一般 1-3MB，超长对话可能到几十 MB。
+	// 单份上限。转储前已对大字符串做截断，正常情况下远达不到这个值。
 	maxFailureDumpBytes = 64 << 20
+	// 单个字符串在转储里的最大保留长度。排障只需要开头一段与总长度。
+	maxDumpStringBytes = 64 << 10
+	// 全部字符串保留量的总预算，避免「很多个中等字符串」把转储撑大。
+	maxDumpStringBudget = 2 << 20
 )
+
+// dumpShrinker 生成用于落盘的浅拷贝：超长字符串只保留开头一段。
+//
+// 关键点：截断后的字符串与原字符串共享底层数组（Go 的子串语义），
+// 所以这里不会额外复制正文。原 body 不被修改。
+type dumpShrinker struct {
+	budget int
+}
+
+func (d *dumpShrinker) shrink(v any) any {
+	switch t := v.(type) {
+	case string:
+		if len(t) <= maxDumpStringBytes && len(t) <= d.budget {
+			d.budget -= len(t)
+			return t
+		}
+		keep := maxDumpStringBytes
+		if d.budget < keep {
+			keep = d.budget
+		}
+		if keep < 0 {
+			keep = 0
+		}
+		d.budget -= keep
+		return t[:keep] + fmt.Sprintf("…/* TRUNCATED: %d bytes total */", len(t))
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = d.shrink(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = d.shrink(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
 
 // dumpUpstreamFailure 把一次上游失败的完整请求体与工具调用诊断落盘。
 // 返回写出的文件路径（失败时为空），只用于日志，不影响主流程。
@@ -38,10 +83,14 @@ func dumpUpstreamFailure(dir string, status int, body map[string]any, upstreamMs
 	}
 	base := strings.TrimSuffix(file.Name(), ".request.json")
 
-	payload, err := json.MarshalIndent(body, "", " ")
+	// 先截断超长字符串再序列化：否则一份 20MB 正文会在这里产生
+	// 两份等大缓冲（MarshalIndent 的序列化 + 缩进），把失败路径的
+	// 内存峰值按 body 大小放大。
+	shrunk := (&dumpShrinker{budget: maxDumpStringBudget}).shrink(body)
+	payload, err := json.MarshalIndent(shrunk, "", " ")
 	if err != nil {
 		// 出现不可序列化的值时不放弃：用 %v 兜底，至少留下证据。
-		payload = []byte(fmt.Sprintf("%v", body))
+		payload = []byte(fmt.Sprintf("%v", shrunk))
 	}
 	if len(payload) > maxFailureDumpBytes {
 		payload = append(payload[:maxFailureDumpBytes], []byte("\n\n/* TRUNCATED: exceeded dump size limit */\n")...)

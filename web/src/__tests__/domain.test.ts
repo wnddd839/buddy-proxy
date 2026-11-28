@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   computeExpirySummary,
   computeModelAvailability,
+  isAutoFamilyModel,
   mergeModelLists,
+  normalizeModelName,
+  stripModelSitePrefix,
   resolveLocalDateList,
   spFormInfo,
   spResultInfo,
@@ -154,4 +157,19 @@ describe('mergeModelLists and validators', () => {
     expect(formatCompactNumber(1_420_000)).toBe('1.42M');
     expect(formatCompactNumber(18_500)).toBe('18.5K');
   });
+  it('model name normalization matches the backend exactly', () => {
+    // 后端 normalizeModelName 去掉 - _ . 空格 / :
+    expect(normalizeModelName('deepseek/v3')).toBe(normalizeModelName('deepseekv3'));
+    expect(normalizeModelName('a:b')).toBe(normalizeModelName('ab'));
+    expect(normalizeModelName('hy4flash-free')).toBe(normalizeModelName('hy4-flash-free'));
+    // 站点前缀大小写敏感：CN:auto 不被剥离，因此不属于 auto 一族
+    expect(stripModelSitePrefix('cn:auto')).toBe('auto');
+    expect(stripModelSitePrefix('CN:auto')).toBe('CN:auto');
+    expect(stripModelSitePrefix('cn:')).toBe('cn:');
+    expect(isAutoFamilyModel('cn:auto')).toBe(true);
+    expect(isAutoFamilyModel('CN:auto')).toBe(false);
+    expect(isAutoFamilyModel('autopilot')).toBe(false);
+    expect(isAutoFamilyModel('auto-max')).toBe(true);
+  });
+
 });

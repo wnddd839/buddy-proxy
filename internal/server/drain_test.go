@@ -18,6 +18,7 @@ func TestDrainTimeoutDefaultsAndConfig(t *testing.T) {
 }
 
 func TestShutdownGraceEnvFallsBack(t *testing.T) {
+	isolateConfigHome(t)
 	t.Setenv("CODEBUDDY_PROXY_SHUTDOWN_GRACE_MS", "not-a-number")
 	if got := config.Load().ShutdownGrace; got != config.DefaultShutdownGrace {
 		t.Fatalf("invalid env=%s want default", got)

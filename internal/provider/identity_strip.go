@@ -68,6 +68,27 @@ var blockedIdentityPrefixes = map[string][]string{
 	},
 }
 
+// blockedContainsRules 是「任意位置命中」的指纹黑名单（归一化形态）。
+//
+// 与 blockedIdentityPrefixes 的区别：身份句只在消息**开头**才拦，而这类
+// 段落指纹出现在 system / assistant 的任意位置都会触发 11128。
+// 2026-11-17 实弹反推：归一化串前后贴任意字符仍被拦；删掉其中的 "@" 或把
+// "workspace root" 改成 "workspace roox" 即放行 —— 说明是归一化后的子串匹配。
+//
+// 已知条目来自 dsh（DeepSeek Harness）自带 file-reference 段的开头：
+//
+//	Tokens prefixed with @ are paths the user explicitly referenced.
+//	Relative paths resolve from the workspace root
+//
+// 该段由 @deepseek-ai/dsh-file-reference 的 FILE_REFERENCE_PROMPT 常量提供，
+// 经 dsh-file-reference-local 注册为 system section "context:file-reference"，
+// 每个 dsh web 实例都会带，与第三方插件无关。
+var blockedContainsRules = map[string][]string{
+	"domestic": {
+		"tokensprefixedwith@arepathstheuserexplicitlyreferenced.relativepathsresolvefromtheworkspaceroot",
+	},
+}
+
 // normalizedSpace 判断某个 rune 是否属于「上游归一化时会删除的空格类码位」。
 //
 // 这份集合是实弹枚举出来的（见 TestScanNormalizeRemovesSpaces）：
@@ -134,6 +155,86 @@ func scanNormalizeBounded(s string, maxNormBytes int) (string, []int) {
 	return string(norm), offsets
 }
 
+// normalizeOnly 只产出归一化串，不构建偏移映射。
+//
+// 单独提供它的理由见 mapNormIndex：偏移表是 []int，8 字节/归一化字节，
+// 在超长正文上会把内存放大 8 倍。任何只需要「找命中位置」的场景都该用它。
+func normalizeOnly(s string, maxNormBytes int) string {
+	if s == "" || maxNormBytes <= 0 {
+		return ""
+	}
+	initCap := min(len(s), maxNormBytes+8)
+	norm := make([]byte, 0, initCap)
+	for i := 0; i < len(s) && len(norm) < maxNormBytes; {
+		// ASCII 快路径：位运算小写化，不碰 unicode 包、不产生临时 string。
+		//
+		// 剖析显示 unicode.ToLower 的查表 + string(rune) 分配合计占生产路径
+		// 约 1/4 的 CPU（13.8% lookupCaseRange + 3.5% intstring + 分配）。
+		// 真实流量绝大部分是 ASCII，这部分完全是浪费。
+		//
+		// ⚠️ normalizedSpace 里唯一的 ASCII 成员是 SPACE。
+		// TAB/LF/CR 属于「保留」—— 不要搬 unicode.IsSpace 的语义进来。
+		if b := s[i]; b < utf8.RuneSelf {
+			i++
+			if b == ' ' {
+				continue
+			}
+			if b >= 'A' && b <= 'Z' {
+				b += 'a' - 'A'
+			}
+			norm = append(norm, b)
+			continue
+		}
+		r, size := decodeRune(s[i:])
+		if normalizedSpace(r) {
+			i += size
+			continue
+		}
+		norm = append(norm, toLowerRune(r)...)
+		i += size
+	}
+	return string(norm)
+}
+
+// mapNormIndex 把「归一化串的下标区间 [start, end)」映射回原串的 byte 区间。
+//
+// 只在确认命中后调用：它重新遍历一遍原串，用与 normalizeOnly 完全相同的
+// 归一化规则计数，因此不需要预先保存整张偏移表。无额外分配。
+//
+// 返回 ok=false 表示下标越界（调用方应当跳过这条规则）或归一化串为空。
+func mapNormIndex(s string, maxNormBytes, start, end int) (int, int, bool) {
+	if s == "" || start < 0 || end <= start || maxNormBytes <= 0 {
+		return 0, 0, false
+	}
+	origStart, origEnd := -1, -1
+	normPos := 0
+	for i := 0; i < len(s) && normPos < maxNormBytes; {
+		r, size := decodeRune(s[i:])
+		if normalizedSpace(r) {
+			i += size
+			continue
+		}
+		width := len(toLowerRune(r))
+		if origStart < 0 && normPos >= start {
+			origStart = i
+		}
+		// end 是开区间：归一化位置达到 end 时，本 rune 已经出界
+		if normPos >= end {
+			break
+		}
+		normPos += width
+		if normPos >= end {
+			origEnd = i + size
+			break
+		}
+		i += size
+	}
+	if origStart < 0 || origEnd <= origStart {
+		return 0, 0, false
+	}
+	return origStart, origEnd, true
+}
+
 // stripBlockedIdentity 循环剥离 system 内容开头命中的身份句。
 //
 // 返回剥离后的内容、删除的字节数、是否发生过剥离。
@@ -163,6 +264,78 @@ func stripBlockedIdentity(s string, rules []string) (string, int, bool) {
 	return s, len(original) - len(s), true
 }
 
+// stripBlockedContains 删除内容中**任意位置**命中的指纹子串。
+//
+// 与 stripBlockedIdentity 的分工：
+//   - 身份句 -> 只在开头命中（HasPrefix），由 stripBlockedIdentity 处理；
+//   - 段落指纹 -> 任意位置命中（Contains），由本函数处理。
+//
+// 循环删除直到不再命中：同一段文字可能出现多次，且删掉一处的拼接结果
+// 可能又凑出一个新的命中（实测 "A. A." 的双句拼接需要逐句剥）。
+//
+// 只删命中的归一化区间，不引入任何替换文本，前后文原样保留。
+//
+// 每轮只删一处、删完重扫，是为了处理「删掉中间一段后，前后文拼出一个新命中」
+// 的情况（前缀剥离的 "A. A." 也是同一类）。轮数上限防病态输入把 CPU 拖死：
+// 正常 system 至多一两处，256 轮远大于真实需求。
+func stripBlockedContains(s string, rules []string) (string, int, bool) {
+	if s == "" || len(rules) == 0 {
+		return s, 0, false
+	}
+	original := s
+	for pass := 0; pass < maxContainsStripPasses; pass++ {
+		// 只产出归一化串（1 字节/字符），不再同时建 []int 偏移表（8 字节/字符）。
+		// 偏移只在命中后才用 mapNormIndex 现算 —— 未命中时完全不产生映射开销。
+		norm := normalizeOnly(s, len(s))
+		if norm == "" {
+			break
+		}
+		cut := false
+		for _, rule := range rules {
+			if rule == "" {
+				continue
+			}
+			idx := strings.Index(norm, rule)
+			if idx < 0 {
+				continue
+			}
+			start, end, ok := mapNormIndex(s, len(s), idx, idx+len(rule))
+			if !ok {
+				continue
+			}
+			s = s[:start] + s[end:]
+			cut = true
+			break
+		}
+		if !cut {
+			break
+		}
+	}
+	if s == original {
+		return original, 0, false
+	}
+	return s, len(original) - len(s), true
+}
+
+// maxContainsStripPasses 限制 contains 剥离的重扫轮数（见 stripBlockedContains）。
+const maxContainsStripPasses = 256
+
+// stripText 依次执行「开头身份句」与「任意位置指纹」两类剥离。
+func stripText(text string, cfg *StripConfig) (string, int, bool) {
+	if cfg == nil || !cfg.Enabled {
+		return text, 0, false
+	}
+	out, removed, hit := stripBlockedIdentity(text, cfg.Rules)
+	if hit {
+		text = out
+	}
+	rest, removed2, hit2 := stripBlockedContains(text, cfg.Contains)
+	if hit2 {
+		text = rest
+	}
+	return text, removed + removed2, hit || hit2
+}
+
 // cutBlockedPrefix 若 s 归一化后以某条规则开头，返回「切掉该句后」的余下内容。
 //
 // 切法：按 offsets 找到该句在原串中的结束 byte 偏移，然后跳过紧跟的
@@ -177,19 +350,21 @@ func cutBlockedPrefix(s string, rules []string) (string, bool) {
 	if maxRuleLen == 0 {
 		return s, false
 	}
-	norm, offsets := scanNormalizeBounded(s, maxRuleLen)
-	if norm == "" || len(offsets) != len(norm) {
+	norm := normalizeOnly(s, maxRuleLen)
+	if norm == "" {
 		return s, false
 	}
 	for _, rule := range rules {
 		if rule == "" || !strings.HasPrefix(norm, rule) {
 			continue
 		}
-		// 规则在归一化串里的最后一个 byte 下标 → 原串中该字符的起始偏移
-		last := offsets[len(rule)-1]
-		// 原串中该字符的结束偏移：取下一个 rune 的起点（或串尾）
-		_, size := decodeRune(s[last:])
-		end := last + size
+		// 前缀剥离用不到「起始偏移」，只需要规则末字节在原串中的结束位置。
+		start, prefixEnd, ok := mapNormIndex(s, maxRuleLen, 0, len(rule))
+		_ = start
+		if !ok {
+			continue
+		}
+		end := prefixEnd
 		// 跳过句末标点前允许的句内空白（不跨换行，避免误吞下一段首字符）
 		for end < len(s) {
 			r, sz := decodeRune(s[end:])
@@ -252,10 +427,29 @@ func RulesForSite(site string) []string {
 	return blockedIdentityPrefixes["global"]
 }
 
+// ContainsForSite 返回该站点「任意位置」指纹的全量黑名单。
+//
+// 与 RulesForSite 同一口径：未知站点回落 global，且绝不 panic。
+// global 目前没有 contains 规则，返回 nil 表示「该站点不做子串剥离」。
+func ContainsForSite(site string) []string {
+	return blockedContainsRules[config.NormalizeSite(site)]
+}
+
 // StripConfig 描述一次请求的剥离配置。
 type StripConfig struct {
 	Enabled bool
-	Rules   []string
+	// Rules 是「消息开头」命中的身份句（归一化形态）。
+	Rules []string
+	// Contains 是「任意位置」命中的指纹段落（归一化形态）。
+	Contains []string
+	// SkipAssistant 为 true 时不剥 assistant 正文（只剥 system）。
+	//
+	// 用「跳过」而不是「启用」做字段，是为了让零值保持既有行为：
+	// 上游 11128 会扫 assistant，历史里出现指纹会让整段会话永久 502，
+	// 而折叠 system 救不了它（只改 system）。所以默认必须剥。
+	// 但它改的是「模型自己的历史输出」，语义风险高于改 system ——
+	// 需要能单独关掉。
+	SkipAssistant bool
 }
 
 // StripReport 回填一次请求实际发生的剥离情况，供网关记事件。
@@ -263,14 +457,44 @@ type StripConfig struct {
 type StripReport struct {
 	Stripped bool
 	Bytes    int
+	// SystemBytes / AssistantBytes 区分剥离发生在哪一侧。
+	//
+	// 为什么必须分开记：stripped=true 只说「删过东西」，但用户真正关心的是
+	// 「我发给模型的 system 有没有被改」。只删 assistant 历史时 system 仍是
+	// 100% 原样，这与「system 被削过」是完全不同的两件事，不能混成一个数字。
+	SystemBytes    int
+	AssistantBytes int
 }
 
-func (r *StripReport) add(removed int) {
+// add 累加一次剥离。isSystem 决定计入哪一侧。
+func (r *StripReport) add(removed int, isSystem bool) {
 	if r == nil || removed <= 0 {
 		return
 	}
 	r.Stripped = true
 	r.Bytes += removed
+	if isSystem {
+		r.SystemBytes += removed
+	} else {
+		r.AssistantBytes += removed
+	}
+}
+
+// Scope 返回剥离发生的位置：system / assistant / both / 空串（没剥）。
+func (r *StripReport) Scope() string {
+	if r == nil || !r.Stripped {
+		return ""
+	}
+	switch {
+	case r.SystemBytes > 0 && r.AssistantBytes > 0:
+		return "both"
+	case r.SystemBytes > 0:
+		return "system"
+	case r.AssistantBytes > 0:
+		return "assistant"
+	default:
+		return "both"
+	}
 }
 
 // stripContent 对一条消息的 content 做剥离，返回新 content 与是否改动。
@@ -282,17 +506,17 @@ func (r *StripReport) add(removed int) {
 //
 // 其他类型（nil / 数字 / 未知结构）一律不碰 —— 保守处理，
 // 宁可漏剥也不破坏客户端结构。
-func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool) {
-	if cfg == nil || !cfg.Enabled || len(cfg.Rules) == 0 {
+func stripContent(content any, cfg *StripConfig, report *StripReport, isSystem bool) (any, bool) {
+	if cfg == nil || !cfg.Enabled || (len(cfg.Rules) == 0 && len(cfg.Contains) == 0) {
 		return content, false
 	}
 	switch v := content.(type) {
 	case string:
-		out, removed, hit := stripBlockedIdentity(v, cfg.Rules)
+		out, removed, hit := stripText(v, cfg)
 		if !hit {
 			return content, false
 		}
-		report.add(removed)
+		report.add(removed, isSystem)
 		return out, true
 	case []any:
 		var outSlice []any
@@ -308,7 +532,7 @@ func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool
 			if !ok {
 				continue
 			}
-			out, removed, hit := stripBlockedIdentity(text, cfg.Rules)
+			out, removed, hit := stripText(text, cfg)
 			if !hit {
 				continue
 			}
@@ -318,7 +542,7 @@ func stripContent(content any, cfg *StripConfig, report *StripReport) (any, bool
 			cloned := maps.Clone(pm)
 			cloned["text"] = out
 			outSlice[i] = cloned
-			report.add(removed)
+			report.add(removed, isSystem)
 		}
 		if outSlice == nil {
 			return content, false

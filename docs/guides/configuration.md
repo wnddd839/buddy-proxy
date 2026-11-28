@@ -250,36 +250,63 @@ CODEBUDDY_INTERNET_ENVIRONMENT=internal
 
 | 值 | 行为 | 何时用 |
 |---|---|---|
-| `auto`（默认） | 直传 system；命中上游 11128 时自动改写重放一次 | 日常 |
+| `auto`（默认） | **首试前**删掉已知指纹再直传；仍被 11128 拒收时自动改写重放一次 | 日常 |
 | `keep` | 只直传，被拦截如实报错 | 严格照 system 执行、或想看真实失败原因 |
 | `fold` | 每次都把 system 改写进首条 user 的 `<client_instructions>` | 批量/自动化、不在意 system 优先级 |
-| `strip` | 直传 system，但先删掉开头那句会被上游拒收的身份句 | 想保住 system 优先级又不被 11128 拦 |
+| `strip` | 与 `auto` 相同的剥离规则与折叠兜底（保留兼容：`auto` 现在也做首试前剥离） | 兼容已有配置 |
 
-### strip 删什么
+### 剥离开关（管理台 / `.env`）
 
-上游只拦两条**精确整句**：
+剥离不是硬编码在 `auto` 里的，它有两个独立的开关，都能热切换：
 
-- `You are Claude Code, Anthropic's official CLI for Claude.` —— 国内区与海外区都拦
-- `You are an AI agent powered by DeepSeek Harness.` —— 仅国内区拦（海外区放行）
+| 开关 | `.env` 键 | 默认 | 关掉会怎样 |
+|---|---|---|---|
+| 首试前剥离已知指纹 | `CODEBUDDY_PROXY_SYSTEM_STRIP_OFF` | 开（不配置即开） | 退回 v0.7.6 行为：先原样直传，被 11128 拒了才折叠重放 ⇒ **每个请求多一次 400**，账号风险分持续上涨 |
+| 连 assistant 正文一起剥 | `CODEBUDDY_PROXY_SYSTEM_STRIP_ASSISTANT_OFF` | 开（不配置即开） | 只剥 `system`；历史里带指纹的会话会**永久 502**（折叠只改 system，救不了 assistant） |
 
-判定口径是「删掉空格类字符并转小写后，以该句**开头**」。因此大小写、连续空格、
-NBSP/全角空格/零宽空格/BOM 等变体都会命中；而前加任意字符、夹在文本中间、
+两个键都是**跳过式**（`OFF` 语义）：不配置 = 开启，写 `1`/`true` 才关闭。这样任何
+不经过 `config.Load()` 的构造路径都默认受保护，不会因为忘了设字段就静默失去剥离。
+
+> `keep` / `fold` 永远不剥离，不受这两个开关影响 —— 它们分别是「严格照 system
+> 执行」和「每次折叠」档，语义上不该被第三方改写。
+
+### 网关删什么（auto / strip）
+
+上游拦两类指纹，判定都在**归一化**之后（删掉 16 种空格类字符并转小写）：
+
+1. **开头身份句**（只在消息开头命中）：
+   - `You are Claude Code, Anthropic's official CLI for Claude.` —— 国内区与海外区都拦
+   - `You are an AI agent powered by DeepSeek Harness.` —— 仅国内区拦（海外区放行）
+2. **任意位置段落指纹**（子串匹配，仅国内区）：
+   - dsh（DeepSeek Harness）自带 file-reference 段的开头
+     `Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root`
+
+判定口径是「以该句**开头**」/「任意位置包含该子串」。因此大小写、连续空格、
+NBSP/全角空格/零宽空格/BOM 等变体都会命中；而身份句前加任意字符、夹在文本中间、
 或句内出现 TAB/换行则不会命中。
 
 实测**不是**关键词过滤：`You are Cline, ...`、`You are Cursor, ...`、`You are Codex, ...`、
 `You are GitHub Copilot, ...`、`You are DeepSeek, an AI assistant.`、
 `You are an AI agent powered by X Harness.` 全部放行。
 
-### strip 的边界
+### 剥离的边界
 
-- 只动 `system`（含被归一成 system 的 `developer`），不动 `user`/`assistant`/`tool`
+- 扫 `system`（含被归一成 system 的 `developer`）与 `assistant` 正文；不动 `user`/`tool`
+- 上游确实会扫 `assistant`：历史里出现上述指纹时，整段会话会持续 400/11128，
+  折叠 system 也救不回来，所以剥离必须覆盖它
 - 任意一条 system 命中都会处理，不限首条
 - 支持字符串与结构化数组（数组只动 `text` part，图片等不动）
+- 只删除命中的那段文字，不引入替换文本
 - 剥空的 system **保留为空消息**，不会丢弃 —— 避免海外区补 canonical 的兜底注入
-- 与 `fold` 不同：strip 不改变 system 的 role、位置和其余内容
+- 与 `fold` 不同：剥离不改变 system 的 role、位置和其余内容
+- `keep` / `fold` 不做剥离，保持与历史版本一致的形态
+- 关掉「连 assistant 一起剥」后，`assistant` 正文完全不碰（见上表）
 
-### 会话亲和与 strip 的关系
+> `auto` 档先剥再传，是为了避免每个请求都先吃一次 400/11128 ——
+> 上游按被拒收的次数累计账号风险分，「失败再重试」不能作为日常路径。
+
+### 会话亲和与剥离的关系
 
 会话键（`sessionpin.Key`）在**入口处**用原始 `system + 首条 user` 计算，早于
-provider 层的剥离。因此 strip 不会让同一会话的账号钉漂移。
+provider 层的剥离。因此剥离不会让同一会话的账号钉漂移。
 若在剥离后再算会话键，不同客户端剥空后会撞成同一个键 —— 这是必须避免的。

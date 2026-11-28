@@ -26,6 +26,7 @@ import (
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
 	"github.com/wnddd839/codebuddy-proxy/internal/gateway"
 	"github.com/wnddd839/codebuddy-proxy/internal/httputil"
+	"github.com/wnddd839/codebuddy-proxy/internal/invariant"
 	"github.com/wnddd839/codebuddy-proxy/internal/modelroute"
 	modelspkg "github.com/wnddd839/codebuddy-proxy/internal/models"
 	"github.com/wnddd839/codebuddy-proxy/internal/oauth"
@@ -863,9 +864,17 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		cfg := s.Svc.Config()
-		next := append(slices.Clone(cfg.APIKeys), config.APIKeyBinding{Key: key, Site: site, AccountID: body.AccountID})
-		envPath, err := s.persistBoundAPIKeys(next)
+		// 「读 APIKeys → 追加 → 落盘 + 写内存」是读改写，必须与其它
+		// .env 写入端点共用 envMu：不加锁时两个并发请求会拿同一份旧快照，
+		// 后落盘的那个把前一个绑定静默覆盖掉（两边都拿到 200）。
+		var envPath string
+		func() {
+			s.envMu.Lock()
+			defer s.envMu.Unlock()
+			cfg := s.Svc.Config()
+			next := append(slices.Clone(cfg.APIKeys), config.APIKeyBinding{Key: key, Site: site, AccountID: body.AccountID})
+			envPath, err = s.persistBoundAPIKeys(next)
+		}()
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
 				"ok":    false,
@@ -889,21 +898,32 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "缺少要删除的绑定 Key"})
 			return
 		}
-		cfg := s.Svc.Config()
-		next := make([]config.APIKeyBinding, 0, len(cfg.APIKeys))
+		// 同「生成绑定 Key」：过滤 + 落盘是读改写，必须串行化，
+		// 否则并发删除/新增会互相覆盖绑定表。
+		var envPath string
+		var err error
 		found := false
-		for _, binding := range cfg.APIKeys {
-			if binding.Key == target {
-				found = true
-				continue
+		func() {
+			s.envMu.Lock()
+			defer s.envMu.Unlock()
+			cfg := s.Svc.Config()
+			next := make([]config.APIKeyBinding, 0, len(cfg.APIKeys))
+			for _, binding := range cfg.APIKeys {
+				if binding.Key == target {
+					found = true
+					continue
+				}
+				next = append(next, binding)
 			}
-			next = append(next, binding)
-		}
+			if !found {
+				return
+			}
+			envPath, err = s.persistBoundAPIKeys(next)
+		}()
 		if !found {
 			httputil.WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "绑定 Key 不存在"})
 			return
 		}
-		envPath, err := s.persistBoundAPIKeys(next)
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
 				"ok":    false,
@@ -1031,20 +1051,74 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 				catalog[site] = names
 			}
 		}
+		// 标题改写可选的「免费模型」：creditMultiplier==0 的那些。
+		// 只列免费模型是刻意的：这个功能的全部收益来自「不花积分」，
+		// 选一个付费模型就失去意义。
+		freeModels := map[string][]string{}
+		for _, site := range []string{"domestic", "global"} {
+			if listed, err := s.Svc.ListModelsForSite(r.Context(), site, false); err == nil {
+				names := make([]string, 0, 4)
+				for _, m := range listed.Models {
+					if m.CreditMultiplier != nil && *m.CreditMultiplier == 0 {
+						names = append(names, m.ModelID)
+					}
+				}
+				freeModels[site] = names
+			}
+		}
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
-			"ok": true, "rules": store.Rules, "path": s.ModelRoutes.Path(), "catalog": catalog,
+			"ok": true, "rules": store.Rules, "path": s.ModelRoutes.Path(),
+			"catalog": catalog, "titleRoute": store.TitleRoute, "freeModels": freeModels,
 		})
 		return
 	case path == "/direct-admin/api/model-routes" && r.Method == http.MethodPost:
+		// rules / titleRoute 都是「给了才改」：漏传一个字段不能把另一块清空。
+		// 用 RawMessage 区分「没给」与「显式 null」—— null 表示清空。
 		var body struct {
-			Rules []modelroute.Rule `json:"rules"`
+			Rules      json.RawMessage `json:"rules"`
+			TitleRoute json.RawMessage `json:"titleRoute"`
 		}
 		if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
 			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		before, _ := s.ModelRoutes.Read()
-		if err := s.ModelRoutes.Write(modelroute.Store{Rules: body.Rules}); err != nil {
+		if len(body.Rules) == 0 && len(body.TitleRoute) == 0 {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+				"ok": false, "error": "至少要给 rules 或 titleRoute（null 表示清空）",
+			})
+			return
+		}
+		before, err := s.ModelRoutes.Read()
+		if err != nil {
+			// 读不到现有表就不能合并写入：把损坏/不可读的文件当空表覆盖，
+			// 会静默清空整张路由表。
+			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok": false, "error": "读取现有路由失败，已拒绝写入：" + err.Error(),
+			})
+			return
+		}
+		next := before
+		if len(body.Rules) > 0 {
+			if string(body.Rules) == "null" {
+				next.Rules = nil
+			} else if err := json.Unmarshal(body.Rules, &next.Rules); err != nil {
+				httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "rules 解析失败：" + err.Error()})
+				return
+			}
+		}
+		if len(body.TitleRoute) > 0 {
+			if string(body.TitleRoute) == "null" {
+				next.TitleRoute = nil
+			} else {
+				var tr modelroute.TitleRoute
+				if err := json.Unmarshal(body.TitleRoute, &tr); err != nil {
+					httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "titleRoute 解析失败：" + err.Error()})
+					return
+				}
+				next.TitleRoute = &tr
+			}
+		}
+		if err := s.ModelRoutes.Write(next); err != nil {
 			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
@@ -1052,9 +1126,9 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		// 每次写入都留一条 WARN 级审计（默认日志级别下也会落盘），
 		// 记下条数变化和每条规则的完整内容，事后可追溯。
 		s.Svc.Log.Warn("model routes updated",
-			"before", len(before.Rules), "after", len(body.Rules),
+			"before", len(before.Rules), "after", len(next.Rules),
 			"remote", r.RemoteAddr,
-			"rules", modelroute.AuditLine(body.Rules))
+			"rules", modelroute.AuditLine(next.Rules))
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	// 签到结果查询：返回 48h 内的明细，供管理台渲染徽章与「48 小时 N/2」。
@@ -1116,13 +1190,17 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		// 指标口径优先用「今天落盘」的全量统计（重启不清零）；
 		// 落盘不可用时才退回进程内近 24h，并用 statsScope 明确告诉前端当前口径。
 		stats, scope := s.systemPromptOverviewStats()
+		cfg := s.Svc.Config()
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
-			"ok":         true,
-			"mode":       config.NormalizeSystemPromptMode(s.Svc.Config().SystemPromptMode),
-			"stats":      stats,
-			"statsScope": scope,
-			"recent":     s.Svc.SystemPromptJournal.Recent(systemPromptRealtimeLimit),
-			"dates":      s.Svc.SystemPromptStore.Dates(),
+			"ok":             true,
+			"mode":           config.NormalizeSystemPromptMode(cfg.SystemPromptMode),
+			"strip":          !cfg.SystemStripDisabled,
+			"stripAssistant": !cfg.SystemStripAssistantDisabled,
+			"echoUser":       cfg.SystemEchoUser,
+			"stats":          stats,
+			"statsScope":     scope,
+			"recent":         s.Svc.SystemPromptJournal.Recent(systemPromptRealtimeLimit),
+			"dates":          s.Svc.SystemPromptStore.Dates(),
 		})
 		return
 	case path == "/direct-admin/api/system-prompt/events" && r.Method == http.MethodGet:
@@ -1134,6 +1212,28 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 	// 积分下限：独立端点，配独立的保存按钮。
 	// 单独拆出来的原因：这是选号门槛，改错会让整池号瞬间不可用，
 	// 放在签到表单里跟「保存签到」混在一起容易被误改、又不知道该不该点保存。
+	// 静默失效体检：只读，无写接口。
+	// 返回三类东西：命中的断言（附带 why 供 tooltip）、按断言聚合的计数、
+	// 以及「这份数据从什么时候开始」—— 没有覆盖说明的仪表盘会被误读成「没发生」。
+	case path == "/direct-admin/api/invariants" && r.Method == http.MethodGet:
+		s.handleInvariants(w, r)
+		return
+	// 分词器指纹基线：属于 State（跨请求累积），不是 finding，
+	// 所以单独一个只读端点。
+	case path == "/direct-admin/api/tok-baselines" && r.Method == http.MethodGet:
+		s.handleTokBaselines(w, r)
+		return
+	case path == "/direct-admin/api/tok-fingerprint" && r.Method == http.MethodPost:
+		s.handleTokFingerprintToggle(w, r)
+		return
+	// 词表身份鉴定：手动触发（成本约 0.02 credit/模型），不做定时。
+	case path == "/direct-admin/api/tok-identity-check" && r.Method == http.MethodPost:
+		s.handleTokIdentityCheck(w, r)
+		return
+	// system 预览：纯本地函数，零网络、零成本。
+	case path == "/direct-admin/api/system-dryrun" && r.Method == http.MethodPost:
+		s.handleSystemDryRun(w, r)
+		return
 	case path == "/direct-admin/api/quota-floor" && r.Method == http.MethodGet:
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "quotaFloor": s.Svc.Config().QuotaFloorCredits,
@@ -1913,33 +2013,414 @@ func (s *Server) handleSystemPromptEvents(w http.ResponseWriter, r *http.Request
 
 // handleSystemPromptMode 热切换 system 提示词策略并落盘。
 // 非法值直接 400，不静默归一成 auto —— 否则用户拼错了还以为切换成功。
+//
+// 同一条路径也接受两个剥离开关（对外用**正向语义**，内部存跳过式）：
+//   - strip：总开关。false 退回「先直传、被拒再折叠」（每请求多一次 400）。
+//   - stripAssistant：只控制 assistant 正文这一路，system 仍照剥。
+//
+// 指针字段 = 「没传就不动」，这样只改模式不会把开关顺手重置。
+// invariantSpecsOnce 保证「面板展示的断言清单」与「实际跑的注册表」同源，
+// 且只构造一次（DefaultRegistry() 每次调用都会重新注册全部断言）。
+var invariantSpecsOnce sync.Once
+
+var invariantSpecsCache []map[string]string
+
+func invariantSpecs() []map[string]string {
+	invariantSpecsOnce.Do(func() {
+		invariantSpecsCache = invariant.DefaultRegistry().Specs()
+	})
+	return invariantSpecsCache
+}
+
+// handleSystemDryRun 预览网关会把某段 system 变成什么。
+//
+// 用**当前生效的配置**（mode / strip / echo）跑 DryRun，
+// 所以看到的就是线上真实行为 —— 不需要改配置、不需要发请求。
+//
+// 这是「即插即拔的 system 验证」：贴一段 system，立刻看到：
+//   - keep / strip / fold / echo 各档的输出形态
+//   - system 有没有被剥离、剥了多少
+//   - 有没有触发「出站 system 为空」这类警告
+func (s *Server) handleSystemDryRun(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		// System 是客户端会发的那段 system（必填）。
+		System string `json:"system"`
+		// Messages 可选；不给时自动补一条 "hi" 的 user。
+		Messages []map[string]any `json:"messages"`
+		// Mode 为空时用当前生效模式；给了就按指定档位试算（不改配置）。
+		Mode string `json:"mode"`
+		// Strip / Echo 为空时跟随当前配置。
+		Strip *bool `json:"strip"`
+		Echo  *bool `json:"echo"`
+		// Site 指定按哪个站点试算剥离规则（domestic / global）。
+		//
+		// 生产的剥离规则取「选中账号的站点」（gateway.applyStripConfig），
+		// 不是全局 cfg.Site —— 混合站号池里两者可能不同。留空 = 跟随
+		// 当前号池站点（旧行为）；给了非法值必须报错，不能静默归一。
+		Site string `json:"site"`
+	}
+	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(body.System) == "" && len(body.Messages) == 0 {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "至少要给 system 或 messages",
+		})
+		return
+	}
+	if raw := strings.TrimSpace(body.Mode); raw != "" && !config.IsValidSystemPromptMode(raw) {
+		// 拼错的档位不能静默按 auto 试算 —— 那会让「预览」展示一个
+		// 操作者以为在测、实际没测的档位。
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "mode 只能是 auto / keep / fold / strip（留空 = 跟随当前）",
+		})
+		return
+	}
+	// 站点同理：只认精确的 domestic / global，拼错必须 400。
+	// NormalizeSite 会把任意垃圾（含 "garbage"）静默归成 global ——
+	// 若在这里用它，操作者会在完全不知情的情况下预览国际站规则。
+	requestedSite := ""
+	if raw := strings.ToLower(strings.TrimSpace(body.Site)); raw != "" {
+		switch raw {
+		case "domestic", "global":
+			requestedSite = raw
+		default:
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+				"ok": false, "error": "site 只能是 domestic / global（留空 = 跟随当前号池站点）",
+			})
+			return
+		}
+	}
+
+	cfg := s.Svc.Config()
+	// 留空 = 旧行为：跟随当前号池站点。显式指定优先，且整段预览
+	// （剥离规则 / contains / 响应 site）都必须用同一个值。
+	site := requestedSite
+	if site == "" {
+		site = config.NormalizeSite(cfg.Site)
+	}
+
+	// 组装 messages：给了 messages 就原样用，否则用 system + 一条 user。
+	messages := body.Messages
+	if len(messages) == 0 {
+		messages = []map[string]any{
+			{"role": "system", "content": body.System},
+			{"role": "user", "content": "hi"},
+		}
+	}
+
+	// 决定档位：body 指定优先，否则用当前。
+	//
+	// 不能先 Normalize 再判空：NormalizeSystemPromptMode 对空输入会落到
+	// default 返回 auto，判空永远不成立。旧写法因此把「跟随当前」静默
+	// 变成了 auto —— 线上是 keep/fold/strip 时试算结果全错。
+	mode := ""
+	if strings.TrimSpace(body.Mode) != "" {
+		mode = config.NormalizeSystemPromptMode(body.Mode)
+	} else {
+		mode = config.NormalizeSystemPromptMode(cfg.SystemPromptMode)
+	}
+
+	// 各档位的 keepSystem 语义与生产一致：
+	//   fold        → false（折进 user）
+	//   auto/keep/strip → true（直传）
+	keepSystem := mode != "fold"
+
+	stripEnabled := !cfg.SystemStripDisabled
+	if body.Strip != nil {
+		stripEnabled = *body.Strip
+	}
+	var strip *provider.StripConfig
+	// 生产只在 auto / strip 档剥离（gateway.applyStripConfig）；keep 直传
+	// 不剥，fold 改写也不剥。试算必须与生产一致，否则会展示一个线上
+	// 永远不会发生的 outbound。
+	if (mode == config.SystemPromptModeAuto || mode == config.SystemPromptModeStrip) &&
+		keepSystem && stripEnabled {
+		strip = &provider.StripConfig{
+			Enabled:       true,
+			Rules:         provider.RulesForSite(site),
+			Contains:      provider.ContainsForSite(site),
+			SkipAssistant: cfg.SystemStripAssistantDisabled,
+		}
+	}
+
+	echoEnabled := cfg.SystemEchoUser
+	if body.Echo != nil {
+		echoEnabled = *body.Echo
+	}
+
+	res := provider.DryRun(provider.DryRunOptions{
+		Messages:         messages,
+		Site:             site,
+		KeepSystem:       keepSystem,
+		Strip:            strip,
+		EchoSystemToUser: echoEnabled,
+		ReasoningReplay:  !cfg.ReasoningReplayDisabled,
+	})
+
+	modeLabel := map[string]string{
+		"auto":  "auto（首试剥离后直传，被 11128 拒则折叠重放）",
+		"keep":  "keep（直传，不剥离不折叠）",
+		"fold":  "fold（每次都折叠进 user）",
+		"strip": "strip（首试剥离后直传，保留 11128 折叠兜底）",
+	}[mode]
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"site":         site,
+		"mode":         mode,
+		"modeLabel":    modeLabel,
+		"keepSystem":   keepSystem,
+		"stripEnabled": strip != nil,
+		"echoEnabled":  echoEnabled,
+		"outbound":     res.Outbound,
+		"stripReport":  res.Report,
+		"inMessages":   res.InMessages,
+		"outMessages":  res.OutMessages,
+		"inSystemLen":  res.InSystemLen,
+		"outSystemLen": res.OutSystemLen,
+		"notes":        res.Notes,
+		"warnings":     res.Warnings,
+	})
+}
+
+// handleTokIdentityCheck 对在役模型跑一次词表身份鉴定。
+//
+// 成本约 0.02 credit/模型，所以只做手动触发。
+// 只查「有凭据 + 已启用」的账号所属的模型，避免对全编目 38 个模型都烧一遍。
+func (s *Server) handleTokIdentityCheck(w http.ResponseWriter, r *http.Request) {
+	store, err := s.Svc.Pool.Read()
+	if err != nil {
+		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
+	// 取每个站点的主模型：优先用当前配置的站点，再补另一个。
+	// 不做「全编目」，因为那会跑到 38 个模型 × 7 次 = 266 次请求。
+	sites := []string{"domestic", "global"}
+	var results []gateway.TokIdentityResult
+	for _, site := range sites {
+		model := ""
+		for _, a := range store.Accounts {
+			if !a.Enabled || !accounts.HasCredentials(a) {
+				continue
+			}
+			if config.NormalizeSite(a.Site) != site {
+				continue
+			}
+			model = "deepseek-v4.1-flash"
+			break
+		}
+		if model == "" {
+			continue
+		}
+		res, err := s.Svc.TokIdentityCheck(r.Context(), site, model)
+		if err != nil {
+			results = append(results, gateway.TokIdentityResult{
+				Model: model, Site: site,
+				Vocabulary: "无法判定", Weight: "无法验证（上游不提供 logprobs）",
+				Note: "校准失败：" + err.Error(),
+			})
+			continue
+		}
+		results = append(results, res)
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"results": results,
+		"count":   len(results),
+	})
+}
+
+// handleTokFingerprintToggle 热切换分词器指纹检测。
+//
+// 只写内存 + .env（与其他热切换开关同一套机制），不重启生效。
+func (s *Server) handleTokFingerprintToggle(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if body.Enabled == nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "需要 enabled",
+		})
+		return
+	}
+
+	s.envMu.Lock()
+	envPath := config.ResolveEnvFilePath()
+	updates := map[string]string{
+		// .env 里存的是「关掉」标志，所以 enabled=false 要写 1。
+		"CODEBUDDY_PROXY_TOK_FP_OFF": boolEnvValue(!*body.Enabled),
+	}
+	if err := config.UpsertEnvFile(envPath, updates); err != nil {
+		s.envMu.Unlock()
+		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
+	}
+	s.envMu.Unlock()
+
+	s.Svc.SetTokFingerprintEnabled(*body.Enabled)
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"enabled": s.Svc.TokFingerprintEnabled(),
+	})
+}
+
+// handleTokBaselines 返回分词器指纹基线快照。
+//
+// 基线是按 (模型, 分桶) 的跨请求统计，不进 findings ——
+// 面板需要「已经建立了哪些基线」而不是「哪条命中了」。
+func (s *Server) handleTokBaselines(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	var rows []map[string]any
+	if sink := s.Svc.InvariantSink(); sink != nil {
+		rows = sink.TokBaselines(limit)
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"enabled":   s.Svc.TokFingerprintEnabled(),
+		"baselines": rows,
+		"count":     len(rows),
+	})
+}
+
+// handleInvariants 返回静默失效体检数据。
+func (s *Server) handleInvariants(w http.ResponseWriter, r *http.Request) {
+	sink := s.Svc.InvariantSink()
+	if sink == nil {
+		// disabled 分支也要给出与启用时同形的字段：前端与测试都
+		// 按固定契约读，缺字段会被当成「0 命中」而不是「未启用」。
+		httputil.WriteJSON(w, http.StatusOK, map[string]any{
+			"ok":          true,
+			"enabled":     false,
+			"findings":    []any{},
+			"counts":      map[string]int{},
+			"dropped":     0,
+			"suppressed":  0,
+			"writeErrors": 0,
+			"coverage":    "未启用（需要账号目录可写）",
+		})
+		return
+	}
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	now := time.Now()
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"enabled":     true,
+		"findings":    sink.Findings(limit),
+		"counts":      sink.Counts(now),
+		"dropped":     sink.Dropped(),
+		"suppressed":  sink.Suppressed(),
+		"writeErrors": sink.WriteErrors(),
+		"coverage":    "自 " + time.UnixMilli(sink.StartedAt()).Format("2006-01-02 15:04") + " 起（含回扫的近 24h）",
+		"specs":       invariantSpecs(),
+	})
+}
+
 func (s *Server) handleSystemPromptMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Mode string `json:"mode"`
+		Mode           string `json:"mode"`
+		Strip          *bool  `json:"strip"`
+		StripAssistant *bool  `json:"stripAssistant"`
+		EchoUser       *bool  `json:"echoUser"`
 	}
 	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
 		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	mode := strings.TrimSpace(body.Mode)
-	if !config.IsValidSystemPromptMode(mode) {
+	// 允许只改开关、不动模式：没传 mode 就当作「保持当前」。
+	if mode != "" && !config.IsValidSystemPromptMode(mode) {
 		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
 			"ok": false, "error": "mode 只能是 auto / keep / fold / strip",
+		})
+		return
+	}
+	if mode == "" && body.Strip == nil && body.StripAssistant == nil && body.EchoUser == nil {
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "至少要传 mode / strip / stripAssistant / echoUser 之一",
 		})
 		return
 	}
 	s.envMu.Lock()
 	defer s.envMu.Unlock()
 	envPath := config.ResolveEnvFilePath()
-	if err := config.UpsertEnvFile(envPath, map[string]string{
-		"CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE": mode,
-	}); err != nil {
+	updates := map[string]string{}
+	if mode != "" {
+		updates["CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE"] = mode
+	}
+	// .env 里存的是「跳过」开关，所以 false（关掉剥离）要写 1。
+	if body.Strip != nil {
+		updates["CODEBUDDY_PROXY_SYSTEM_STRIP_OFF"] = boolEnvValue(!*body.Strip)
+	}
+	if body.StripAssistant != nil {
+		updates["CODEBUDDY_PROXY_SYSTEM_STRIP_ASSISTANT_OFF"] = boolEnvValue(!*body.StripAssistant)
+	}
+	if body.EchoUser != nil {
+		updates["CODEBUDDY_PROXY_SYSTEM_ECHO_USER"] = boolEnvValue(*body.EchoUser)
+	}
+	if err := config.UpsertEnvFile(envPath, updates); err != nil {
 		httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	_ = os.Setenv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE", mode)
-	cfg := s.Svc.SetSystemPromptMode(mode)
-	httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": cfg.SystemPromptMode})
+	for k, v := range updates {
+		_ = os.Setenv(k, v)
+	}
+	// 模式与开关分开更新：SetSystemPromptMode 只碰模式，
+	// SetSystemStripSwitches 只碰开关 —— 二者都不覆写积分下限等其它行为开关。
+	if mode != "" {
+		s.Svc.SetSystemPromptMode(mode)
+	}
+	var stripOff, stripAsstOff *bool
+	if body.Strip != nil {
+		v := !*body.Strip
+		stripOff = &v
+	}
+	if body.StripAssistant != nil {
+		v := !*body.StripAssistant
+		stripAsstOff = &v
+	}
+	if stripOff != nil || stripAsstOff != nil {
+		s.Svc.SetSystemStripSwitches(stripOff, stripAsstOff)
+	}
+	if body.EchoUser != nil {
+		s.Svc.SetSystemEchoUser(*body.EchoUser)
+	}
+	cfg := s.Svc.Config()
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"mode":           config.NormalizeSystemPromptMode(cfg.SystemPromptMode),
+		"strip":          !cfg.SystemStripDisabled,
+		"stripAssistant": !cfg.SystemStripAssistantDisabled,
+		"echoUser":       cfg.SystemEchoUser,
+	})
+}
+
+// boolEnvValue 把开关写成 .env 里的规范值（只认 1/0，避免 "True"/"yes" 变体）。
+func boolEnvValue(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
 }
 
 // recordCheckinBatch 把一轮手动签到的结果逐条写进签到日志，

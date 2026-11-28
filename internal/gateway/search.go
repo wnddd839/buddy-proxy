@@ -14,8 +14,10 @@ import (
 // Search calls do not pin sessions and do not reuse X-Conversation-ID, matching
 // the image path: they can safely retry on another account.
 type SearchOptions struct {
-	Site         string
-	AccountID    string
+	Site      string
+	AccountID string
+	// RequestID 是本次代理请求的 ID，透传给 Pool.Select 供决策日志配对。
+	RequestID    string
 	FixedAccount bool
 	ExcludeIDs   []string
 	RefreshRetry bool
@@ -132,6 +134,7 @@ func (s *Service) withSearchAccount(
 		Site:        site,
 		ExcludeIDs:  opts.ExcludeIDs,
 		PreferQuota: opts.AccountID == "",
+		RequestID:   opts.RequestID,
 	})
 	if err != nil {
 		return err

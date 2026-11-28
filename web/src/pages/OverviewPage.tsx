@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   BookOpen,
@@ -28,6 +28,7 @@ import { apiRequest, copyToClipboard } from '@/lib/api';
 import { useToast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/Button';
 import { Card, PageHeader } from '@/components/ui/Card';
+import { ScopeNote } from '@/components/ui/ScopeNote';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { SlideDrawer } from '@/components/ui/SlideDrawer';
 import { StatusBadge } from '@/components/ui/StatusBadge';
@@ -44,6 +45,11 @@ interface OverviewPageProps {
   activeSite: string;
   usageByAccount: Record<string, AccountUsageItem>;
   concurrency: ConcurrencySummary;
+  invariantHits: number | null;
+  invariantEnabled: boolean | null;
+  invariantDropped: number;
+  invariantWriteErrors: number;
+  invariantStale: boolean;
   onNavigate: (tab: TabId) => void;
   onNavigatePoolIssues: () => void;
 }
@@ -55,23 +61,39 @@ export function OverviewPage({
   activeSite,
   usageByAccount,
   concurrency,
+  invariantHits,
+  invariantEnabled,
+  invariantDropped,
+  invariantWriteErrors,
+  invariantStale,
   onNavigate,
   onNavigatePoolIssues,
 }: OverviewPageProps) {
   const { showToast } = useToast();
   const [range, setRange] = useState<UsageChartRange>('day');
   const [usageData, setUsageData] = useState<UsageViewPayload | null>(null);
+  // usageData 属于哪个区间。切区间后旧数据不能顶着新区间的标签继续显示。
+  const [usageForRange, setUsageForRange] = useState<UsageChartRange | null>(null);
+  const [usageError, setUsageError] = useState('');
   const [helpOpen, setHelpOpen] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
+  const usageSeqRef = useRef(0);
 
   const fetchUsageOverview = useCallback(async (r: UsageChartRange) => {
+    const seq = ++usageSeqRef.current;
     try {
       const data = await apiRequest<UsageViewPayload>(
         `/direct-admin/api/usage?range=${encodeURIComponent(r)}&limit=5&offset=0`,
       );
+      if (seq !== usageSeqRef.current) return;
       setUsageData(data);
-    } catch {
-      // 首页统计图表加载失败时回退使用 status 汇总，不阻塞页面
+      setUsageForRange(r);
+      setUsageError('');
+    } catch (e: unknown) {
+      if (seq !== usageSeqRef.current) return;
+      // 首页允许回退到进程内累计，但必须留痕：否则「近 7 日」标签下挂的是
+      // 重启以来的累计值，区间切换看起来也毫无反应 —— 两种误读都是静默失效。
+      setUsageError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
@@ -82,6 +104,7 @@ export function OverviewPage({
 
   const allAccounts = status?.accounts?.accounts || [];
   const site = normalizeSite(activeSite);
+  const statusKnown = status != null;
   const siteAccounts = useMemo(
     () => allAccounts.filter((a) => normalizeSite(a.site) === site),
     [allAccounts, site],
@@ -124,15 +147,30 @@ export function OverviewPage({
 
   const stats = status?.stats || {};
   const watch = status?.watch;
-  const uSum = usageData?.summary;
+  const uSum = usageForRange === range ? usageData?.summary : undefined;
+  const usingFallback = uSum == null;
+  const rangeLabel =
+    range === 'day' ? '今日' : range === 'week' ? '近 7 日' : range === 'month' ? '近 30 日' : '全部历史';
+  // 回退到进程内累计时，数字是「重启以来」而不是所选区间 —— 标签必须跟着改。
+  // 切换区间但新数据还没到时，明确写「加载中」而不是让人以为这就是所选区间。
+  const rangeSwitching = usingFallback && !usageError && usageForRange !== range;
+  const rangeScopeLabel = usingFallback
+    ? rangeSwitching
+      ? '加载中…（暂显进程内累计）'
+      : '进程内累计'
+    : rangeLabel;
 
-  const displayTokens = uSum?.totalTokens ?? stats.totalTokens ?? 0;
+  // 未知（status 未到 / 字段缺省）一律 undefined，由渲染层显示 '—'。
+  const displayTokens = uSum?.totalTokens ?? (statusKnown ? stats.totalTokens : undefined);
   const displayRequests =
-    uSum?.requests ?? (stats.successRequests || 0) + (stats.failedRequests || 0);
-  const displayFailed = uSum?.failed ?? stats.failedRequests ?? 0;
+    uSum?.requests ??
+    (statusKnown ? (stats.successRequests || 0) + (stats.failedRequests || 0) : undefined);
+  const displayFailed = uSum?.failed ?? (statusKnown ? stats.failedRequests || 0 : undefined);
   const successRate =
-    displayRequests > 0 ? ((displayRequests - displayFailed) / displayRequests) * 100 : null;
-  const topModels = (usageData?.byModel || []).slice(0, 5);
+    displayRequests != null && displayFailed != null && displayRequests > 0
+      ? ((displayRequests - displayFailed) / displayRequests) * 100
+      : null;
+  const topModels = (usageForRange === range ? usageData?.byModel || [] : []).slice(0, 5);
   const maxModelTokens = Math.max(
     1,
     topModels.reduce((m, row) => Math.max(m, row.totalTokens || 0), 0),
@@ -140,13 +178,19 @@ export function OverviewPage({
 
   const domesticCount =
     status?.accounts?.domesticCount ??
-    allAccounts.filter((a) => normalizeSite(a.site) === 'domestic').length;
+    (statusKnown ? allAccounts.filter((a) => normalizeSite(a.site) === 'domestic').length : null);
   const globalCount =
     status?.accounts?.globalCount ??
-    allAccounts.filter((a) => normalizeSite(a.site) === 'global').length;
+    (statusKnown ? allAccounts.filter((a) => normalizeSite(a.site) === 'global').length : null);
 
-  const rangeLabel =
-    range === 'day' ? '今日' : range === 'week' ? '近 7 日' : range === 'month' ? '近 30 日' : '全部历史';
+  const invariantLost = invariantDropped + invariantWriteErrors;
+
+  const cacheLabel =
+    uSum?.cacheHitRate != null && uSum.cacheHitRate >= 0
+      ? `缓存 ${formatHitRate(uSum.cacheHitRate)}`
+      : statusKnown && stats.totalCachedTokens != null
+        ? `缓存 ${formatCompactNumber(stats.totalCachedTokens)}`
+        : '缓存 —';
 
   return (
     <div id="tab-overview" className="ds-page-enter space-y-6">
@@ -180,19 +224,84 @@ export function OverviewPage({
         }
       />
 
+      <ScopeNote>
+        口径：请求/失败数与 Token 消耗来自落盘统计，随上方所选区间变化；取不到落盘数据时
+        回退到进程内累计（重启清零）。「1h 峰值」取各分钟桶峰值的最大值，不是最近 1 分钟；
+        「限流」是限流事件次数，不是账号数；Credits 为当前站点有余额快照账号的合计，无快照账号不计入。
+            </ScopeNote>
+
+      {/* 静默失效命中：旧面板放在首屏，移植后不能只剩一个入口。
+          未知（—）、证据丢失（!）、过期（warn）必须与「无命中」区分开。 */}
+      <button
+        type="button"
+        onClick={() => onNavigate('tab-invariants')}
+        title="请求返回 200、但数据里出现了不该出现的变化（静默失效体检，只断言不修复）"
+        className={[
+          'w-full text-left ds-surface px-3.5 py-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 cursor-pointer',
+          invariantEnabled !== false && invariantLost > 0
+            ? 'border-[var(--warn)]'
+            : invariantEnabled !== false && (invariantHits || 0) > 0
+              ? 'border-[var(--err)]'
+              : 'hover:border-[var(--border-strong)]',
+        ].join(' ')}
+      >
+        <ShieldAlert
+          className={`w-3.5 h-3.5 shrink-0 ${
+            invariantEnabled !== false && (invariantLost > 0 || (invariantHits || 0) > 0)
+              ? invariantLost > 0
+                ? 'text-[var(--warn)]'
+                : 'text-[var(--err)]'
+              : 'text-[var(--fg-3)]'
+          }`}
+        />
+        <span className="text-[11px] text-[var(--fg-3)]">静默失效 · 近 24h</span>
+        <strong
+          id="ovInvariantHits"
+          className={`ds-mono text-sm ${
+            invariantEnabled !== false && invariantLost > 0
+              ? 'text-[var(--warn)]'
+              : invariantEnabled !== false && (invariantHits || 0) > 0
+                ? 'text-[var(--err)]'
+                : 'text-[var(--fg)]'
+          }`}
+        >
+          {invariantEnabled === false
+            ? '未启用'
+            : invariantLost > 0
+              ? `已丢弃 ${invariantLost}`
+              : invariantHits === null
+                ? '—'
+                : invariantHits}
+        </strong>
+        {invariantEnabled !== false && invariantLost > 0 && (
+          <span className="text-[11px] text-[var(--warn)]">
+            证据被队列丢弃 / 写盘失败，命中数不可信
+          </span>
+        )}
+        {invariantEnabled !== false && invariantLost === 0 && invariantHits !== null && (
+          <span className="text-[11px] text-[var(--fg-3)]">
+            {invariantHits > 0
+              ? `条命中${invariantStale ? '（已过期）' : ''}，建议查看`
+              : invariantStale
+                ? '最近一次刷新失败，结果已过期'
+                : '无命中'}
+          </span>
+        )}
+        {invariantEnabled !== false && invariantLost === 0 && invariantHits === null && (
+          <span className="text-[11px] text-[var(--fg-3)]">尚未加载（未知 ≠ 无命中）</span>
+        )}
+        <span className="ml-auto text-[11px] text-[var(--accent)]">查看体检 →</span>
+      </button>
+
       {/* 扁平极简指标带（纯细线分割，彻底告别堆叠方块） */}
       <div className="border-y border-[var(--border)] grid grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 lg:divide-x divide-[var(--border)]">
         <div className="py-4 pr-4 lg:px-5 lg:first:pl-0">
-          <div className="text-[11px] text-[var(--fg-3)]">Token 消耗（{rangeLabel}）</div>
+          <div className="text-[11px] text-[var(--fg-3)]">Token 消耗（{rangeScopeLabel}）</div>
           <div className="mt-1.5 flex items-baseline gap-2">
             <span id="mTokens" className="ds-mono text-[26px] font-medium leading-none text-[var(--fg)]">
-              {formatCompactNumber(displayTokens)}
+              {displayTokens != null ? formatCompactNumber(displayTokens) : '—'}
             </span>
-            <span className="ds-mono text-xs text-[var(--ok)]">
-              {uSum?.cacheHitRate != null && uSum.cacheHitRate >= 0
-                ? `缓存 ${formatHitRate(uSum.cacheHitRate)}`
-                : `缓存 ${formatCompactNumber(stats.totalCachedTokens || 0)}`}
-            </span>
+            <span className="ds-mono text-xs text-[var(--ok)]">{cacheLabel}</span>
           </div>
         </div>
 
@@ -200,16 +309,18 @@ export function OverviewPage({
           <div className="text-[11px] text-[var(--fg-3)]">请求与成功率</div>
           <div className="mt-1.5 flex items-baseline gap-2">
             <span id="mSF" className="ds-mono text-[26px] font-medium leading-none text-[var(--fg)]">
-              {displayRequests.toLocaleString()}
+              {displayRequests != null ? displayRequests.toLocaleString() : '—'}
             </span>
             <span
               className={`ds-mono text-xs ${
-                displayFailed > 0 ? 'text-[var(--warn)]' : 'text-[var(--fg-3)]'
+                (displayFailed ?? 0) > 0 ? 'text-[var(--warn)]' : 'text-[var(--fg-3)]'
               }`}
             >
               {successRate != null
-                ? `${successRate.toFixed(1)}% 成功${displayFailed > 0 ? ` · ${displayFailed} 失败` : ''}`
-                : '暂无失败'}
+                ? `${successRate.toFixed(1)}% 成功${displayFailed ? ` · ${displayFailed} 失败` : ''}`
+                : displayRequests == null
+                  ? '—'
+                  : '暂无请求'}
             </span>
           </div>
         </div>
@@ -218,11 +329,11 @@ export function OverviewPage({
           <div className="text-[11px] text-[var(--fg-3)]">实时并发与限流</div>
           <div className="mt-1.5 flex items-baseline gap-2">
             <span id="ccInFlight" className="ds-mono text-[26px] font-medium leading-none text-[var(--fg)]">
-              {concurrency.globalInFlight}
+              {concurrency.known ? concurrency.globalInFlight : '—'}
             </span>
             <span className="text-xs text-[var(--fg-3)]">
-              在途 · 峰值 <strong id="ccPeak" className="ds-mono text-[var(--fg-2)] font-medium">{concurrency.peakInFlight}</strong>
-              {concurrency.rateLimits > 0 && (
+              在途 · 1h 峰值 <strong id="ccPeak" className="ds-mono text-[var(--fg-2)] font-medium">{concurrency.known ? concurrency.peakInFlight : '—'}</strong>
+              {concurrency.known && concurrency.rateLimits > 0 && (
                 <>
                   {' · '}
                   <strong id="ccLimited" className="ds-mono text-[var(--warn)] font-medium">
@@ -241,13 +352,15 @@ export function OverviewPage({
           <div className="mt-1.5 flex items-baseline justify-between gap-2">
             <div className="flex items-baseline gap-1.5 min-w-0">
               <span id="mEnabled" className="ds-mono text-[26px] font-medium leading-none text-[var(--fg)]">
-                {poolSummary.healthy}
+                {statusKnown ? poolSummary.healthy : '—'}
               </span>
               <span className="ds-mono text-xs text-[var(--fg-3)]">
-                / {poolSummary.enabled} 启用
+                / {statusKnown ? poolSummary.enabled : '—'} 启用
               </span>
             </div>
-            {poolSummary.attention > 0 ? (
+            {!statusKnown ? (
+              <span className="ds-mono text-xs text-[var(--fg-3)]">—</span>
+            ) : poolSummary.attention > 0 ? (
               <button
                 type="button"
                 onClick={onNavigatePoolIssues}
@@ -268,6 +381,18 @@ export function OverviewPage({
         </div>
       </div>
 
+      {usageError && (
+        <p
+          role="alert"
+          className="text-xs leading-relaxed text-[var(--warn)] bg-[var(--warn-bg)] border-l-2 border-[var(--warn)] px-3.5 py-2.5 m-0"
+        >
+          落盘统计读取失败：{usageError}
+          {usingFallback
+            ? '（上面指标已回退为进程内累计，不随所选区间变化；重选区间或刷新状态会自动重试）'
+            : '（上面指标仍是该区间上一次成功加载的结果；重选区间或刷新状态会自动重试）'}
+        </p>
+      )}
+
       {/* 视觉主角：全宽大折线统计图 */}
       <Card id="overviewHeroChart" className="p-5 sm:p-6">
         <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
@@ -283,8 +408,8 @@ export function OverviewPage({
           )}
         </div>
         <UsageLineChart
-          series={usageData?.series || []}
-          totalRequests={displayRequests}
+          series={usageForRange === range ? usageData?.series || [] : []}
+          totalRequests={displayRequests ?? 0}
           range={range}
           height={310}
           emptyAction={
@@ -316,7 +441,11 @@ export function OverviewPage({
 
           {!topModels.length ? (
             <div className="py-6 text-xs text-[var(--fg-3)]">
-              当前周期暂无按模型统计记录。
+              {usageError
+                ? '落盘统计读取失败，无法列出按模型分布。'
+                : usingFallback
+                  ? '该区间的按模型统计尚未加载。'
+                  : '当前周期暂无按模型统计记录。'}
             </div>
           ) : (
             <div className="divide-y divide-[var(--border)]">
@@ -374,13 +503,15 @@ export function OverviewPage({
             <div className="py-2.5 flex items-center justify-between gap-3">
               <span className="text-[var(--fg-3)]">双区账号规模</span>
               <span className="ds-mono text-[var(--fg)]">
-                国内 {domesticCount} · 国际 {globalCount}
+                国内 {domesticCount ?? '—'} · 国际 {globalCount ?? '—'}
               </span>
             </div>
 
             <div className="py-2.5 flex items-center justify-between gap-3">
               <span className="text-[var(--fg-3)]">号池健康</span>
-              {poolSummary.attention > 0 ? (
+              {!statusKnown ? (
+                <span className="text-[var(--fg-3)]">状态尚未加载</span>
+              ) : poolSummary.attention > 0 ? (
                 <button
                   type="button"
                   onClick={onNavigatePoolIssues}
@@ -407,7 +538,8 @@ export function OverviewPage({
               {watch?.enabled ? (
                 <span className="inline-flex items-center gap-2">
                   <span className="ds-mono text-[var(--fg-2)]">
-                    错率 {formatPercent(watch.metrics?.errorRate)} · P50 {watch.metrics?.latencyP50 || 0}ms
+                    错率 {formatPercent(watch.metrics?.errorRate)} · P50{' '}
+                    {watch.metrics?.latencyP50 != null ? `${watch.metrics.latencyP50}ms` : '—'}
                   </span>
                   <StatusBadge id="watchState" tone={watch.ok ? 'ok' : 'err'} dot>
                     {watch.ok ? '正常' : watch.reason || '异常'}

@@ -2,7 +2,6 @@ package httputil
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -197,19 +196,53 @@ func ReadJSON(r *http.Request, dst any) error {
 	return ReadJSONLimited(r, dst, MaxJSONBodyBytes)
 }
 
+// countedLimitReader 限制总读取量并记录是否越界。
+//
+// 之所以不用 io.LimitReader + len(raw) 判断：那种写法必须先把 body 全部读进
+// 内存才能知道长度，等于对每个请求多留一份与 body 等大的缓冲。
+// 这里改成边解边计数：解码器需要多少读多少，读完用计数判断有没有超限。
+type countedLimitReader struct {
+	r     io.Reader
+	left  int64
+	limit int64
+	read  int64
+	over  bool
+}
+
+func (c *countedLimitReader) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		// 已经读到上限+1 还想再读 ⇒ 确定超限
+		c.over = true
+		return 0, io.EOF
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	c.read += int64(n)
+	if c.read > c.limit {
+		c.over = true
+	}
+	return n, err
+}
+
 // ReadJSONLimited 使用调用方指定的上限读取 JSON，避免修改进程全局上限。
 func ReadJSONLimited(r *http.Request, dst any, limit int64) error {
 	defer r.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
-	if err != nil {
-		return err
-	}
-	if int64(len(raw)) > limit {
+	// 先看 Content-Length：超限的请求直接拒绝，一个字节都不读。
+	// 分块上传没有 Content-Length（-1），走下面的限流 reader 兜底。
+	if r.ContentLength > limit {
 		return ErrBodyTooLarge
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
+	lr := &countedLimitReader{r: r.Body, left: limit + 1, limit: limit}
+	decoder := json.NewDecoder(lr)
 	decoder.UseNumber()
-	return decoder.Decode(dst)
+	err := decoder.Decode(dst)
+	if lr.over {
+		return ErrBodyTooLarge
+	}
+	return err
 }
 
 func BearerToken(r *http.Request) string {

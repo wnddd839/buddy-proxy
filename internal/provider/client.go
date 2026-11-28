@@ -165,9 +165,29 @@ type ChatOptions struct {
 	// Strip 非 nil 且 Enabled 时，对 system 做上游 11128 身份句剥离。
 	// 只在 KeepSystem=true 时生效；fold 模式本就改写 system，无需剥离。
 	Strip *StripConfig
+	// ReasoningReplay 为 true 时把历史 assistant 消息的 reasoning_content
+	// 原样回传（DeepSeek 规范：带 tools 时必须回传，否则 400）。
+	ReasoningReplay bool
+	// EffortProfile 是该模型声明的思考档位（来自 /models 的 reasoning 字段）。
+	// Known=false 时档位收敛退回全局三档逻辑，与旧行为一致。
+	EffortProfile EffortProfile
 	// StripReport 是剥离结果的回填指针（可为 nil）。成功/失败路径都会写入，
 	// 供网关记事件与面板展示「已剥离」。
 	StripReport *StripReport
+	// EchoSystemToUser 为 true 时，在**保持 system 原样**的前提下，
+	// 把同一份 system 内容再复制一份到第一条 user 开头（<client_instructions> 包裹）。
+	//
+	// 用途：对照实验 —— 有些模型对 system 位的指令权重偏低，把同样内容放到
+	// user 开头会显著提高遵循度。这里复制而非搬走（区别于 fold），因此
+	// system 位仍完整，两条注入路径同时存在，可直接对比行为差异。
+	//
+	// 默认关闭（CODEBUDDY_PROXY_SYSTEM_ECHO_USER=1 才开），属临时调试开关。
+	EchoSystemToUser bool
+	// IOReport 非 nil 时回填「进/出两侧」的消息统计，供不变量层判断
+	// 网关有没有在内部减少历史（I3）或让 system 无声消失（I4）。
+	// 传 nil 时不做任何统计 —— 生产默认就是 nil 之外的值由 gateway 填，
+	// 但测试与其它调用方可以不管。
+	IOReport *MessagesIO
 }
 
 type Event struct {
@@ -281,7 +301,11 @@ type Result struct {
 	DeltaCount int
 	Status     int
 	Model      string
-	Trace      RequestTrace
+	// UpstreamModel 是上游 SSE 回显的模型名（未观测时为空）。
+	// 与 Model（我们发出去的）并列：不一致即说明上游换了模型，
+	// 或我们发的是 auto 一族、由上游解析成具体模型。
+	UpstreamModel string
+	Trace         RequestTrace
 }
 
 // ChatError 保留上游 HTTP 状态与 Retry-After，Error() 维持原本文本以便换号正则匹配。
@@ -556,22 +580,36 @@ func isPortalDomain(domain string) bool {
 //
 // ApplyReasoningFields 将客户端思考档位写入上游 body。
 //
-// ⚠️ 2026-11-12 实测订正（此前记录的结论是反的，已作废）：
-// 上游 **只认扁平的 `reasoning_effort` 字段**；`reasoning:{effort:...}` 这个
-// 对象形式**完全不生效**。同一 prompt 直连上游的对照数据：
+// 2026-11-18 实测订正（覆盖此前 2026-11-12 的注释，那条结论不成立）：
 //
-//	都不传              thinking_chars=0    reasoning_tokens=0
-//	只传 reasoning_effort  thinking_chars=487  reasoning_tokens=142   ← 生效
-//	只传 reasoning 对象    thinking_chars=0    reasoning_tokens=0     ← 无效
-//	两者都传             thinking_chars=270  reasoning_tokens=73    ← 部分生效
+// ① 扁平 `reasoning_effort` 与对象 `reasoning:{effort:...}` **都生效**，
 //
-// 所以这里必须**始终**写 reasoning_effort，不能因为客户端带了 reasoning
-// 对象就跳过它——否则客户端传 `reasoning:{effort:"max"}` 时思考被静默关掉，
-// 表现为「设了 max 但完全不思考」。
+//	两者思考量相当（各 5 次中位：扁平 2561 字节 / 对象 1898 字节，
+//	差异在单次波动范围内；对象形式出现过 7111 的单次高点）。
+//	两者都传也不劣化（中位 2989）。所以「对象完全无效」是错的。
 //
-// 另外注意：各档位（minimal/low/medium/high/xhigh/max）在上游侧**没有稳定
-// 梯度**，实测 think_chars 在 384~726 之间随机波动、medium 反而最高。
-// 上游实际是「开/关」二元语义，具体档位值只用于透传给支持的模型。
+// ② 档位不是二元，但**也不是六个**。按 DeepSeek 官方文档
+//
+//	   （api-docs.deepseek.com/guides/thinking_mode）与本地实测：
+//
+//		请求值   实际档位   实测 reasoning_tokens 中位（各 5 次）
+//		minimal  low        459
+//		low      low        412
+//		medium   high       591
+//		high     high       500
+//		xhigh    high       415
+//		max      max        726
+//		ultra    max        1081
+//
+//	   即 6 个可选值实际只有 3 级语义：low / high / max。
+//	   minimal=low、medium=high=xhigh 完全等价；max 是唯一更强的一档，
+//	   ultra 在实测中比 max 还高（官方把两者都映射到 max，但实测有差异，
+//	   属噪声或上游实现细节，不建议依赖）。
+//
+// ③ 不传任何字段 ⇒ **完全不思考**（实测 think=0，5/5 稳定）。
+//
+//	这与官方「thinking mode 默认开启、默认 high」不符 ——
+//	上游这条 relay 在缺省时并没有打开思考，所以**必须显式传**。
 func ApplyReasoningFields(body map[string]any, opts ChatOptions) {
 	// 对象形式原样透传（部分模型可能认），但不再作为「是否发 reasoning_effort」的开关。
 	if opts.Reasoning != nil {
@@ -588,8 +626,23 @@ func ApplyReasoningFields(body map[string]any, opts ChatOptions) {
 			}
 		}
 	}
-	if effort != "" {
-		body["reasoning_effort"] = effort
+	// 收敛到该模型真实支持的档位。
+	//
+	// 必须收敛而不是原样透传：上游对未知值是静默接受的，但结果是完全不思考
+	// ——实测 bogus-xyz 连续 3 次 reasoning_tokens=0 且正文 0 字，同期 max 是 6172。
+	// 也就是说一个拼错的档位能把思考悄悄关掉，且没有任何报错可循。
+	// 原始档位仍会经 usage journal 落盘，事后能查到「谁传了什么」。
+	//
+	// 有该模型的档位画像时按画像收敛（每模型档位表不同：glm-5.2 只有
+	// high/xhigh，deepseek 有 low/high/max）；没有画像时退回全局三档。
+	//
+	// off 拒绝表：部分模型对 reasoning_effort:"off" 返回 400（编目却声明
+	// canDisableThinking:true）。命中时整个字段不发 —— 等价于「客户端没指定」，
+	// 而「发一个被拒的 off」会让该模型的每个请求都挂。
+	if wire, _ := canonicalEffortForProfile(effort, opts.EffortProfile); wire != "" {
+		if !shouldDropDisableEffort(opts.Model, wire) {
+			body["reasoning_effort"] = wire
+		}
 	}
 	if opts.Thinking != nil {
 		body["thinking"] = opts.Thinking
@@ -615,11 +668,18 @@ func ReasoningRequested(opts ChatOptions) bool {
 	}
 
 	// 扁平字段是真正生效的那个（见 ApplyReasoningFields 的实测说明）。
+	//
+	// 这里**不能**再用「枚举已知档位」来判定：未知值现在会被收敛成 high 并
+	// 真的让上游思考，若仍按白名单判，这类样本会被判成「客户端没要推理」而
+	// 排除出推理缺失率，等于「思考消失」永远不告警。
+	// 只要不是明确的关闭关键词、且确实写进了 body，就算要求了推理。
 	if effort, ok := body["reasoning_effort"].(string); ok {
 		switch strings.ToLower(strings.TrimSpace(effort)) {
 		case "none", "disabled", "off":
 			return false
-		case "minimal", "low", "medium", "high", "xhigh", "max":
+		case "":
+			// 没写进 body（客户端没传），不算要求推理。
+		default:
 			enabled = true
 		}
 	}
@@ -740,6 +800,92 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 	return EnsureUpstreamMessagesWith(messages, false, nil, nil)
 }
 
+// reusableMessageKeys 是重建路径「会原样写出」的键集合。
+//
+// 白名单而非黑名单：出现任何不认识的键就退回重建路径 —— 重建路径会把
+// 它丢掉，复用原 map 却会带出去，那是行为差异。
+var reusableMessageKeys = map[string]bool{
+	"role":              true,
+	"content":           true,
+	"tool_calls":        true,
+	"tool_call_id":      true,
+	"name":              true,
+	"reasoning_content": true, // 仅 assistant 且为字符串时才允许（见下）
+}
+
+// canReuseMessages 判断能否跳过逐条重建。
+//
+// 判定必须与重建路径的**输出**严格一致：只要有一条 message 的形态
+// 会让重建结果与原 map 不同，就返回 false 走老路径。快路径只省分配，
+// 绝不改变行为。
+func canReuseMessages(messages []map[string]any, keepSystem bool, strip *StripConfig, reasoningReplay bool) bool {
+	stripOn := strip != nil && strip.Enabled
+	for _, message := range messages {
+		rawRole := fmt.Sprint(message["role"])
+		role := NormalizeMessageRole(rawRole)
+		// 重建路径会把角色改写成规范形式；原样返回就改不了
+		if role != rawRole {
+			return false
+		}
+		// 只允许白名单内的键
+		for key := range message {
+			if !reusableMessageKeys[key] {
+				return false
+			}
+		}
+		// fold 模式要把 system 抽出来重排
+		if role == "system" && !keepSystem {
+			return false
+		}
+		// content 必须是字符串：数组/对象会被 normalizeContent 改结构
+		content, isStr := message["content"].(string)
+		if !isStr {
+			return false
+		}
+		// 剥离开启时，必须确认「剥离不会改动这条正文」，否则要走重建路径。
+		//
+		// stripText 未命中时返回同一个 string（零拷贝），所以这里可以直接
+		// 比较字符串是否发生变化。system 与 assistant 是唯一两个会被剥离
+		// 的角色（见 EnsureUpstreamMessagesWithReplay），判定也只对它们做。
+		if stripOn && (role == "system" || role == "assistant") {
+			skip := role == "assistant" && strip.SkipAssistant
+			if !skip {
+				if out, _, changed := stripText(content, strip); changed || out != content {
+					return false
+				}
+			}
+		}
+		// tool 输出以 '[' 开头时 NormalizeToolOutput 会尝试解析图片数组
+		if role == "tool" && strings.HasPrefix(strings.TrimSpace(content), "[") {
+			return false
+		}
+		// 空正文会被重建路径丢弃（除非带 tool_calls 或 tool_call_id）
+		if strings.TrimSpace(content) == "" {
+			hasCalls := len(asAnySlice(message["tool_calls"])) > 0
+			if !hasCalls && message["tool_call_id"] == nil {
+				return false
+			}
+			// 空的 tool-assistant 会被 mergeConsecutiveToolAssistants 合并
+			if role == "assistant" && hasCalls {
+				return false
+			}
+		}
+		// reasoning_content 只有 assistant 且为字符串时才是「原样带出」
+		if v, ok := message["reasoning_content"]; ok {
+			if !reasoningReplay || role != "assistant" {
+				return false
+			}
+			if _, isStr := v.(string); !isStr {
+				return false
+			}
+			if v == "" {
+				return false // 重建路径不写空串
+			}
+		}
+	}
+	return true
+}
+
 // EnsureUpstreamMessagesWith 规整客户端消息。
 //
 // keepSystem=false（默认，fold 模式）：把客户端 system/developer 折叠进第一条
@@ -750,11 +896,39 @@ func EnsureUpstreamMessages(messages []map[string]any) []map[string]any {
 // 但仍然执行空消息丢弃 / mergeConsecutiveToolAssistants / PromoteToolImages /
 // NormalizeToolOutput —— 少做任何一步都会换来上游 11148 或图片丢失。
 //
-// strip 非 nil 且 Enabled 时，对 system 内容做「身份句剥离」（见 identity_strip.go）。
-// 只影响 system，不动 user/assistant/tool。剥离发生在 trim 判空**之后**：
-// 剥空的 system 仍会作为空 content 消息保留，不会被这里丢弃 —— 实测上游
-// 接受空 system，且保留它可避免 global 站补 canonical 的兜底注入。
+// strip 非 nil 且 Enabled 时，对 system 与 assistant 的文本做指纹剥离
+// （见 identity_strip.go）：开头身份句 + 任意位置段落指纹。
+// 只影响 system/assistant，不动 user/assistant 的工具调用/tool 输出。
+// 剥离发生在 trim 判空**之后**：剥空的 system 仍会作为空 content 消息保留，
+// 不会被这里丢弃 —— 实测上游接受空 system，且保留它可避免 global 站补
+// canonical 的兜底注入。
 func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, strip *StripConfig, report *StripReport) []map[string]any {
+	return EnsureUpstreamMessagesWithReplay(messages, keepSystem, strip, report, true)
+}
+
+// EnsureUpstreamMessagesWithReplay 同上，但可以显式控制是否回传历史 thinking。
+//
+// reasoningReplay 为 true 时，assistant 消息上的 reasoning_content 原样带上。
+//
+// 为什么默认必须回传（DeepSeek Thinking Mode 规范原文）：
+//   - 请求带 tools：所有历史轮次的 reasoning_content 必须回传，否则 API 返回 400；
+//   - 请求不带 tools：不必回传，传了也会被忽略。
+//
+// 我们是工具调用密集的网关（单请求常见 200+ 条 message、13+ 个 tool），
+// 此前一律删掉这个字段。实测 CodeBuddy 上游没有因此报 400，但那是它的
+// 宽松实现，不是规范 —— 一旦收紧就会全线失败，所以按规范做。
+//
+// 只透传 reasoning_content：OpenRouter 的 reasoning / reasoning_details
+// 是不同形态的结构化字段，混进来会把命名空间搞乱。
+func EnsureUpstreamMessagesWithReplay(messages []map[string]any, keepSystem bool, strip *StripConfig, report *StripReport, reasoningReplay bool) []map[string]any {
+	// 快路径：形态与「重建后的结果」完全一致时，直接复用原切片。
+	//
+	// 为什么值得做：重建路径为每条 message 新建一个 map 做浅拷贝。一个
+	// 200 轮历史的 agent 请求有 600+ 条 message，等于 600+ 次 map 分配，
+	// 而内容与原始 map 完全相同。压测显示大请求的 CPU 主要花在这里。
+	if canReuseMessages(messages, keepSystem, strip, reasoningReplay) {
+		return messages
+	}
 	var (
 		instructions []string
 		rest         []map[string]any
@@ -778,6 +952,28 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, stri
 		} else {
 			item["content"] = normalizeContent(message["content"])
 		}
+		// assistant 正文也是上游 11128 的扫描面：2026-11-17 实弹确认，
+		// assistant 里出现 @ 段指纹（子串）或开头身份句（前缀）都会被拦，
+		// 而折叠 system 救不了它（折叠后仍然 400）。只有显式启用剥离的
+		// 档位（auto / strip）会挂 Strip；keep / fold 不挂，保持原样。
+		// SkipAssistant=true 时跳过这一段：system 仍照剥，只是不动历史输出
+		// （被污染的会话会因此回到「永久 502」，这是关掉它的已知代价）。
+		if role == "assistant" && strip != nil && strip.Enabled && !strip.SkipAssistant {
+			if stripped, changed := stripContent(item["content"], strip, report, false); changed {
+				item["content"] = stripped
+			}
+		}
+		// 历史 thinking 原样回传（见函数开头关于 DeepSeek 规范的说明）。
+		//
+		// 位置在剥离之后：thinking 不在上游 11128 的扫描面上（实弹只扫
+		// system 与 assistant 正文），所以它既不参与剥离，也不该被剥离影响。
+		if reasoningReplay && role == "assistant" {
+			if thinking, ok := message["reasoning_content"]; ok {
+				if text, ok := thinking.(string); ok && text != "" {
+					item["reasoning_content"] = text
+				}
+			}
+		}
 		hasToolCalls := len(asAnySlice(item["tool_calls"])) > 0
 		if messageContentEmpty(item["content"]) && !hasToolCalls && item["tool_call_id"] == nil {
 			continue
@@ -786,7 +982,9 @@ func EnsureUpstreamMessagesWith(messages []map[string]any, keepSystem bool, stri
 			if keepSystem {
 				if text := strings.TrimSpace(fmt.Sprint(item["content"])); text != "" && text != "<nil>" {
 					// 剥离放在判空之后：保证剥空的 system 仍被保留。
-					if stripped, changed := stripContent(item["content"], strip, report); changed {
+					// isSystem=true：计入 SystemBytes，便于区分「system 被削」
+					// 与「只动了 assistant 历史」。
+					if stripped, changed := stripContent(item["content"], strip, report, true); changed {
 						item["content"] = stripped
 					}
 					rest = append(rest, item)
@@ -915,7 +1113,13 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	}
 	// CodeBuddy protocol_direct 拒绝非流式 chat（11101）。始终上游流式；
 	// 需要 JSON 的调用方仍通过 readSSE 聚合成 Turn。
-	messages := EnsureUpstreamMessagesWith(opts.Messages, opts.KeepSystem, opts.Strip, opts.StripReport)
+	messages := EnsureUpstreamMessagesWithReplay(opts.Messages, opts.KeepSystem, opts.Strip, opts.StripReport, opts.ReasoningReplay)
+	// 临时开关：system 原样保留，同时复制一份进第一条 user。
+	// 放在剥离之后 —— 确保复制的是已剥离干净的版本，否则 user 副本
+	// 会带上刚删掉的指纹，等于让剥离白做。
+	if opts.EchoSystemToUser && opts.KeepSystem {
+		messages = echoSystemIntoFirstUser(messages)
+	}
 	// global 要求首条必须是 system；显式 domestic 保持既有 payload 不变。
 	// 空 site 按 global 处理（config.NormalizeSite("") 默认归 global）。
 	if config.NormalizeSite(opts.Site) == "global" && len(messages) > 0 &&
@@ -924,8 +1128,44 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 		out = append(out, map[string]any{"role": "system", "content": canonicalUpstreamSystem})
 		messages = append(out, messages...)
 	}
+	// PromptTokens 在拿到 usage 后才能填，所以先在 Complete 返回前回填。
+	// 这里不填：见 completeFingerprint 的注释。
+	//
+	// 每次尝试都从干净的出站态开始：共用 IO 指针的重试里，
+	// 上一次尝试可能已经填过 Out* 并把 OutObserved 置 true，
+	// 若这一次在 len 检查处早退，记录会带着上一轮的旧值。
+	//
+	// 语义：最终记录保留**最后一次尝试**的出站态，与 SystemForm /
+	// Degraded（同样取最后一轮）一致。
+	//
+	// 「第 1 次出站有值、第 2 次在 len 检查处早退」这种掩蔽在当前重试
+	// 集合里不可达：重试只有「同号重连（messages 完全相同）」与
+	// 「11128 后 fold 重试（KeepSystem true→false，消息只增不减）」两种，
+	// 构造不出「非空 → 空」的转变。若将来新增了会缩减消息的重试路径，
+	// 必须在这里重新评估。
+	if opts.IOReport != nil {
+		opts.IOReport.OutMessages = 0
+		opts.IOReport.OutBytes = 0
+		opts.IOReport.OutSystemLen = 0
+		opts.IOReport.OutObserved = false
+	}
 	if len(messages) == 0 {
 		return Result{}, fmt.Errorf("CodeBuddy chat completion failed: no valid messages after normalization")
+	}
+	// 出站统计放在 len 检查**之后**：消息全被过滤成空时请求根本没发出去，
+	// 此时不该产生任何出站统计（OutMessages=0 会被 I3/I4 误读成「丢光了」）。
+	//
+	// 统计本身仍必须放在所有改写之后（剥离 / echo / fold / system 注入），
+	// 否则量到的是中间态，I3/I4 会把合法的策略变换当成丢失。
+	//
+	// 同时置 OutObserved：它是「出站确实发生过」的唯一显式证据 ——
+	// 上游 5xx/429/流中断这类失败，出站是发生过的，Out* 已填充，
+	// 那些路径上的「条数变少」是真缺陷，必须继续判。
+	//
+	// 只填出站侧（in 传 nil）：入站侧在网关入口已由 primeInboundIO 填好。
+	if opts.IOReport != nil {
+		FillMessagesIO(opts.IOReport, nil, messages)
+		opts.IOReport.OutObserved = true
 	}
 	body := map[string]any{
 		"model":    model,
@@ -1020,6 +1260,11 @@ func (c *Client) Complete(ctx context.Context, opts ChatOptions) (Result, error)
 	result.Status = resp.StatusCode
 	result.Model = model
 	result.Trace = trace
+	// 分词器指纹需要「上游返回的 prompt_tokens」与「入站字符成分」配对。
+	// 两者都只有到这里才齐，所以在返回前一次性写进共享指针。
+	if opts.IOReport != nil {
+		opts.IOReport.PromptTokens = result.Turn.Usage.PromptTokens
+	}
 	return result, nil
 }
 
@@ -1249,6 +1494,11 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 		var events []Event
 		var chunk openAISSEChunk
 		if err := json.Unmarshal(raw, &chunk); err == nil && chunk.looksOpenAI() {
+			// 上游回显的模型名：取首次出现的那个并锁定。
+			// 不锁死的话，流中若有多个值（理论上不该有）会来回覆盖。
+			if acc.upstreamModel == "" {
+				acc.upstreamModel = strings.TrimSpace(chunk.Model)
+			}
 			events = eventsFromOpenAIChunk(chunk)
 		} else {
 			var payload any
@@ -1355,15 +1605,19 @@ func (c *Client) readSSE(body io.Reader, opts ChatOptions) (Result, error) {
 	// 客户端也可能已经收到过增量。
 	turn.Delivered = delivered
 	return Result{
-		Turn:       turn,
-		Bytes:      bytesRead,
-		EventCount: eventCount,
-		DeltaCount: deltaCount,
+		Turn:          turn,
+		Bytes:         bytesRead,
+		EventCount:    eventCount,
+		DeltaCount:    deltaCount,
+		UpstreamModel: acc.upstreamModel,
 	}, nil
 }
 
 // openAISSEChunk 覆盖 protocol_direct 主流式帧，避免每事件 Unmarshal(map)。
 type openAISSEChunk struct {
+	// Model 是上游回显的模型名。用于 I8：与请求的模型不一致即说明
+	// 上游替换了模型（或请求的是 auto 一族、由上游解析）。
+	Model   string            `json:"model"`
 	Choices []openAISSEChoice `json:"choices"`
 	Usage   map[string]any    `json:"usage"`
 }
@@ -1556,6 +1810,9 @@ type accumulator struct {
 	stopReason string
 	usage      Usage
 	hasUsage   bool
+	// upstreamModel 是上游在 SSE 帧里回显的模型名（首次出现即定）。
+	// 只在 openai 形态的 chunk 里取；别的形态留空表示「未观测」。
+	upstreamModel string
 }
 
 func newAccumulator() *accumulator {

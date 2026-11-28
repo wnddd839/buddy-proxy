@@ -24,7 +24,7 @@ func TestAutoDowngradeEventsMarkRecovered(t *testing.T) {
 		Model:     "auto",
 		RequestID: requestID,
 		Messages: []map[string]any{
-			{"role": "system", "content": claudeCodeMarker},
+			{"role": "system", "content": unknownFingerprintMarker},
 			{"role": "user", "content": "hi"},
 		},
 	})

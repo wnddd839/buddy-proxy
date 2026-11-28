@@ -28,8 +28,11 @@ type Entry struct {
 	SessionKey   string `json:"sessionKey,omitempty"`
 	SessionLabel string `json:"sessionLabel,omitempty"`
 
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
+	Model string `json:"model"`
+	// RoutedModel 是实际发给上游的模型名（被模型路由/标题改写改过时才有值）。
+	// 与 Model 并列：前者是客户端要的，后者是真正跑的。
+	RoutedModel string `json:"routedModel,omitempty"`
+	Stream      bool   `json:"stream"`
 
 	Ok    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
@@ -37,10 +40,28 @@ type Entry struct {
 	AccountID    string `json:"accountId,omitempty"`
 	AccountLabel string `json:"accountLabel,omitempty"`
 
-	PromptTokens     int64    `json:"promptTokens"`
-	CompletionTokens int64    `json:"completionTokens"`
-	CachedTokens     int64    `json:"cachedTokens"`
-	Credit           *float64 `json:"credit,omitempty"`
+	PromptTokens     int64 `json:"promptTokens"`
+	CompletionTokens int64 `json:"completionTokens"`
+	CachedTokens     int64 `json:"cachedTokens"`
+	// ReasoningTokens 是 completion_tokens 里用于思考的那部分。
+	//
+	// 必须单记的原因：这两个模型（deepseek-v4.1-flash）思考占 completion
+	// 的比例可以到 77%~96%（实测 high=77%、max=96%），也就是说
+	// 「输出慢/话少」很可能不是上游慢，而是预算被思考吃掉了。
+	// 只记 completion_tokens 无法区分这两种情况 —— 而它们的处置完全不同：
+	// 前者要降档位，后者要查链路。
+	ReasoningTokens int64 `json:"reasoningTokens,omitempty"`
+	// ReasoningEffort 是客户端本次请求的档位原值（未传时为空）。
+	// 与 ReasoningTokens 配对才能回答「哪一档真的更省/更快」。
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// ReasoningTier 是**上游实际生效的档位**：low / high / max。
+	//
+	// 为什么单列一个而不是复用 ReasoningEffort：上游只有三档，客户端却会送来
+	// minimal/medium/xhigh/ultra 等别名，甚至拼错的值。按原值聚合吞吐，每档
+	// 都只剩 1~2 条，回答不了「哪档更快」。而把 ReasoningEffort 的语义改掉
+	// 又会让历史行与新行在同一列上代表不同东西 —— 所以新增，不改旧。
+	ReasoningTier string   `json:"reasoningTier,omitempty"`
+	Credit        *float64 `json:"credit,omitempty"`
 
 	DurationMs int64 `json:"durationMs"`
 
@@ -50,6 +71,46 @@ type Entry struct {
 	SystemFp string `json:"systemFp,omitempty"`
 	// SystemDegraded 表示本次请求因 11128 从 keep 降级为 fold。
 	SystemDegraded bool `json:"systemDegraded,omitempty"`
+	// SystemLen 是 system 的 **UTF-8 字节数**（出站口径）。
+	//
+	// Go 的 len(string) 就是字节数，中文每字 3 字节 —— 所以中文 system
+	// 的字节数约为字符数的 3 倍。用字节数而不是字符数，是为了与
+	// StripReport.Bytes（剥离字节数）同口径，两个数字能直接相减。
+	//
+	// 需要「字符数」的场景是 tokenizer 指纹（tokfp.Composition.Chars），
+	// 那里用 utf8.RuneCountInString，是另一套口径。
+	// SystemStripped 表示删过已知指纹。
+	SystemLen      int    `json:"systemLen,omitempty"`
+	SystemStripped bool   `json:"systemStripped,omitempty"`
+	StripScope     string `json:"stripScope,omitempty"`
+	// ErrorCode 是分类后的错误码（空 = 未分类）。与 Error 的区别：
+	// Error 是给人看的原文，ErrorCode 是给统计与断言用的枚举。
+	ErrorCode string `json:"errorCode,omitempty"`
+	// UsageSource 区分上游真实值与本地估算（upstream | estimated）。
+	UsageSource string `json:"usageSource,omitempty"`
+	// TitleRewrite 标记被改写成标题生成模型的请求（会话级统计要排除它）。
+	TitleRewrite bool `json:"titleRewrite,omitempty"`
+	// InMessages/OutMessages/InBytes/OutBytes 是进/出两侧的消息统计。
+	InMessages  int `json:"inMessages,omitempty"`
+	OutMessages int `json:"outMessages,omitempty"`
+	InBytes     int `json:"inBytes,omitempty"`
+	OutBytes    int `json:"outBytes,omitempty"`
+	// 分词器指纹：入站内容的字符成分与上游 prompt_tokens 的比值。
+	// 与 UpstreamModel 互补 —— 后者是「上游说它跑了哪个」，
+	// 这里是对「它到底用哪个分词器」的物理证据。
+	TokChars  int    `json:"tokChars,omitempty"`
+	TokCJK    int    `json:"tokCJK,omitempty"`
+	TokDigits int    `json:"tokDigits,omitempty"`
+	TokASCII  int    `json:"tokASCII,omitempty"`
+	TokBucket string `json:"tokBucket,omitempty"`
+	// TokRatio 是 prompt_tokens / 入站字符数（保留 4 位小数）。
+	TokRatio float64 `json:"tokRatio,omitempty"`
+
+	// UpstreamModel 是上游 SSE 回显的模型名（空 = 未观测或旧数据）。
+	// 与 Model 并列：前者是客户端要的，后者是上游说它跑了哪个。
+	UpstreamModel string `json:"upstreamModel,omitempty"`
+	// ModelMismatch 标记「上游回显的模型与请求的不一致且不是 auto 一族」。
+	ModelMismatch bool `json:"modelMismatch,omitempty"`
 }
 
 // Summary rolls up token / credit totals for a time window.

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowRight,
@@ -16,37 +16,74 @@ import type {
   ModelRouteRule,
   ModelRoutesPayload,
   RouteMode,
-  Site,
+  TitleRoute,
+  UsageEntry,
 } from '@/types/api';
 import {
   computeModelAvailability,
+  isAutoFamilyModel,
   mergeModelLists,
-  normalizeRouteMode,
+  normalizeModelName,
   routeRuleKey,
   validateModelRoutes,
 } from '@/lib/domain';
-import { bareModelId, normalizeSite, siteLabel } from '@/lib/format';
+import { bareModelId, formatTime, normalizeSite, shortId, siteLabel } from '@/lib/format';
 import { apiRequest, copyToClipboard } from '@/lib/api';
+import {
+  ROUTES_DRAFT_KEY,
+  TITLE_DRAFT_KEY,
+  clearDraft,
+  getSessionStorage,
+  normalizeRulesDraft,
+  normalizeTitleDraft,
+  readDraft,
+  rulesFingerprint,
+  shouldRestoreDraft,
+  titleFingerprint,
+  titleFromPayload,
+  writeDraft,
+  type StoredDraft,
+} from '@/lib/drafts';
 import { useToast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, PageHeader } from '@/components/ui/Card';
+import { ScopeNote } from '@/components/ui/ScopeNote';
 import { DirtySaveBar } from '@/components/ui/DirtySaveBar';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { SlideDrawer } from '@/components/ui/SlideDrawer';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 
+interface EchoMetricProps {
+  id: string;
+  label: string;
+  value: number | string;
+  title?: string;
+}
+
+/** 回显对照的一个计数格。id 必须保留：外部探针与历史断言都按 id 找。 */
+function EchoMetric({ id, label, value, title }: EchoMetricProps) {
+  return (
+    <div title={title} className="ds-surface p-2.5">
+      <div className="text-[11px] text-[var(--fg-3)]">{label}</div>
+      <div id={id} className="ds-mono text-lg text-[var(--fg)] mt-0.5">
+        {value}
+      </div>
+    </div>
+  );
+}
+
 interface ModelsPageProps {
-  activeSite: Site;
   accounts: AccountSummary[];
   quotaFloorSaved: number;
   models: ModelItem[];
   modelsRaw: string;
+  /** 编目拉取失败的原因（空串 = 没失败）。失败时不能显示「暂无模型数据」。 */
+  modelsError: string;
   modelsScope: 'domestic' | 'global' | 'both';
-  onSetModelsScope: (scope: 'domestic' | 'global' | 'both') => void;
   onRefreshModels: (scope?: 'domestic' | 'global' | 'both') => Promise<void>;
   routesPayload: ModelRoutesPayload | null;
   routesError: string;
-  onRoutesSaved: (rules: ModelRouteRule[]) => void;
+  onRoutesSaved: (rules: ModelRouteRule[], titleRoute?: TitleRoute) => void;
 }
 
 export function ModelsPage({
@@ -54,8 +91,8 @@ export function ModelsPage({
   quotaFloorSaved,
   models,
   modelsRaw,
+  modelsError,
   modelsScope,
-  onSetModelsScope,
   onRefreshModels,
   routesPayload,
   routesError,
@@ -64,30 +101,155 @@ export function ModelsPage({
   const { showToast } = useToast();
   const [search, setSearch] = useState('');
   const [onlyFree, setOnlyFree] = useState(false);
-  const [loadingModels, setLoadingModels] = useState(false);
+  // 正在拉取的范围。显示范围（modelsScope）只在成功后才切换，所以加载指示
+  // 不能挂在 modelsScope 上，否则点了新范围看不到任何反馈。
+  const [loadingScope, setLoadingScope] = useState<'domestic' | 'global' | 'both' | null>(null);
   const [priorityDrawerOpen, setPriorityDrawerOpen] = useState(false);
 
   // 路由草稿状态
   const [rules, setRules] = useState<ModelRouteRule[]>([]);
   const [savedSnapshot, setSavedSnapshot] = useState('');
+  // 同步用的镜像：effect 里要判断「本地是不是还有未保存的草稿」，读 state 会
+  // 被闭包钉死在旧值上，用 ref 取渲染时的最新值。
+  const savedSnapshotRef = useRef('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [justSaved, setJustSaved] = useState(false);
 
+  // 会话标题改写（TitleRoute）。注意：POST /model-routes 是整体写入，
+  // 保存路由时如果不带 titleRoute，后端会把标题配置写成 nil。
+  const [titleRoute, setTitleRoute] = useState<TitleRoute>({ enabled: false });
+  const [savingTitle, setSavingTitle] = useState(false);
+  // 上一次服务端 titleRoute 快照：payload 更新时用它判断草稿是否脏。
+  const titleSavedRef = useRef('');
+  // 同一份快照的 state 副本：持久化 effect 需要它做依赖（ref 变化不触发渲染）。
+  const [titleBase, setTitleBase] = useState('');
+  // 草稿持久化状态：sessionStorage 不可用 / 写满时必须明说，不能继续承诺
+  // 「草稿已保留」。基线过期 = 写草稿之后服务端又被改过，保存会覆盖别人的改动。
+  const [routesDraftPersisted, setRoutesDraftPersisted] = useState(true);
+  const [titleDraftPersisted, setTitleDraftPersisted] = useState(true);
+  const [routesBaseStale, setRoutesBaseStale] = useState(false);
+  const [titleBaseStale, setTitleBaseStale] = useState(false);
+  // 服务端路由表结构非法：保留上一份内存状态并锁死两个保存入口。
+  const [routesPayloadInvalid, setRoutesPayloadInvalid] = useState(false);
+
+  // 会话级草稿：切换侧边栏标签会卸载本页，未保存的编辑必须活下来。
+  // 只有 sessionStorage 可用时才持久化；隐私模式下退化为纯内存（draftStorage = null）。
+  const draftStorage = useMemo(() => getSessionStorage(), []);
+  const pendingRoutesDraft = useRef<StoredDraft<ModelRouteRule[]> | null>(null);
+  const pendingTitleDraft = useRef<StoredDraft<TitleRoute> | null>(null);
+  // hydrate 每份草稿只做一次：之后的载荷更新继续走「脏草稿优先」的旧逻辑。
+  const routesHydratedRef = useRef(false);
+  const titleHydratedRef = useRef(false);
+  // StrictMode（dev only）会把 effect 连着跑两遍。载荷对象没换就跳过第二遍：
+  // 第二遍里 rules 还是初始空数组，按「脏草稿优先」会把它当成草稿保留，
+  // 结果把刚 hydrate 好的规则清空。
+  const consumedPayloadRef = useRef<ModelRoutesPayload | null>(null);
+
+  // 会话草稿只在挂载时读一次，损坏的条目在这里就被删掉。
+  // 本 effect 必须声明在载荷 effect 之前：同一轮 commit 内 effect 按声明顺序
+  // 执行，下面的首次 hydrate 才能拿到 pending*。
   useEffect(() => {
-    if (!routesPayload) return;
-    const normalized: ModelRouteRule[] = (routesPayload.rules || []).map((r) => ({
-      fromSite: normalizeSite(r.fromSite),
-      match: r.match || '',
-      site: normalizeSite(r.site),
-      target: r.target || '',
-      mode: normalizeRouteMode(r.mode),
-      note: r.note || '',
-    }));
-    const snap = JSON.stringify(normalized);
-    setRules(normalized);
-    setSavedSnapshot(snap);
+    pendingRoutesDraft.current = readDraft(draftStorage, ROUTES_DRAFT_KEY, normalizeRulesDraft);
+    pendingTitleDraft.current = readDraft(draftStorage, TITLE_DRAFT_KEY, normalizeTitleDraft);
+  }, [draftStorage]);
+
+  // 上游模型回显对照（I8）：直接复用 /usage 已有的 upstreamModel /
+  // modelMismatch 字段，不新增后端接口。
+  // null = 还没成功加载过。绝不能初始化为 []：那会让四个计数显示 0，
+  // 看起来像「没有模型替换」——本页最危险的假阴性。
+  const [echoRows, setEchoRows] = useState<UsageEntry[] | null>(null);
+  const [echoLoading, setEchoLoading] = useState(false);
+  const [echoError, setEchoError] = useState('');
+
+  useEffect(() => {
+    if (!routesPayload || consumedPayloadRef.current === routesPayload) return;
+    consumedPayloadRef.current = routesPayload;
+    const rawRules = routesPayload.rules;
+    // rules 缺省 / null = 服务端空表，允许；但「不是数组」或「某条结构不合法」
+    // 绝不能 `?? []` 当成空表 —— 那会让保存标题时顺手把线上路由清空。
+    // 此时保留上一份内存状态，并锁死两个保存入口。
+    const normalized = rawRules == null ? [] : normalizeRulesDraft(rawRules);
+    if (normalized === null) {
+      setRoutesPayloadInvalid(true);
+      setRoutesBaseStale(false);
+    } else {
+      setRoutesPayloadInvalid(false);
+      const snap = rulesFingerprint(normalized);
+      // 父级载荷更新时不能无脑覆盖草稿：保存「标题改写」会回写父级 payload，
+      // 若这里直接把 rules 换成服务端版本，用户还没保存的路由编辑会静默消失。
+      const prevSnap = savedSnapshotRef.current;
+      savedSnapshotRef.current = snap;
+      if (!routesHydratedRef.current) {
+        // 首次拿到载荷：会话里若留着上次没保存的草稿就恢复它。
+        routesHydratedRef.current = true;
+        const stored = pendingRoutesDraft.current;
+        pendingRoutesDraft.current = null;
+        const restore = stored !== null && shouldRestoreDraft(stored, snap, rulesFingerprint);
+        setRules(restore && stored ? stored.draft : normalized);
+        setRoutesBaseStale(
+          restore && stored !== null && stored.base !== '' && stored.base !== snap,
+        );
+      } else {
+        setRules((prev) => (prevSnap && JSON.stringify(prev) !== prevSnap ? prev : normalized));
+        // 服务端在草稿期间又变了：即使没恢复草稿也要提示「保存会覆盖它」。
+        if (prevSnap && snap !== prevSnap) setRoutesBaseStale(true);
+      }
+      setSavedSnapshot(snap);
+    }
+    // titleRoute 与 rules 同源同载荷，必须一起同步；否则保存路由时
+    // 会用初始空值覆盖线上标题配置。
+    const nextTitle = titleFromPayload(routesPayload.titleRoute);
+    const nextTitleSnap = titleFingerprint(nextTitle);
+    // 与 rules 同规则：服务端载荷更新时不能覆盖未保存的标题草稿，
+    // 否则保存路由 / 另一操作者改动会让正在编辑的标题配置静默丢失。
+    const prevTitleSnap = titleSavedRef.current;
+    titleSavedRef.current = nextTitleSnap;
+    setTitleBase(nextTitleSnap);
+    if (!titleHydratedRef.current) {
+      titleHydratedRef.current = true;
+      const storedTitle = pendingTitleDraft.current;
+      pendingTitleDraft.current = null;
+      const restoreTitle =
+        storedTitle !== null && shouldRestoreDraft(storedTitle, nextTitleSnap, titleFingerprint);
+      setTitleRoute(restoreTitle && storedTitle ? storedTitle.draft : nextTitle);
+      setTitleBaseStale(
+        restoreTitle &&
+          storedTitle !== null &&
+          storedTitle.base !== '' &&
+          storedTitle.base !== nextTitleSnap,
+      );
+    } else {
+      setTitleRoute((prev) =>
+        prevTitleSnap && JSON.stringify(prev) !== prevTitleSnap ? prev : nextTitle,
+      );
+      if (prevTitleSnap && nextTitleSnap !== prevTitleSnap) setTitleBaseStale(true);
+    }
   }, [routesPayload]);
+
+  // 只持久化「脏」状态：与当前服务端快照一致就清空。否则下次挂载会把服务端
+  // 早已生效的值当成未保存草稿恢复回来，白亮一个脏标记。
+  // savedSnapshot 为空 = 载荷还没到，此时 rules 只是初始空数组，写进去就是幽灵草稿。
+  useEffect(() => {
+    if (!routesHydratedRef.current || !draftStorage || !savedSnapshot) return;
+    if (rulesFingerprint(rules) === savedSnapshot) {
+      clearDraft(draftStorage, ROUTES_DRAFT_KEY);
+      setRoutesDraftPersisted(true);
+      return;
+    }
+    setRoutesDraftPersisted(writeDraft(draftStorage, ROUTES_DRAFT_KEY, rules, savedSnapshot));
+  }, [rules, savedSnapshot, draftStorage]);
+
+  useEffect(() => {
+    if (!titleHydratedRef.current || !draftStorage || !titleBase) return;
+    const normalized = titleFromPayload(titleRoute);
+    if (titleFingerprint(normalized) === titleBase) {
+      clearDraft(draftStorage, TITLE_DRAFT_KEY);
+      setTitleDraftPersisted(true);
+      return;
+    }
+    setTitleDraftPersisted(writeDraft(draftStorage, TITLE_DRAFT_KEY, normalized, titleBase));
+  }, [titleRoute, titleBase, draftStorage]);
 
   const isDirty = useMemo(() => {
     if (!savedSnapshot) return false;
@@ -95,16 +257,100 @@ export function ModelsPage({
   }, [rules, savedSnapshot]);
 
   const catalog = routesPayload?.catalog || { domestic: [], global: [] };
+  // 标题改写优先只列免费模型：后端 freeModels 就是为此算的。拿不到时
+  // 退回全量编目，避免下拉为空导致「看起来没配」。
+  const titleDomOptions = routesPayload?.freeModels?.domestic ?? catalog.domestic ?? [];
+  const titleGloOptions = routesPayload?.freeModels?.global ?? catalog.global ?? [];
+
+  // 最近 7 天里带上游回显的请求。旧数据没有该字段，过滤掉以免把
+  // 「没观测」混进「一致」。
+  const refreshModelEcho = async () => {
+    setEchoLoading(true);
+    setEchoError('');
+    try {
+      const data = await apiRequest<{ requests?: UsageEntry[] }>(
+        '/direct-admin/api/usage?range=week&limit=100',
+      );
+      setEchoRows((data.requests || []).filter((r) => r.upstreamModel));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setEchoError(`回显对照加载失败：${msg}`);
+    } finally {
+      setEchoLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshModelEcho().catch(() => {});
+    // 只在挂载时拉一次；之后用「刷新对照」按钮。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const echoStats = useMemo(() => {
+    if (!echoRows) {
+      return {
+        total: null as number | null,
+        match: null as number | null,
+        mismatch: null as number | null,
+        auto: null as number | null,
+        bad: [] as UsageEntry[],
+      };
+    }
+    let match = 0;
+    let mismatch = 0;
+    let auto = 0;
+    const bad: UsageEntry[] = [];
+    for (const r of echoRows) {
+      const sent = r.routedModel || r.model || '';
+      // 后端已判定替换时优先采信：即使 sent 看起来像 auto 一族也照收
+      //（例如 CN:auto —— 前缀大小写不匹配，后端不会剥，判定为替换）。
+      if (r.modelMismatch === true) {
+        mismatch++;
+        bad.push(r);
+        continue;
+      }
+      // 与后端 / 07 明细同一判据（lib/domain），不要写 startsWith('auto')：
+      // autopilot 之类会被当成 auto，真实的模型替换就被漏计了。
+      if (isAutoFamilyModel(sent)) {
+        auto++;
+        continue;
+      }
+      // 旧条目没有 modelMismatch 字段：按同一判据本地算，而不是默认「一致」——
+      // 默认一致会让「不知道」冒充「没有替换」，正是本页最危险的假阴性。
+      const isMismatch =
+        r.modelMismatch ??
+        (sent !== '' &&
+          normalizeModelName(sent) !== normalizeModelName(r.upstreamModel || ''));
+      if (isMismatch) {
+        mismatch++;
+        bad.push(r);
+        continue;
+      }
+      match++;
+    }
+    return { total: echoRows.length, match, mismatch, auto, bad };
+  }, [echoRows]);
+
+  // 上游回显单元格。函数名沿用旧面板 upstreamModelCell —— 源码级契约
+  // 测试按这个名字定位（构建产物里会被压缩）。
+  const upstreamModelCell = (r: UsageEntry) =>
+    r.modelMismatch ? (
+      <StatusBadge tone="warn">{r.upstreamModel}</StatusBadge>
+    ) : (
+      <span className="ds-mono">{r.upstreamModel || '—'}</span>
+    );
 
   const handleFetchScope = async (scope: 'domestic' | 'global' | 'both') => {
-    setLoadingModels(true);
+    if (loadingScope) return;
+    setLoadingScope(scope);
     try {
-      onSetModelsScope(scope);
+      // 范围由父级在拉取成功后才切换；这里先切会让标签说谎
+      //（显示「国际站」而列表还是国内站那一份）。
       await onRefreshModels(scope);
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
     } finally {
-      setLoadingModels(false);
+      setLoadingScope(null);
     }
   };
 
@@ -184,8 +430,78 @@ export function ModelsPage({
     setRules((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  const titleDom = titleRoute.domestic || '';
+  const titleGlo = titleRoute.global || '';
+  // 未保存提示：不能让「改了下拉但没点保存」看起来已生效。
+  const titleDirty =
+    !!routesPayload &&
+    (titleRoute.enabled !== (routesPayload.titleRoute?.enabled === true) ||
+      titleDom !== (routesPayload.titleRoute?.domestic || '') ||
+      titleGlo !== (routesPayload.titleRoute?.global || ''));
+  let titleStateText: string;
+  if (titleRoute.enabled !== true) {
+    titleStateText = '未启用（会话标题按原模型计费）';
+  } else if (!titleDom && !titleGlo) {
+    // 开关开着但一个目标都没配 —— 最常见的「以为在省钱其实没有」。
+    titleStateText = '已启用但未配置目标 ⇒ 实际不改写，标题仍由主模型生成';
+  } else {
+    titleStateText = `已启用：国内 → ${titleDom || '不改写'} · 国际 → ${titleGlo || '不改写'}`;
+  }
+  if (titleDirty) titleStateText += ' · 有未保存的更改';
+  if (titleDirty && titleBaseStale) titleStateText += ' · 服务端已被修改（保存会覆盖它）';
+
+  const handleResetTitleRoute = () => {
+    setTitleRoute(titleFromPayload(routesPayload?.titleRoute));
+    // 「放弃」必须同时清掉会话草稿：否则切页回来草稿会被重新恢复。
+    clearDraft(draftStorage, TITLE_DRAFT_KEY);
+    setTitleBaseStale(false);
+    setTitleDraftPersisted(true);
+  };
+
+  const handleSaveTitleRoute = async () => {
+    // payload 没加载完时 rules / savedSnapshot 都是空的：此时 POST 会
+    // 用 rules:[] 覆盖线上整张路由表（后端是整体写入）。必须硬拦。
+    if (!routesPayload) {
+      showToast('路由配置还没加载完，已阻止保存（避免把线上路由清空）', 'error');
+      return;
+    }
+    if (routesPayloadInvalid) {
+      showToast('服务端路由表结构不合法，已阻止保存（避免把线上路由清空）', 'error');
+      return;
+    }
+    if (savingTitle) return;
+    setSavingTitle(true);
+    try {
+      // 路由草稿可能还没保存：只提交已保存的那一版，避免「保存标题」
+      // 顺手把未确认的路由改动写进线上。
+      const rulesToPersist = savedSnapshot
+        ? (JSON.parse(savedSnapshot) as ModelRouteRule[])
+        : rules;
+      await apiRequest('/direct-admin/api/model-routes', {
+        method: 'POST',
+        body: JSON.stringify({ rules: rulesToPersist, titleRoute }),
+      });
+      // 2xx 之后才清会话草稿：失败（超时 / 5xx）时草稿必须留着，否则编辑白丢。
+      clearDraft(draftStorage, TITLE_DRAFT_KEY);
+      // 回写父级 payload：否则切页回来会显示旧配置，下一次保存路由
+      //（父级 payload 里的旧 titleRoute）会把它静默改回去。
+      onRoutesSaved(rulesToPersist, titleRoute);
+      setTitleBaseStale(false);
+      setTitleDraftPersisted(true);
+      showToast('标题改写配置已保存并生效', 'success');
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setSavingTitle(false);
+    }
+  };
+
   const handleSaveRoutes = async () => {
     if (saving) return;
+    if (routesPayloadInvalid) {
+      showToast('服务端路由表结构不合法，已阻止保存（避免把线上路由清空）', 'error');
+      return;
+    }
     const err = validateModelRoutes(rules);
     if (err) {
       setSaveError(err);
@@ -197,16 +513,28 @@ export function ModelsPage({
     try {
       await apiRequest('/direct-admin/api/model-routes', {
         method: 'POST',
-        body: JSON.stringify({ rules }),
+        // 必须带 titleRoute：后端按 Store{Rules,TitleRoute} 整体写入，
+        // 少这个字段就等于把线上标题改写配置清空。
+        body: JSON.stringify({ rules, titleRoute }),
       });
-      const snap = JSON.stringify(rules);
+      const snap = rulesFingerprint(rules);
+      savedSnapshotRef.current = snap;
       setSavedSnapshot(snap);
+      // 2xx 才清会话草稿：保存失败时草稿必须留着（catch 分支不碰存储）。
+      clearDraft(draftStorage, ROUTES_DRAFT_KEY);
       setJustSaved(true);
-      onRoutesSaved(rules);
+      onRoutesSaved(rules, titleRoute);
+      setRoutesBaseStale(false);
+      setTitleBaseStale(false);
+      setRoutesDraftPersisted(true);
       showToast('模型路由已保存并生效', 'success');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setSaveError(`保存失败，草稿已保留：${msg}`);
+      setSaveError(
+        (!draftStorage || !routesDraftPersisted
+          ? '保存失败，草稿只在本页（切换标签页会丢失）'
+          : '保存失败，草稿已保留') + `：${msg}`,
+      );
       showToast(msg, 'error');
     } finally {
       setSaving(false);
@@ -258,7 +586,7 @@ export function ModelsPage({
               id="btnModelsDomestic"
               variant="ghost"
               size="xs"
-              loading={loadingModels && modelsScope === 'domestic'}
+              loading={loadingScope === 'domestic'}
               onClick={() => handleFetchScope('domestic')}
             >
               <RefreshCw className="w-3 h-3" />
@@ -268,7 +596,7 @@ export function ModelsPage({
               id="btnModelsGlobal"
               variant="ghost"
               size="xs"
-              loading={loadingModels && modelsScope === 'global'}
+              loading={loadingScope === 'global'}
               onClick={() => handleFetchScope('global')}
             >
               <RefreshCw className="w-3 h-3" />
@@ -278,7 +606,7 @@ export function ModelsPage({
               id="btnModelsBoth"
               variant="ghost"
               size="xs"
-              loading={loadingModels && modelsScope === 'both'}
+              loading={loadingScope === 'both'}
               onClick={() => handleFetchScope('both')}
             >
               两站都拉
@@ -286,6 +614,11 @@ export function ModelsPage({
           </>
         }
       />
+
+      <ScopeNote>
+        本页三块<strong>互不依赖</strong>：编目是从两个站各拉一份真实模型列表；
+        路由是你<strong>额外配置</strong>的改写规则，不是上游事实；标题改写只影响展示名。
+            </ScopeNote>
 
       {/* 模型编目卡片区 */}
       <Card className="p-4 space-y-4">
@@ -304,9 +637,15 @@ export function ModelsPage({
               ]}
             />
             <span id="modelsScopeHint" className="text-xs text-[var(--fg-3)]">
-              当前显示：
-              {modelsScope === 'both' ? '两站合并' : `${siteLabel(modelsScope)}站`}模型（
-              {visibleModels.length}）
+              {modelsError ? (
+                <>最近一次拉取失败 · 上次成功：{modelsScope === 'both' ? '两站合并' : `${siteLabel(modelsScope)}站`}模型（{visibleModels.length}）</>
+              ) : (
+                <>
+                  当前显示：
+                  {modelsScope === 'both' ? '两站合并' : `${siteLabel(modelsScope)}站`}模型（
+                  {visibleModels.length}）
+                </>
+              )}
             </span>
           </div>
 
@@ -314,6 +653,7 @@ export function ModelsPage({
             <div className="relative w-56 max-w-full">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--fg-3)]" />
               <input
+                aria-label="筛选模型 ID"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="筛选模型 ID..."
@@ -332,13 +672,39 @@ export function ModelsPage({
           </div>
         </div>
 
+        {modelsError && (
+          <div
+            role="alert"
+            className="ds-surface-2 px-3 py-2 text-xs leading-relaxed text-[var(--err)] bg-[var(--err-bg)] border-l-2 border-[var(--err)]"
+          >
+            模型编目拉取失败：{modelsError}
+            {models.length
+              ? '（下面显示的是上一次成功拉取的结果，不代表上游当前编目）'
+              : '（拉取失败不等于没有模型）'}
+          </div>
+        )}
+
         <div id="modelChips">
           {!visibleModels.length ? (
-            <EmptyState
-              title="暂无模型数据"
-              description="请确认当前站点有已授权账号，或点击右上角重新拉取上游编目。"
-              className="py-7"
-            />
+            modelsError && !models.length ? (
+              <EmptyState
+                title="模型编目加载失败"
+                description={`${modelsError}。拉取失败不等于上游没有模型，请点右上角重试。`}
+                className="py-7"
+              />
+            ) : models.length ? (
+              <EmptyState
+                title="没有匹配筛选条件的模型"
+                description="清空搜索词或取消「仅免费」再看。"
+                className="py-7"
+              />
+            ) : (
+              <EmptyState
+                title="暂无模型数据"
+                description="请确认当前站点有已授权账号，或点击右上角重新拉取上游编目。"
+                className="py-7"
+              />
+            )
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
               {visibleModels.map((m) => (
@@ -425,6 +791,11 @@ export function ModelsPage({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="ds-heading text-lg text-[var(--fg)] m-0">有方向的模型路由与备用链</h2>
+            {routesPayloadInvalid && (
+              <p className="text-xs text-[var(--err)] mt-1 m-0">
+                服务端返回的路由表结构不合法，已拒绝加载；恢复前两个保存入口都被禁用（避免把线上路由清空）。
+              </p>
+            )}
             <p className="text-xs text-[var(--fg-3)] mt-1 m-0 max-w-2xl leading-relaxed">
               同一「源区域 + 源模型」可配置多条形成有序备用链。没命中规则的模型一字节不改。
             </p>
@@ -464,7 +835,7 @@ export function ModelsPage({
               variant="primary"
               size="sm"
               loading={saving}
-              disabled={!routesPayload}
+              disabled={!routesPayload || routesPayloadInvalid}
               onClick={handleSaveRoutes}
             >
               保存路由
@@ -632,14 +1003,225 @@ export function ModelsPage({
         </div>
       </Card>
 
+      {/* 会话标题改写（TitleRoute）。上游 v0.8.0 的 React 重写漏了整块。 */}
+      <Card className="p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="ds-heading text-lg text-[var(--fg)] m-0">会话标题改写路由</h2>
+            <p className="text-xs text-[var(--fg-3)] mt-1 m-0 max-w-2xl leading-relaxed">
+              会话标题由一次独立的模型请求生成。把它单独指到便宜或免费模型，正文请求完全不受影响；
+              目标留空 = 不改写 = 标题仍由当前会话的主模型生成。
+              识别是 <strong className="text-[var(--fg-2)]">fail-closed</strong> 的：只有「恰好一条 user、
+              没有 assistant/tool、且以标题模板开头」才改写，模板一变就自动停止识别（失败方向安全）。
+              命中时<strong className="text-[var(--fg-2)]">只改模型名</strong>，
+              messages / stream / max_tokens / 任何请求头都不动；同时会删掉
+              <code className="ds-mono">reasoning_effort</code> 与
+              <code className="ds-mono">reasoning</code>，避免给轻量模型塞它不接受的思考预算。
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span id="titleRouteState" className="ds-mono text-xs text-[var(--fg-3)]">
+              {titleStateText}
+            </span>
+            {titleDirty && (!draftStorage || !titleDraftPersisted) && (
+              <span className="text-[10px] text-[var(--warn)]">
+                草稿无法持久化：切换标签页会丢失，请先保存
+              </span>
+            )}
+            {titleDirty && (
+              <Button variant="ghost" size="xs" onClick={handleResetTitleRoute}>
+                放弃标题草稿
+              </Button>
+            )}
+            <Button
+              id="btnSaveTitleRoute"
+              variant="primary"
+              size="sm"
+              loading={savingTitle}
+              disabled={!routesPayload || savingTitle || routesPayloadInvalid}
+              onClick={handleSaveTitleRoute}
+            >
+              保存标题改写
+            </Button>
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row flex-wrap gap-3 items-start sm:items-center">
+          <label className="inline-flex items-center gap-2 text-xs text-[var(--fg-2)] cursor-pointer">
+            <input
+              id="titleRouteEnabled"
+              type="checkbox"
+              className="accent-[var(--accent)]"
+              disabled={savingTitle}
+              checked={titleRoute.enabled === true}
+              onChange={(e) =>
+                setTitleRoute((prev) => ({ ...prev, enabled: e.target.checked }))
+              }
+            />
+            启用标题改写
+          </label>
+          <label className="text-xs text-[var(--fg-2)] flex items-center gap-2">
+            国内站
+            <select
+              className="ds-input ds-mono text-xs px-2 py-1"
+              value={titleDom}
+              disabled={titleRoute.enabled !== true || savingTitle}
+              onChange={(e) => setTitleRoute((prev) => ({ ...prev, domestic: e.target.value }))}
+            >
+              <option value="">沿用请求模型（不改写）</option>
+              {titleDom && !titleDomOptions.includes(titleDom) && (
+                <option value={titleDom}>{titleDom}（不在免费列表）</option>
+              )}
+              {titleDomOptions.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+            <span className="text-[10px] text-[var(--fg-3)]">
+              {titleDomOptions.length > 0
+                ? `可选 ${titleDomOptions.length} 个免费模型`
+                : '该站点没有免费模型'}
+            </span>
+          </label>
+          <label className="text-xs text-[var(--fg-2)] flex items-center gap-2">
+            国际站
+            <select
+              className="ds-input ds-mono text-xs px-2 py-1"
+              value={titleGlo}
+              disabled={titleRoute.enabled !== true || savingTitle}
+              onChange={(e) => setTitleRoute((prev) => ({ ...prev, global: e.target.value }))}
+            >
+              <option value="">沿用请求模型（不改写）</option>
+              {titleGlo && !titleGloOptions.includes(titleGlo) && (
+                <option value={titleGlo}>{titleGlo}（不在免费列表）</option>
+              )}
+              {titleGloOptions.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+            <span className="text-[10px] text-[var(--fg-3)]">
+              {titleGloOptions.length > 0
+                ? `可选 ${titleGloOptions.length} 个免费模型`
+                : '该站点没有免费模型'}
+            </span>
+          </label>
+        </div>
+      </Card>
+
+      {/* 上游模型回显对照（I8）。模型被替换不会报错，只能靠不一致数发现。 */}
+      <Card className="p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="ds-heading text-lg text-[var(--fg)] m-0">上游模型回显对照</h2>
+            <p className="text-xs text-[var(--fg-3)] mt-1 m-0 max-w-3xl leading-relaxed">
+              发出去的模型与上游 SSE 实际回显的模型是否一致。
+              <strong className="text-[var(--fg-2)]">不一致即说明模型被替换</strong>
+              ，此时所有按模型做的分析（思考占比、档位效果、缓存命中率）都会失效，且不会有任何报错。
+              归一化后比较：<code className="ds-mono">hy4flash-free</code> 与{' '}
+              <code className="ds-mono">hy4-flash-free</code> 视为同一模型（实测上游确实少一个连字符）；
+              <code className="ds-mono">auto</code> 一族由上游选模型，标为「解析」，不算替换。
+            </p>
+          </div>
+          <Button
+            id="btnRefreshEcho"
+            variant="ghost"
+            size="sm"
+            loading={echoLoading}
+            onClick={refreshModelEcho}
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${echoLoading ? 'animate-spin' : ''}`} />
+            刷新对照
+          </Button>
+        </div>
+        {echoError && (
+          <p className="text-xs text-[var(--err)] m-0" role="alert">
+            {echoError}
+            {echoRows ? '（下面的计数仍是上一次成功加载的结果，不代表最近 7 天）' : ''}
+          </p>
+        )}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <EchoMetric
+            id="echoTotal"
+            label="观测到的请求"
+            value={echoStats.total ?? '—'}
+            title="最近 7 天里带上游回显的请求数"
+          />
+          <EchoMetric id="echoMatch" label="一致" value={echoStats.match ?? '—'} />
+          <EchoMetric
+            id="echoMismatch"
+            label="不一致"
+            value={echoStats.mismatch ?? '—'}
+            title="归一化后仍不一致 —— 这才是真的模型替换"
+          />
+          <EchoMetric
+            id="echoAuto"
+            label="上游解析"
+            value={echoStats.auto ?? '—'}
+            title="auto 一族由上游解析成具体模型，不算异常"
+          />
+        </div>
+        {echoStats.bad.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table aria-label="模型替换明细" className="ds-table w-full text-xs">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>请求 ID</th>
+                  <th>发出去</th>
+                  <th>上游回显</th>
+                  <th>账号</th>
+                </tr>
+              </thead>
+              <tbody>
+                {echoStats.bad.slice(0, 20).map((r) => (
+                  <tr key={r.proxyRequestId || String(r.at)}>
+                    <td className="ds-mono">{formatTime(r.at)}</td>
+                    <td className="ds-mono">{shortId(r.proxyRequestId)}</td>
+                    <td className="ds-mono">{r.routedModel || r.model || '—'}</td>
+                    <td>{upstreamModelCell(r)}</td>
+                    <td>{r.accountLabel || shortId(r.accountId)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : echoRows === null ? (
+          <p className="text-xs text-[var(--fg-3)] m-0">
+            {echoError
+              ? '回显对照尚未成功加载，无法判断有没有模型替换。'
+              : '正在加载最近 7 天的回显记录…'}
+          </p>
+        ) : (
+          <p className="text-xs text-[var(--fg-3)] m-0">
+            {echoRows.length === 0
+              ? '最近 7 天没有带上游回显的记录（旧数据不含该字段）。'
+              : `最近 ${echoRows.length} 条带回显的请求里没有模型替换。`}
+          </p>
+        )}
+      </Card>
+
       <DirtySaveBar
         visible={isDirty}
         saving={saving}
-        message="模型路由规则有未保存的更改"
-        subMessage="保存后将立即写入并审计落盘"
+        message={
+          routesBaseStale
+            ? '模型路由规则有未保存的更改 · 服务端在此期间已被修改（保存会覆盖它）'
+            : '模型路由规则有未保存的更改'
+        }
+        subMessage={
+          !draftStorage || !routesDraftPersisted
+            ? '草稿无法持久化：切换标签页会丢失，请先保存'
+            : '保存后将立即写入并审计落盘'
+        }
         onReset={() => {
           if (savedSnapshot) setRules(JSON.parse(savedSnapshot) as ModelRouteRule[]);
           setSaveError('');
+          // 放弃 = 状态 + 会话存储一起清，否则切页回来草稿会复活。
+          clearDraft(draftStorage, ROUTES_DRAFT_KEY);
+          setRoutesBaseStale(false);
+          setRoutesDraftPersisted(true);
         }}
         onSave={handleSaveRoutes}
       />

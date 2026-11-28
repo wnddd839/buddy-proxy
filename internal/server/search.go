@@ -98,6 +98,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request, keySite st
 	defer cancel()
 
 	result, meta, err := s.Svc.WebSearchFromPool(ctx, gateway.SearchOptions{
+		RequestID:    proxyRequestID,
 		AccountID:    requestBinding(r).AccountID,
 		FixedAccount: requestBinding(r).AccountID != "",
 		Site:         site,
@@ -165,6 +166,7 @@ func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request, keySite 
 	defer cancel()
 
 	result, meta, err := s.Svc.WebFetchFromPool(ctx, gateway.SearchOptions{
+		RequestID:    proxyRequestID,
 		AccountID:    requestBinding(r).AccountID,
 		FixedAccount: requestBinding(r).AccountID != "",
 		Site:         site,
@@ -227,6 +229,7 @@ func (s *Server) handleAgenticSearch(w http.ResponseWriter, r *http.Request, key
 	}
 	result, err := s.Svc.AgenticSearchFromPool(ctx, gateway.AgenticSearchOptions{
 		SearchOptions: gateway.SearchOptions{
+			RequestID:    proxyRequestID,
 			AccountID:    requestBinding(r).AccountID,
 			FixedAccount: requestBinding(r).AccountID != "",
 			Site:         site,
@@ -322,6 +325,7 @@ func (s *Server) streamAgenticSearch(
 	}
 	result, err := s.Svc.AgenticSearchFromPool(ctx, gateway.AgenticSearchOptions{
 		SearchOptions: gateway.SearchOptions{
+			RequestID:    proxyRequestID,
 			AccountID:    requestBinding(r).AccountID,
 			FixedAccount: requestBinding(r).AccountID != "",
 			Site:         site,

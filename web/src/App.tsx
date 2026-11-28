@@ -13,7 +13,9 @@ import type {
   StatusPayload,
   SystemPromptMode,
   SystemPromptOverview,
+  TitleRoute,
 } from '@/types/api';
+import type { InvariantsPayload } from '@/types/invariants';
 import { apiRequest } from '@/lib/api';
 import {
   computeAccountStates,
@@ -34,6 +36,8 @@ import { ClientPage } from '@/pages/ClientPage';
 import { ModelsPage } from '@/pages/ModelsPage';
 import { SystemPromptPage } from '@/pages/SystemPromptPage';
 import { UsagePage } from '@/pages/UsagePage';
+import { InvariantsPage } from '@/pages/InvariantsPage';
+import { TokPage } from '@/pages/TokPage';
 
 const CHAPTER_HASHES: Record<TabId, string> = {
   'tab-overview': '#overview',
@@ -43,6 +47,8 @@ const CHAPTER_HASHES: Record<TabId, string> = {
   'tab-models': '#models',
   'tab-system-prompt': '#system-prompt',
   'tab-usage': '#usage',
+  'tab-invariants': '#invariants',
+  'tab-tok': '#tok',
 };
 
 function resolveHashToTab(hash: string): {
@@ -103,21 +109,77 @@ function ConsoleApp() {
   const [modelsScope, setModelsScope] = useState<'domestic' | 'global' | 'both'>('domestic');
   const [modelsList, setModelsList] = useState<ModelItem[]>([]);
   const [modelsRaw, setModelsRaw] = useState('[]');
+  const [modelsError, setModelsError] = useState('');
 
   const [routesPayload, setRoutesPayload] = useState<ModelRoutesPayload | null>(null);
   const [routesError, setRoutesError] = useState('');
 
   const [quotaFloorSaved, setQuotaFloorSaved] = useState<number | null>(null);
-  const [spMode, setSpMode] = useState<SystemPromptMode>('auto');
+  // null = 未知（配置接口尚未返回或失败）。绝不能默认 auto：
+  // 那会在接口挂掉时把顶栏/模式卡伪装成「auto 当前生效」，而线上可能是 strip。
+  const [spMode, setSpMode] = useState<SystemPromptMode | null>(null);
+
+  // 静默失效命中数：概览首屏与导航徽标都要能直接看到。旧面板把它摆在
+  // 首屏，移植后只剩一个入口 —— 等于让「静默失效」本身静默了。
+  // null = 未知（加载中或接口失败），绝不伪装成 0。
+  const [invariantHits, setInvariantHits] = useState<number | null>(null);
+  const [invariantEnabled, setInvariantEnabled] = useState<boolean | null>(null);
+  // 证据丢失（队列丢弃 / 写盘失败）与过期标记：命中数 0 不能掩盖这两种状态。
+  const [invariantDropped, setInvariantDropped] = useState(0);
+  const [invariantWriteErrors, setInvariantWriteErrors] = useState(0);
+  const [invariantStale, setInvariantStale] = useState(false);
 
   const statusSeqRef = useRef(0);
   const usageKickRef = useRef(false);
   const activeSiteRef = useRef<Site>('domestic');
+  const modelsSeqRef = useRef(0);
+  const invariantSeqRef = useRef(0);
 
   const uiRevision = useMemo(() => {
     const meta = document.querySelector('meta[name="cbp-ui-revision"]');
     return meta?.getAttribute('content') || '';
   }, []);
+
+  const refreshInvariants = useCallback(async () => {
+    const seq = ++invariantSeqRef.current;
+    try {
+      // limit=20 与体检页一致：命中数取 max(Σcounts, 列表条数)，
+      // 避免「24h 累计 200 次但页面只拉 20 条」时主数字被压成 20。
+      const data = await apiRequest<InvariantsPayload>('/direct-admin/api/invariants?limit=20');
+      if (seq !== invariantSeqRef.current) return;
+      setInvariantEnabled(data.enabled !== false);
+      setInvariantStale(false);
+      if (data.enabled === false) {
+        setInvariantHits(null);
+        setInvariantDropped(0);
+        setInvariantWriteErrors(0);
+        return;
+      }
+      const counts = data.counts || {};
+      const countsTotal = Object.values(counts).reduce<number>(
+        (sum, n) => sum + (Number(n) || 0),
+        0,
+      );
+      setInvariantHits(Math.max(countsTotal, (data.findings || []).length));
+      // 丢弃 / 写盘失败意味着「命中数不可信」，必须和命中数一起展示；
+      // 否则空 counts 会被渲染成「无命中」，恰好掩盖了证据丢失。
+      setInvariantDropped(Number(data.dropped) || 0);
+      setInvariantWriteErrors(Number(data.writeErrors) || 0);
+    } catch {
+      if (seq !== invariantSeqRef.current) return;
+      // 失败不伪装成 0，也不把旧值当成最新：保留旧值但标为已过期。
+      setInvariantStale(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshInvariants().catch(() => {});
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      refreshInvariants().catch(() => {});
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [refreshInvariants, refreshTick]);
 
   const selectTab = useCallback((tab: TabId, pushHash = true) => {
     setActiveTab(tab);
@@ -246,26 +308,44 @@ function ConsoleApp() {
 
   const refreshModels = useCallback(async (scope?: 'domestic' | 'global' | 'both') => {
     const target = scope || activeSiteRef.current || 'domestic';
-    setModelsScope(target);
-    if (target === 'both') {
-      const [dom, glob] = await Promise.all([
-        apiRequest('/direct-admin/api/codebuddy/models?fresh=1&site=domestic').catch((e: unknown) => ({
-          error: e instanceof Error ? e.message : String(e),
-        })),
-        apiRequest('/direct-admin/api/codebuddy/models?fresh=1&site=global').catch((e: unknown) => ({
-          error: e instanceof Error ? e.message : String(e),
-        })),
-      ]);
-      const merged = mergeModelLists(dom, glob);
-      setModelsRaw(JSON.stringify({ domestic: dom, global: glob }, null, 2));
-      setModelsList(merged);
-      return;
+    const seq = ++modelsSeqRef.current;
+    try {
+      if (target === 'both') {
+        const [dom, glob] = await Promise.all([
+          apiRequest('/direct-admin/api/codebuddy/models?fresh=1&site=domestic').catch((e: unknown) => ({
+            error: e instanceof Error ? e.message : String(e),
+          })),
+          apiRequest('/direct-admin/api/codebuddy/models?fresh=1&site=global').catch((e: unknown) => ({
+            error: e instanceof Error ? e.message : String(e),
+          })),
+        ]);
+        // 单站失败时不能把「两站合并」显示成只剩一站 —— 那看起来像另一站
+        // 真的没有模型。整次作废、保留上一份编目，并把错误抛给界面。
+        const failures = [
+          (dom as { error?: string }).error ? `国内站：${(dom as { error?: string }).error}` : '',
+          (glob as { error?: string }).error ? `国际站：${(glob as { error?: string }).error}` : '',
+        ].filter(Boolean);
+        if (failures.length) throw new Error(failures.join('；'));
+        if (seq !== modelsSeqRef.current) return;
+        const merged = mergeModelLists(dom, glob);
+        setModelsRaw(JSON.stringify({ domestic: dom, global: glob }, null, 2));
+        setModelsList(merged);
+      } else {
+        const data = await apiRequest(
+          `/direct-admin/api/codebuddy/models?fresh=1&site=${encodeURIComponent(target)}`,
+        );
+        if (seq !== modelsSeqRef.current) return;
+        setModelsRaw(JSON.stringify(data, null, 2));
+        setModelsList(extractModelList(data));
+      }
+      // 范围标签跟着「真的拉到了哪一份」走。先切标签会让界面在失败时
+      // 显示「国际站」却挂着国内站的列表。
+      setModelsScope(target);
+      setModelsError('');
+    } catch (e: unknown) {
+      setModelsError(e instanceof Error ? e.message : String(e));
+      throw e;
     }
-    const data = await apiRequest(
-      `/direct-admin/api/codebuddy/models?fresh=1&site=${encodeURIComponent(target)}`,
-    );
-    setModelsRaw(JSON.stringify(data, null, 2));
-    setModelsList(extractModelList(data));
   }, []);
 
   const refreshClientConfig = useCallback(async () => {
@@ -321,7 +401,9 @@ function ConsoleApp() {
       });
       applyStatusPayload(data);
       if (data.note) showToast(data.note);
-      refreshModels(site).catch(() => {});
+      refreshModels(site).catch((e: unknown) =>
+        showToast(`站点已切换，但模型编目拉取失败：${e instanceof Error ? e.message : String(e)}`, 'error'),
+      );
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
     } finally {
@@ -338,7 +420,9 @@ function ConsoleApp() {
       });
       applyStatusPayload(data);
       if (data.note) showToast(data.note);
-      refreshModels(activeSiteRef.current).catch(() => {});
+      refreshModels(activeSiteRef.current).catch((e: unknown) =>
+        showToast(`产品已切换，但模型编目拉取失败：${e instanceof Error ? e.message : String(e)}`, 'error'),
+      );
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
     } finally {
@@ -413,6 +497,11 @@ function ConsoleApp() {
         onRefreshStatus={() => refreshStatus(true)}
         refreshing={refreshing}
         attentionCount={attentionCount}
+        invariantHits={invariantHits}
+        invariantEnabled={invariantEnabled}
+        invariantDropped={invariantDropped}
+        invariantWriteErrors={invariantWriteErrors}
+        invariantStale={invariantStale}
         poolCountLabel={siteAccountsCount ? `${siteEnabledCount}/${siteAccountsCount}` : ''}
         checkinAutoEnabled={!!checkinConfig?.auto}
         spMode={spMode}
@@ -431,6 +520,11 @@ function ConsoleApp() {
             activeSite={poolSite}
             usageByAccount={usageByAccount}
             concurrency={concurrency}
+            invariantHits={invariantHits}
+            invariantEnabled={invariantEnabled}
+            invariantDropped={invariantDropped}
+            invariantWriteErrors={invariantWriteErrors}
+            invariantStale={invariantStale}
             onNavigate={(t) => selectTab(t, true)}
             onNavigatePoolIssues={() => {
               setPoolInitialFilter('issue');
@@ -484,18 +578,25 @@ function ConsoleApp() {
 
         {activeTab === 'tab-models' && (
           <ModelsPage
-            activeSite={poolSite}
             accounts={allAccounts}
             quotaFloorSaved={quotaFloorSaved || 0}
             models={modelsList}
             modelsRaw={modelsRaw}
+            modelsError={modelsError}
             modelsScope={modelsScope}
-            onSetModelsScope={setModelsScope}
             onRefreshModels={refreshModels}
             routesPayload={routesPayload}
             routesError={routesError}
-            onRoutesSaved={(nextRules: ModelRouteRule[]) =>
-              setRoutesPayload((prev) => (prev ? { ...prev, rules: nextRules } : prev))
+            onRoutesSaved={(nextRules: ModelRouteRule[], nextTitleRoute?: TitleRoute) =>
+              setRoutesPayload((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      rules: nextRules,
+                      ...(nextTitleRoute ? { titleRoute: nextTitleRoute } : {}),
+                    }
+                  : prev,
+              )
             }
           />
         )}
@@ -508,6 +609,12 @@ function ConsoleApp() {
         )}
 
         {activeTab === 'tab-usage' && <UsagePage active={activeTab === 'tab-usage'} />}
+
+        {activeTab === 'tab-invariants' && (
+          <InvariantsPage active={activeTab === 'tab-invariants'} />
+        )}
+
+        {activeTab === 'tab-tok' && <TokPage active={activeTab === 'tab-tok'} />}
       </AppShell>
 
       <ToastViewport />

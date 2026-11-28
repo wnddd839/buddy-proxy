@@ -82,6 +82,7 @@ func (s *Server) handleImages(w http.ResponseWriter, r *http.Request, keySite st
 	proxyRequestID := s.newProxyRequestID()
 	finish := s.Svc.BeginRequest(providerModel.PublicModel, len(prompt), false)
 	result, err := s.Svc.ImageFromPool(r.Context(), gateway.ImageOptions{
+		RequestID:    proxyRequestID,
 		AccountID:    requestBinding(r).AccountID,
 		FixedAccount: requestBinding(r).AccountID != "",
 		Site:         site,

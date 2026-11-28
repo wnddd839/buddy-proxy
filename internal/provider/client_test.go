@@ -668,3 +668,62 @@ func TestParseCreditMultiplier(t *testing.T) {
 		t.Fatalf("got %v %v", n, ok)
 	}
 }
+
+// 2026-11-17 实弹：上游 11128 也扫 assistant 正文（@ 段任意位置 + 身份句开头）。
+// 折叠 system 救不了 assistant，所以必须在首试前就把这类指纹删掉，
+// 否则每个请求都会先吃一个 400，持续累积账号风险分。
+func TestEnsureUpstreamMessagesStripsAssistantFingerprints(t *testing.T) {
+	const rule = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root"
+	cfg := &provider.StripConfig{
+		Enabled:  true,
+		Rules:    provider.RulesForSite("domestic"),
+		Contains: provider.ContainsForSite("domestic"),
+	}
+	out := provider.EnsureUpstreamMessagesWith([]map[string]any{
+		{"role": "system", "content": "You are a helpful coding assistant."},
+		{"role": "user", "content": "hi"},
+		{"role": "assistant", "content": "Sure. " + rule},
+		{"role": "user", "content": "again"},
+	}, true, cfg, nil)
+	if len(out) != 4 {
+		t.Fatalf("len=%d want 4: %+v", len(out), out)
+	}
+	if out[2]["role"] != "assistant" {
+		t.Fatalf("assistant role 被改动: %+v", out[2])
+	}
+	asst, _ := out[2]["content"].(string)
+	if strings.Contains(asst, "Tokens prefixed with @") {
+		t.Fatalf("assistant 里的 @ 段未被剥离: %q", asst)
+	}
+	if !strings.Contains(asst, "Sure.") {
+		t.Fatalf("剥离不得吞掉前后文: %q", asst)
+	}
+	// user 原文必须原样保留（上游不扫 user，删了就是丢用户内容）。
+	if out[1]["content"] != "hi" || out[3]["content"] != "again" {
+		t.Fatalf("user 内容被改动: %+v", out)
+	}
+	if out[0]["role"] != "system" {
+		t.Fatalf("system 角色被改动: %+v", out[0])
+	}
+}
+
+func TestEnsureUpstreamMessagesStripsAssistantIdentityPrefix(t *testing.T) {
+	const identity = "You are an AI agent powered by DeepSeek Harness."
+	cfg := &provider.StripConfig{
+		Enabled:  true,
+		Rules:    provider.RulesForSite("domestic"),
+		Contains: provider.ContainsForSite("domestic"),
+	}
+	out := provider.EnsureUpstreamMessagesWith([]map[string]any{
+		{"role": "user", "content": "hi"},
+		{"role": "assistant", "content": identity + "\n\nHere is the answer."},
+		{"role": "user", "content": "again"},
+	}, true, cfg, nil)
+	asst, _ := out[1]["content"].(string)
+	if strings.Contains(asst, "DeepSeek Harness") {
+		t.Fatalf("assistant 开头的身份句未被剥离: %q", asst)
+	}
+	if !strings.Contains(asst, "Here is the answer.") {
+		t.Fatalf("剥离不得吞掉后续正文: %q", asst)
+	}
+}

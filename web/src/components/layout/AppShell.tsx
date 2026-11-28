@@ -3,6 +3,7 @@ import {
   Activity,
   CalendarCheck2,
   Code2,
+  Fingerprint,
   GitFork,
   Globe,
   LayoutDashboard,
@@ -11,6 +12,7 @@ import {
   Moon,
   Palette,
   RefreshCw,
+  ShieldAlert,
   Sun,
   TerminalSquare,
   Users,
@@ -21,7 +23,7 @@ import { Button } from '@/components/ui/Button';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { UpdateWidget } from './UpdateWidget';
-import type { Product, Site } from '@/types/api';
+import type { Product, Site, SystemPromptMode } from '@/types/api';
 
 export type TabId =
   | 'tab-overview'
@@ -30,7 +32,9 @@ export type TabId =
   | 'tab-client'
   | 'tab-models'
   | 'tab-system-prompt'
-  | 'tab-usage';
+  | 'tab-usage'
+  | 'tab-invariants'
+  | 'tab-tok';
 
 interface NavItem {
   id: TabId;
@@ -55,9 +59,14 @@ interface AppShellProps {
   onRefreshStatus: () => void;
   refreshing: boolean;
   attentionCount: number;
+  invariantHits: number | null;
+  invariantEnabled: boolean | null;
+  invariantDropped: number;
+  invariantWriteErrors: number;
+  invariantStale: boolean;
   poolCountLabel: string;
   checkinAutoEnabled: boolean;
-  spMode: string;
+  spMode: SystemPromptMode | null;
   version: string;
   uiRevision: string;
   theme: ThemeId;
@@ -83,6 +92,11 @@ export function AppShell({
   onRefreshStatus,
   refreshing,
   attentionCount,
+  invariantHits,
+  invariantEnabled,
+  invariantDropped,
+  invariantWriteErrors,
+  invariantStale,
   poolCountLabel,
   checkinAutoEnabled,
   spMode,
@@ -110,6 +124,38 @@ export function AppShell({
           id: 'tab-usage',
           label: '请求明细',
           icon: Activity,
+        },
+        {
+          id: 'tab-invariants',
+          label: '静默体检',
+          icon: ShieldAlert,
+          badge:
+            invariantEnabled === false ? (
+              <span className="text-[10px] text-[var(--fg-3)]">未启用</span>
+            ) : invariantDropped + invariantWriteErrors > 0 ? (
+              <StatusBadge
+                tone="warn"
+                title="有命中 / 写盘记录被丢弃，命中数不可信（去静默体检看详情）"
+                className="!px-1.5 !py-0 !text-[10px]"
+              >
+                !
+              </StatusBadge>
+            ) : invariantHits === null ? (
+              <span className="ds-mono text-[11px] text-[var(--fg-3)]">—</span>
+            ) : invariantHits > 0 ? (
+              <StatusBadge
+                tone={invariantStale ? 'warn' : 'err'}
+                title={invariantStale ? '最近一次刷新失败，这个数字可能已过期' : '近 24h 命中数'}
+                className="!px-1.5 !py-0 !text-[10px]"
+              >
+                {invariantHits}
+              </StatusBadge>
+            ) : null,
+        },
+        {
+          id: 'tab-tok',
+          label: '词表指纹',
+          icon: Fingerprint,
         },
       ],
     },
@@ -165,7 +211,14 @@ export function AppShell({
             <span className="ds-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--border)] text-[var(--fg-2)]">
               {spMode}
             </span>
-          ) : null,
+          ) : (
+            <span
+              title="System Prompt 配置尚未加载或加载失败 —— 未知，不是 auto"
+              className="ds-mono text-[10px] text-[var(--fg-3)]"
+            >
+              —
+            </span>
+          ),
         },
       ],
     },

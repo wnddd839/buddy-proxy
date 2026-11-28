@@ -10,7 +10,8 @@ import (
 // 三档语义（改动后仍必须成立）：
 //   keep  : system 原样，剥都不剥
 //   fold  : system 折叠进 user 的 <client_instructions>
-//   strip : system 原位保留，只删掉开头的身份句
+//   strip : system/assistant 原位保留，只删掉命中的已知指纹
+//           （开头身份句 + 任意位置的段落指纹）
 //
 // 关键边界：剥空的 system 必须**保留为空消息**，不能丢弃。
 // 丢弃会让 global 站触发「首条不是 system → 补 canonical」的兜底注入，
@@ -83,20 +84,30 @@ func TestStripModeLeavesOtherModesUntouched(t *testing.T) {
 	}
 }
 
-// TestStripModeOnlyTouchesSystem 校验 user/assistant 里的同一句不动。
-func TestStripModeOnlyTouchesSystem(t *testing.T) {
+// TestStripModeTouchesSystemAndAssistantButNotUser 锁住上游的扫描面：
+// 11128 会扫 system 与 assistant 正文，**不扫 user**。所以：
+//   - user 里的同样文字必须原样保留（删了就是丢用户内容）；
+//   - assistant 里的指纹必须剥掉，否则整段会话会永久 502（折叠也救不了）。
+func TestStripModeTouchesSystemAndAssistantButNotUser(t *testing.T) {
 	in := []map[string]any{
 		{"role": "user", "content": testClaudeSentence},
-		{"role": "assistant", "content": testClaudeSentence},
+		{"role": "assistant", "content": testClaudeSentence + "\n\nHere is the answer."},
 	}
 	cfg := &StripConfig{Enabled: true, Rules: RulesForSite("domestic")}
 	report := &StripReport{}
 	out := EnsureUpstreamMessagesWith(in, true, cfg, report)
-	if report.Stripped {
-		t.Fatal("user/assistant 不应被剥离")
+	if !report.Stripped || report.Bytes == 0 {
+		t.Fatal("assistant 的指纹应被剥离")
 	}
-	if out[0]["content"] != testClaudeSentence || out[1]["content"] != testClaudeSentence {
-		t.Fatal("user/assistant 内容不得改动")
+	if out[0]["content"] != testClaudeSentence {
+		t.Fatalf("user 内容不得改动，实际 %q", out[0]["content"])
+	}
+	asst, _ := out[1]["content"].(string)
+	if strings.Contains(asst, "Claude Code") {
+		t.Fatalf("assistant 指纹未被剥离: %q", asst)
+	}
+	if !strings.Contains(asst, "Here is the answer.") {
+		t.Fatalf("剥离不得吞掉后续正文: %q", asst)
 	}
 }
 
