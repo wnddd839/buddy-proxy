@@ -2052,6 +2052,12 @@ func (s *Server) handleSystemDryRun(w http.ResponseWriter, r *http.Request) {
 		// Strip / Echo 为空时跟随当前配置。
 		Strip *bool `json:"strip"`
 		Echo  *bool `json:"echo"`
+		// Site 指定按哪个站点试算剥离规则（domestic / global）。
+		//
+		// 生产的剥离规则取「选中账号的站点」（gateway.applyStripConfig），
+		// 不是全局 cfg.Site —— 混合站号池里两者可能不同。留空 = 跟随
+		// 当前号池站点（旧行为）；给了非法值必须报错，不能静默归一。
+		Site string `json:"site"`
 	}
 	if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
 		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
@@ -2071,9 +2077,29 @@ func (s *Server) handleSystemDryRun(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// 站点同理：只认精确的 domestic / global，拼错必须 400。
+	// NormalizeSite 会把任意垃圾（含 "garbage"）静默归成 global ——
+	// 若在这里用它，操作者会在完全不知情的情况下预览国际站规则。
+	requestedSite := ""
+	if raw := strings.ToLower(strings.TrimSpace(body.Site)); raw != "" {
+		switch raw {
+		case "domestic", "global":
+			requestedSite = raw
+		default:
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+				"ok": false, "error": "site 只能是 domestic / global（留空 = 跟随当前号池站点）",
+			})
+			return
+		}
+	}
 
 	cfg := s.Svc.Config()
-	site := config.NormalizeSite(cfg.Site)
+	// 留空 = 旧行为：跟随当前号池站点。显式指定优先，且整段预览
+	// （剥离规则 / contains / 响应 site）都必须用同一个值。
+	site := requestedSite
+	if site == "" {
+		site = config.NormalizeSite(cfg.Site)
+	}
 
 	// 组装 messages：给了 messages 就原样用，否则用 system + 一条 user。
 	messages := body.Messages

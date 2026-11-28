@@ -372,7 +372,8 @@ export interface SystemDryRunStripReport {
  */
 export interface SystemDryRunResponse {
   ok?: boolean;
-  site?: string;
+  /** 本次试算实际生效的站点（可能来自跟随当前，也可能是显式指定）。 */
+  site?: 'domestic' | 'global' | string;
   mode?: string;
   modeLabel?: string;
   keepSystem?: boolean;
@@ -395,6 +396,11 @@ export interface SystemDryRunRequest {
   mode?: string;
   strip?: boolean;
   echo?: boolean;
+  /**
+   * 试算站点。**不传** = 跟随当前号池站点（服务端读实时配置）；
+   * 传值只接受 'domestic' / 'global'，其它值服务端回 400。
+   */
+  site?: 'domestic' | 'global' | string;
 }
 
 export interface UsageEntry {

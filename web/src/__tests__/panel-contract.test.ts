@@ -565,3 +565,15 @@ describe('剩余项（超时 / 草稿 / 切换中标签）', () => {
     expect(overview).toContain('rangeSwitching');
   });
 });
+
+describe('浏览器验证修复', () => {
+  it('System Prompt 模式未知时不得显示 auto / 当前生效', () => {
+    const app = src('App.tsx');
+    const sp = src('pages/SystemPromptPage.tsx');
+    const shell = src('components/layout/AppShell.tsx');
+    expect(app).toContain('useState<SystemPromptMode | null>(null)');
+    expect(sp).toContain('useState<SystemPromptMode | null>(null)');
+    expect(sp).toContain('(data.mode ?? null)');
+    expect(shell).toContain('配置尚未加载或加载失败');
+  });
+});

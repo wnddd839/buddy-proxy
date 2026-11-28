@@ -66,7 +66,8 @@ const MODE_CARDS: Array<{
 export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps) {
   const { showToast } = useToast();
   const [overview, setOverview] = useState<SystemPromptOverview | null>(null);
-  const [mode, setMode] = useState<SystemPromptMode>('auto');
+  // null = 未知。配置没读到时不能把 auto 卡标成「当前生效」。
+  const [mode, setMode] = useState<SystemPromptMode | null>(null);
   const [switchingMode, setSwitchingMode] = useState(false);
   // 线上剥离开关正在提交哪一个（旧面板的 spStripEnabled /
   // spStripAssistant / spEchoUser）。提交中禁用全部开关，避免连点
@@ -98,6 +99,9 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
   // 只有用户真的动过勾选框才会带上布尔值（带 false 也会覆盖线上配置）。
   const [drySystem, setDrySystem] = useState('');
   const [dryMode, setDryMode] = useState<'' | 'auto' | 'keep' | 'fold' | 'strip'>('');
+  // 试算站点：'' = 跟随当前号池站点（请求里**不发** site 字段）；
+  // 生产的剥离规则取「选中账号的站点」，混站号池里可能与全局站点不同。
+  const [drySite, setDrySite] = useState<'' | 'domestic' | 'global'>('');
   const [dryStrip, setDryStrip] = useState<boolean | null>(null);
   const [dryEcho, setDryEcho] = useState<boolean | null>(null);
   const [dryRunning, setDryRunning] = useState(false);
@@ -106,6 +110,8 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
   // 上一次真正跑过的输入签名：输入改了但没重跑时，结果要标成过期，
   // 否则操作者会把旧结果当成新文本的预览（本分支最忌讳的静默失效）。
   const [dryRanSignature, setDryRanSignature] = useState('');
+  // 上一次真正跑过的 site 选项（'' = 跟随当前），只用于结果区标注口径。
+  const [dryRanSite, setDryRanSite] = useState<'' | 'domestic' | 'global'>('');
 
   const historyPageSize = 100;
 
@@ -142,9 +148,9 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
     // 期间发生过写入或切页 ⇒ 这份快照可能早于那次写入，不能拿来覆盖界面。
     if (seq !== overviewSeqRef.current) return null;
     setOverview(data);
-    const nextMode = (data.mode || 'auto') as SystemPromptMode;
+    const nextMode = (data.mode ?? null) as SystemPromptMode | null;
     setMode(nextMode);
-    onModeSynced(nextMode);
+    if (nextMode) onModeSynced(nextMode);
     setOverviewError('');
     return data;
   }, [onModeSynced]);
@@ -319,15 +325,22 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
       const body: SystemDryRunRequest = { system, mode: dryMode };
       if (dryStrip !== null) body.strip = dryStrip;
       if (dryEcho !== null) body.echo = dryEcho;
+      // 跟随当前 = 不出现在请求体里（服务端才会读实时配置）；
+      // 传空串等于显式给了个非法值，会被 400 拒掉。
+      if (drySite !== '') body.site = drySite;
       const data = await apiRequest<SystemDryRunResponse>('/direct-admin/api/system-dryrun', {
         method: 'POST',
         body: JSON.stringify(body),
       });
       setDryResult(data);
-      setDryRanSignature(JSON.stringify({ system, mode: dryMode, strip: dryStrip, echo: dryEcho }));
+      setDryRanSignature(
+        JSON.stringify({ system, mode: dryMode, strip: dryStrip, echo: dryEcho, site: drySite }),
+      );
+      setDryRanSite(drySite);
     } catch (e: unknown) {
       setDryResult(null);
       setDryRanSignature('');
+      setDryRanSite('');
       setDryError(e instanceof Error ? e.message : String(e));
     } finally {
       setDryRunning(false);
@@ -366,7 +379,13 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
   const dryStale =
     !!dryResult &&
     dryRanSignature !==
-      JSON.stringify({ system: drySystem, mode: dryMode, strip: dryStrip, echo: dryEcho });
+      JSON.stringify({
+        system: drySystem,
+        mode: dryMode,
+        strip: dryStrip,
+        echo: dryEcho,
+        site: drySite,
+      });
 
   const renderDryToggle = (opts: {
     id: string;
@@ -927,6 +946,30 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
           />
         </div>
 
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] text-[var(--fg-3)]">试算站点</span>
+          <span
+            className="inline-flex"
+            title="生产的剥离规则按「选中账号的站点」生效，不是全局站点。跟随当前 = 不发 site 字段，由服务端用实时号池站点；结果区会显示实际生效的站点。"
+          >
+            <SegmentedControl<'' | 'domestic' | 'global'>
+              id="drySiteSeg"
+              ariaLabel="试算站点"
+              size="sm"
+              value={drySite}
+              onChange={setDrySite}
+              options={[
+                { value: '', label: '跟随当前', dataAttrs: { 'data-drysite': '' } },
+                { value: 'domestic', label: '国内站', dataAttrs: { 'data-drysite': 'domestic' } },
+                { value: 'global', label: '国际站', dataAttrs: { 'data-drysite': 'global' } },
+              ]}
+            />
+          </span>
+          <span className="text-[10px] text-[var(--fg-3)]">
+            留空（跟随当前）由服务端读实时配置；显式选择只影响本次试算。
+          </span>
+        </div>
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[11px] text-[var(--fg-3)]">试算档位</span>
@@ -1008,7 +1051,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
             <div className="space-y-3 border-t border-[var(--border)] pt-4">
               {dryStale && (
                 <div className="ds-surface-2 px-3.5 py-2.5 text-xs leading-relaxed text-[var(--warn)] bg-[var(--warn-bg)] border-l-2 border-[var(--warn)]">
-                  下面的结果是上一次输入的预览，system 文本或档位 / 开关已经改过 —— 点「预览」重算后再信。
+                  下面的结果是上一次输入的预览，system 文本、站点或档位 / 开关已经改过 —— 点「预览」重算后再信。
                 </div>
               )}
               <div className="flex flex-wrap items-center gap-2">
@@ -1040,8 +1083,18 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
                   {!dryResult.keepSystem && dryResult.echoEnabled ? '（fold 下不生效）' : ''}
                 </StatusBadge>
                 {dryResult.site && (
-                  <StatusBadge tone="neutral" title="剥离规则按站点区分：国内区多拦一条 DeepSeek Harness 身份句">
-                    站点 · {siteLabel(dryResult.site)}
+                  <StatusBadge
+                    tone="neutral"
+                    title={
+                      dryRanSite === ''
+                        ? '本次试算未指定站点，用的是服务端实时号池站点；剥离规则按站点区分（国内区多拦一条 DeepSeek Harness 身份句）'
+                        : '本次试算显式指定的站点；剥离规则按站点区分（国内区多拦一条 DeepSeek Harness 身份句）'
+                    }
+                  >
+                    <span id="drySiteBadge">
+                      站点 · {siteLabel(dryResult.site)}
+                      {dryRanSite === '' ? '（跟随当前）' : '（本次指定）'}
+                    </span>
                   </StatusBadge>
                 )}
               </div>

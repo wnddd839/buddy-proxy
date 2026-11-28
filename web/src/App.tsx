@@ -115,7 +115,9 @@ function ConsoleApp() {
   const [routesError, setRoutesError] = useState('');
 
   const [quotaFloorSaved, setQuotaFloorSaved] = useState<number | null>(null);
-  const [spMode, setSpMode] = useState<SystemPromptMode>('auto');
+  // null = 未知（配置接口尚未返回或失败）。绝不能默认 auto：
+  // 那会在接口挂掉时把顶栏/模式卡伪装成「auto 当前生效」，而线上可能是 strip。
+  const [spMode, setSpMode] = useState<SystemPromptMode | null>(null);
 
   // 静默失效命中数：概览首屏与导航徽标都要能直接看到。旧面板把它摆在
   // 首屏，移植后只剩一个入口 —— 等于让「静默失效」本身静默了。

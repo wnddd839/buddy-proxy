@@ -23,7 +23,7 @@ import { Button } from '@/components/ui/Button';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { UpdateWidget } from './UpdateWidget';
-import type { Product, Site } from '@/types/api';
+import type { Product, Site, SystemPromptMode } from '@/types/api';
 
 export type TabId =
   | 'tab-overview'
@@ -66,7 +66,7 @@ interface AppShellProps {
   invariantStale: boolean;
   poolCountLabel: string;
   checkinAutoEnabled: boolean;
-  spMode: string;
+  spMode: SystemPromptMode | null;
   version: string;
   uiRevision: string;
   theme: ThemeId;
@@ -211,7 +211,14 @@ export function AppShell({
             <span className="ds-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--border)] text-[var(--fg-2)]">
               {spMode}
             </span>
-          ) : null,
+          ) : (
+            <span
+              title="System Prompt 配置尚未加载或加载失败 —— 未知，不是 auto"
+              className="ds-mono text-[10px] text-[var(--fg-3)]"
+            >
+              —
+            </span>
+          ),
         },
       ],
     },

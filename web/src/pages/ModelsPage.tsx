@@ -24,12 +24,26 @@ import {
   isAutoFamilyModel,
   mergeModelLists,
   normalizeModelName,
-  normalizeRouteMode,
   routeRuleKey,
   validateModelRoutes,
 } from '@/lib/domain';
 import { bareModelId, formatTime, normalizeSite, shortId, siteLabel } from '@/lib/format';
 import { apiRequest, copyToClipboard } from '@/lib/api';
+import {
+  ROUTES_DRAFT_KEY,
+  TITLE_DRAFT_KEY,
+  clearDraft,
+  getSessionStorage,
+  normalizeRulesDraft,
+  normalizeTitleDraft,
+  readDraft,
+  rulesFingerprint,
+  shouldRestoreDraft,
+  titleFingerprint,
+  titleFromPayload,
+  writeDraft,
+  type StoredDraft,
+} from '@/lib/drafts';
 import { useToast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, PageHeader } from '@/components/ui/Card';
@@ -108,6 +122,29 @@ export function ModelsPage({
   const [savingTitle, setSavingTitle] = useState(false);
   // 上一次服务端 titleRoute 快照：payload 更新时用它判断草稿是否脏。
   const titleSavedRef = useRef('');
+  // 同一份快照的 state 副本：持久化 effect 需要它做依赖（ref 变化不触发渲染）。
+  const [titleBase, setTitleBase] = useState('');
+
+  // 会话级草稿：切换侧边栏标签会卸载本页，未保存的编辑必须活下来。
+  // 只有 sessionStorage 可用时才持久化；隐私模式下退化为纯内存（draftStorage = null）。
+  const draftStorage = useMemo(() => getSessionStorage(), []);
+  const pendingRoutesDraft = useRef<StoredDraft<ModelRouteRule[]> | null>(null);
+  const pendingTitleDraft = useRef<StoredDraft<TitleRoute> | null>(null);
+  // hydrate 每份草稿只做一次：之后的载荷更新继续走「脏草稿优先」的旧逻辑。
+  const routesHydratedRef = useRef(false);
+  const titleHydratedRef = useRef(false);
+  // StrictMode（dev only）会把 effect 连着跑两遍。载荷对象没换就跳过第二遍：
+  // 第二遍里 rules 还是初始空数组，按「脏草稿优先」会把它当成草稿保留，
+  // 结果把刚 hydrate 好的规则清空。
+  const consumedPayloadRef = useRef<ModelRoutesPayload | null>(null);
+
+  // 会话草稿只在挂载时读一次，损坏的条目在这里就被删掉。
+  // 本 effect 必须声明在载荷 effect 之前：同一轮 commit 内 effect 按声明顺序
+  // 执行，下面的首次 hydrate 才能拿到 pending*。
+  useEffect(() => {
+    pendingRoutesDraft.current = readDraft(draftStorage, ROUTES_DRAFT_KEY, normalizeRulesDraft);
+    pendingTitleDraft.current = readDraft(draftStorage, TITLE_DRAFT_KEY, normalizeTitleDraft);
+  }, [draftStorage]);
 
   // 上游模型回显对照（I8）：直接复用 /usage 已有的 upstreamModel /
   // modelMismatch 字段，不新增后端接口。
@@ -118,38 +155,73 @@ export function ModelsPage({
   const [echoError, setEchoError] = useState('');
 
   useEffect(() => {
-    if (!routesPayload) return;
-    const normalized: ModelRouteRule[] = (routesPayload.rules || []).map((r) => ({
-      fromSite: normalizeSite(r.fromSite),
-      match: r.match || '',
-      site: normalizeSite(r.site),
-      target: r.target || '',
-      mode: normalizeRouteMode(r.mode),
-      note: r.note || '',
-    }));
-    const snap = JSON.stringify(normalized);
+    if (!routesPayload || consumedPayloadRef.current === routesPayload) return;
+    consumedPayloadRef.current = routesPayload;
+    const normalized = normalizeRulesDraft(routesPayload.rules || []) ?? [];
+    const snap = rulesFingerprint(normalized);
     // 父级载荷更新时不能无脑覆盖草稿：保存「标题改写」会回写父级 payload，
     // 若这里直接把 rules 换成服务端版本，用户还没保存的路由编辑会静默消失。
     const prevSnap = savedSnapshotRef.current;
     savedSnapshotRef.current = snap;
-    setRules((prev) => (prevSnap && JSON.stringify(prev) !== prevSnap ? prev : normalized));
+    if (!routesHydratedRef.current) {
+      // 首次拿到载荷：会话里若留着上次没保存的草稿就恢复它。
+      // 与当前服务端一致（别人已保存同一份）/ 载荷未就绪时不恢复 —— 见 shouldRestoreDraft。
+      routesHydratedRef.current = true;
+      const stored = pendingRoutesDraft.current;
+      pendingRoutesDraft.current = null;
+      setRules(
+        stored && shouldRestoreDraft(stored, snap, rulesFingerprint) ? stored.draft : normalized,
+      );
+    } else {
+      setRules((prev) => (prevSnap && JSON.stringify(prev) !== prevSnap ? prev : normalized));
+    }
     setSavedSnapshot(snap);
     // titleRoute 与 rules 同源同载荷，必须一起同步；否则保存路由时
     // 会用初始空值覆盖线上标题配置。
-    const tr = routesPayload.titleRoute;
-    const nextTitle = {
-      enabled: tr?.enabled === true,
-      domestic: tr?.domestic || '',
-      global: tr?.global || '',
-    };
+    const nextTitle = titleFromPayload(routesPayload.titleRoute);
+    const nextTitleSnap = titleFingerprint(nextTitle);
     // 与 rules 同规则：服务端载荷更新时不能覆盖未保存的标题草稿，
     // 否则保存路由 / 另一操作者改动会让正在编辑的标题配置静默丢失。
     const prevTitleSnap = titleSavedRef.current;
-    titleSavedRef.current = JSON.stringify(nextTitle);
-    setTitleRoute((prev) =>
-      prevTitleSnap && JSON.stringify(prev) !== prevTitleSnap ? prev : nextTitle,
-    );
+    titleSavedRef.current = nextTitleSnap;
+    setTitleBase(nextTitleSnap);
+    if (!titleHydratedRef.current) {
+      titleHydratedRef.current = true;
+      const storedTitle = pendingTitleDraft.current;
+      pendingTitleDraft.current = null;
+      setTitleRoute(
+        storedTitle && shouldRestoreDraft(storedTitle, nextTitleSnap, titleFingerprint)
+          ? storedTitle.draft
+          : nextTitle,
+      );
+    } else {
+      setTitleRoute((prev) =>
+        prevTitleSnap && JSON.stringify(prev) !== prevTitleSnap ? prev : nextTitle,
+      );
+    }
   }, [routesPayload]);
+
+  // 只持久化「脏」状态：与当前服务端快照一致就清空。否则下次挂载会把服务端
+  // 早已生效的值当成未保存草稿恢复回来，白亮一个脏标记。
+  // savedSnapshot 为空 = 载荷还没到，此时 rules 只是初始空数组，写进去就是幽灵草稿。
+  useEffect(() => {
+    if (!routesHydratedRef.current || !draftStorage || !savedSnapshot) return;
+    if (rulesFingerprint(rules) === savedSnapshot) {
+      clearDraft(draftStorage, ROUTES_DRAFT_KEY);
+      return;
+    }
+    writeDraft(draftStorage, ROUTES_DRAFT_KEY, rules, savedSnapshot);
+  }, [rules, savedSnapshot, draftStorage]);
+
+  useEffect(() => {
+    if (!titleHydratedRef.current || !draftStorage || !titleBase) return;
+    const normalized = titleFromPayload(titleRoute);
+    if (titleFingerprint(normalized) === titleBase) {
+      clearDraft(draftStorage, TITLE_DRAFT_KEY);
+      return;
+    }
+    writeDraft(draftStorage, TITLE_DRAFT_KEY, normalized, titleBase);
+  }, [titleRoute, titleBase, draftStorage]);
 
   const isDirty = useMemo(() => {
     if (!savedSnapshot) return false;
@@ -350,12 +422,9 @@ export function ModelsPage({
   if (titleDirty) titleStateText += ' · 有未保存的更改';
 
   const handleResetTitleRoute = () => {
-    const tr = routesPayload?.titleRoute;
-    setTitleRoute({
-      enabled: tr?.enabled === true,
-      domestic: tr?.domestic || '',
-      global: tr?.global || '',
-    });
+    setTitleRoute(titleFromPayload(routesPayload?.titleRoute));
+    // 「放弃」必须同时清掉会话草稿：否则切页回来草稿会被重新恢复。
+    clearDraft(draftStorage, TITLE_DRAFT_KEY);
   };
 
   const handleSaveTitleRoute = async () => {
@@ -377,6 +446,8 @@ export function ModelsPage({
         method: 'POST',
         body: JSON.stringify({ rules: rulesToPersist, titleRoute }),
       });
+      // 2xx 之后才清会话草稿：失败（超时 / 5xx）时草稿必须留着，否则编辑白丢。
+      clearDraft(draftStorage, TITLE_DRAFT_KEY);
       // 回写父级 payload：否则切页回来会显示旧配置，下一次保存路由
       //（父级 payload 里的旧 titleRoute）会把它静默改回去。
       onRoutesSaved(rulesToPersist, titleRoute);
@@ -405,9 +476,11 @@ export function ModelsPage({
         // 少这个字段就等于把线上标题改写配置清空。
         body: JSON.stringify({ rules, titleRoute }),
       });
-      const snap = JSON.stringify(rules);
+      const snap = rulesFingerprint(rules);
       savedSnapshotRef.current = snap;
       setSavedSnapshot(snap);
+      // 2xx 才清会话草稿：保存失败时草稿必须留着（catch 分支不碰存储）。
+      clearDraft(draftStorage, ROUTES_DRAFT_KEY);
       setJustSaved(true);
       onRoutesSaved(rules, titleRoute);
       showToast('模型路由已保存并生效', 'success');
@@ -1079,6 +1152,8 @@ export function ModelsPage({
         onReset={() => {
           if (savedSnapshot) setRules(JSON.parse(savedSnapshot) as ModelRouteRule[]);
           setSaveError('');
+          // 放弃 = 状态 + 会话存储一起清，否则切页回来草稿会复活。
+          clearDraft(draftStorage, ROUTES_DRAFT_KEY);
         }}
         onSave={handleSaveRoutes}
       />
