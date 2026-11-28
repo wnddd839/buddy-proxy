@@ -44,7 +44,7 @@ func TestPublicJSONLimitOverHTTP(t *testing.T) {
 }
 
 func TestHTTPConfigDefaultsAndIdleTimeout(t *testing.T) {
-	t.Chdir(t.TempDir())
+	isolateConfigHome(t)
 	for _, tc := range []struct {
 		body, idle string
 		wantMB     int64

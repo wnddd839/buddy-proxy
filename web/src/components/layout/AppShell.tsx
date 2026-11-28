@@ -59,6 +59,8 @@ interface AppShellProps {
   onRefreshStatus: () => void;
   refreshing: boolean;
   attentionCount: number;
+  invariantHits: number | null;
+  invariantEnabled: boolean | null;
   poolCountLabel: string;
   checkinAutoEnabled: boolean;
   spMode: string;
@@ -87,6 +89,8 @@ export function AppShell({
   onRefreshStatus,
   refreshing,
   attentionCount,
+  invariantHits,
+  invariantEnabled,
   poolCountLabel,
   checkinAutoEnabled,
   spMode,
@@ -119,6 +123,16 @@ export function AppShell({
           id: 'tab-invariants',
           label: '静默体检',
           icon: ShieldAlert,
+          badge:
+            invariantEnabled === false ? (
+              <span className="text-[10px] text-[var(--fg-3)]">未启用</span>
+            ) : invariantHits === null ? (
+              <span className="ds-mono text-[11px] text-[var(--fg-3)]">—</span>
+            ) : invariantHits > 0 ? (
+              <StatusBadge tone="err" className="!px-1.5 !py-0 !text-[10px]">
+                {invariantHits}
+              </StatusBadge>
+            ) : null,
         },
         {
           id: 'tab-tok',

@@ -21,6 +21,7 @@ import (
 func checkinTestServer(t *testing.T, accts []accounts.Account) (*Server, *checkin.Log, string) {
 	t.Helper()
 	dir := t.TempDir()
+	isolateEnvFile(t, dir)
 	accountsPath := filepath.Join(dir, "proxy-accounts.json")
 	raw, err := json.Marshal(accounts.Store{Accounts: accts})
 	if err != nil {

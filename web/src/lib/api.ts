@@ -13,10 +13,14 @@ export async function apiRequest<T = unknown>(
   });
   const text = await res.text();
   let data: Record<string, unknown> = {};
-  try {
-    data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-  } catch {
-    data = { raw: text };
+  if (text) {
+    try {
+      data = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      // 200 却不是 JSON：多半是平台 / 反代塞回来的 HTML 错误页。当成成功会
+      // 让页面显示「暂无数据」，把一次真实的加载失败静默吞掉。
+      throw new Error(`响应不是 JSON（可能是网关错误页）：${text.slice(0, 120)}`);
+    }
   }
   // 200 + {"ok":false} 也是失败：这类响应如果当成功，界面会显示
   // 「已保存」并继续用旧数据，属于本分支最忌讳的静默失效。
@@ -55,10 +59,12 @@ export async function updateFetch<T = unknown>(
     });
     const text = await res.text();
     let data: Record<string, unknown> = {};
-    try {
-      data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    } catch {
-      data = { raw: text };
+    if (text) {
+      try {
+        data = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        throw new Error(`响应不是 JSON（可能是网关错误页）：${text.slice(0, 120)}`);
+      }
     }
     if (!res.ok) {
       const errObj = data?.error as { message?: string } | string | undefined;

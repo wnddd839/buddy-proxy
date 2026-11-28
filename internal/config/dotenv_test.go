@@ -10,6 +10,7 @@ import (
 )
 
 func TestUpsertAndLoadDotEnv(t *testing.T) {
+	isolateConfigEnv(t)
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
 	if err := os.WriteFile(envPath, []byte("CODEBUDDY_PROXY_HOST=127.0.0.1\r\n# comment\nEXISTING=keep\n"), 0o600); err != nil {
@@ -53,6 +54,7 @@ func TestUpsertAndLoadDotEnv(t *testing.T) {
 }
 
 func TestUpsertEnvFileEscapesLineBreaks(t *testing.T) {
+	isolateConfigEnv(t)
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
 	value := "cbp_a:global\n:domestic\r\nSECOND=1"
@@ -95,6 +97,7 @@ func TestUpsertEnvFileEscapesLineBreaks(t *testing.T) {
 }
 
 func TestUpsertAndLoadDotEnvLiteralBackslashes(t *testing.T) {
+	isolateConfigEnv(t)
 	envPath := filepath.Join(t.TempDir(), "proxy.env")
 	value := `admin \new \reports \\share "quoted"`
 	if err := config.UpsertEnvFile(envPath, map[string]string{
@@ -113,7 +116,10 @@ func TestUpsertAndLoadDotEnvLiteralBackslashes(t *testing.T) {
 }
 
 func TestResolveEnvFilePathDefaultsToStableHomeFile(t *testing.T) {
-	root := t.TempDir()
+	// 隔离 HOME：DefaultEnvFilePath 以 UserHomeDir 为锚。不隔离时本测试
+	// 会解析到开发者真实的 ~/.codebuddy/proxy.env（只读，但一旦有人在这里
+	// 加一次写入就会污染真实配置）。
+	root := isolateConfigEnv(t)
 	dir := filepath.Join(root, "launch")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -130,6 +136,7 @@ func TestResolveEnvFilePathDefaultsToStableHomeFile(t *testing.T) {
 }
 
 func TestLoadDotEnvFillsEmptyProcessAPIKey(t *testing.T) {
+	isolateConfigEnv(t)
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, "proxy.env")
 	if err := os.WriteFile(envPath, []byte("CODEBUDDY_PROXY_API_KEY=cbp_persisted\n"), 0o600); err != nil {

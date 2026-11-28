@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Copy, RefreshCw, TriangleAlert } from 'lucide-react';
 import type { UsageEntry, UsageViewPayload } from '@/types/api';
-import { usageRowHitRate, usageRowTotalTokens } from '@/lib/domain';
+import {
+  usageRowHitRate,
+  usageRowTotalTokens,
+  isAutoFamilyModel as isAutoFamily,
+  normalizeModelName,
+} from '@/lib/domain';
 import {
   formatCompactNumber,
   formatHitRate,
@@ -23,18 +28,11 @@ interface UsagePageProps {
 
 type RangeKey = UsageChartRange;
 
-// 上游模型对照（I8）：normalizeModelName / isAutoFamily 与后端
-// internal/gateway/usage_record.go 的判据保持一致 —— 后端已给出
+// 上游模型对照（I8）：normalizeModelName / isAutoFamily 全部来自
+// lib/domain，与后端 internal/gateway/usage_record.go 同判据 —— 后端已给出
 // modelMismatch，这里只为旧条目（字段缺省）留一条本地回退路径。
-const stripSitePrefix = (model: string) => model.trim().replace(/^(cn:|global:)/i, '');
-
-const normalizeModelName = (model: string) =>
-  stripSitePrefix(model).toLowerCase().replace(/[-_. /:]/g, '');
-
-const isAutoFamily = (model: string) => {
-  const m = stripSitePrefix(model).toLowerCase();
-  return m === 'auto' || m.startsWith('auto-');
-};
+// 注意：判据不能写 startsWith('auto')，那会把 autopilot 之类也算成 auto，
+// 真实替换就会被静默漏计。
 
 // 分词器比例（I8/I9/I10）：后端只会给出 cjk / digits / ascii / tiny / none，
 // digit / alpha / sym 是历史与别名口径，一并映射，别让新桶名掉成英文。
@@ -62,12 +60,21 @@ export function UsagePage({ active }: UsagePageProps) {
   const [modelFilter, setModelFilter] = useState('');
   const [page, setPage] = useState(1);
   const [data, setData] = useState<UsageViewPayload | null>(null);
+  // 成功加载的那一份 data 属于哪次查询。筛选/翻页后，旧 data 与新查询不匹配，
+  // 必须当「未知」处理 —— 否则界面会把上一个筛选的结果当成当前筛选的事实。
+  const [loadedKey, setLoadedKey] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(false);
+  // 乱序守卫：快速改筛选/翻页时只认最后发出的请求。
+  const reqSeqRef = useRef(0);
 
   const pageSize = 20;
+  const queryKey = `${range}|${accountFilter}|${modelFilter}|${page}`;
 
   const fetchUsage = useCallback(
     async (r: RangeKey, acc: string, mod: string, p: number) => {
+      const seq = ++reqSeqRef.current;
+      const key = `${r}|${acc}|${mod}|${p}`;
       setLoading(true);
       try {
         const offset = (p - 1) * pageSize;
@@ -77,11 +84,18 @@ export function UsagePage({ active }: UsagePageProps) {
         if (acc) url += `&account=${encodeURIComponent(acc)}`;
         if (mod) url += `&model=${encodeURIComponent(mod)}`;
         const res = await apiRequest<UsageViewPayload>(url);
+        // 更晚的查询已经在飞 ⇒ 这是旧筛选的响应，丢掉。
+        if (seq !== reqSeqRef.current) return;
         setData(res);
+        setLoadedKey(key);
+        setLoadError('');
       } catch (e: unknown) {
-        showToast(e instanceof Error ? e.message : String(e), 'error');
+        if (seq !== reqSeqRef.current) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        setLoadError(msg);
+        showToast(msg, 'error');
       } finally {
-        setLoading(false);
+        if (seq === reqSeqRef.current) setLoading(false);
       }
     },
     [showToast],
@@ -92,10 +106,14 @@ export function UsagePage({ active }: UsagePageProps) {
     fetchUsage(range, accountFilter, modelFilter, page);
   }, [active, range, accountFilter, modelFilter, page, fetchUsage]);
 
-  const sum = data?.summary;
-  const total = data?.requestsTotal ?? data?.requests?.length ?? 0;
+  const view = data && loadedKey === queryKey ? data : null;
+  const sum = view?.summary;
+  const total = view ? (view.requestsTotal ?? view.requests?.length ?? 0) : 0;
   const pages = Math.max(1, Math.ceil(total / pageSize));
-  const rows = data?.requests || [];
+  const rows = view?.requests || [];
+  // KPI 只有在「当前查询真的有结果」时才有数字；未知一律 '—'。
+  const kpi = (v?: number | null, fmt?: (n: number) => string) =>
+    view && v != null ? (fmt ? fmt(v) : v.toLocaleString()) : '—';
 
   const renderSystemCell = (row: UsageEntry) => {
     const form = row.systemForm || '';
@@ -239,7 +257,19 @@ export function UsagePage({ active }: UsagePageProps) {
       <ScopeNote>
         口径：请求数为落盘统计（保留 90 天，重启不清零）；命中率的分母口径为
         缓存 token ÷ prompt token，不是「缓存 ÷ 总 token」。
-            </ScopeNote>
+      </ScopeNote>
+
+      {loadError && (
+        <div
+          role="alert"
+          className="ds-surface-2 px-3.5 py-2.5 text-xs leading-relaxed text-[var(--err)] bg-[var(--err-bg)] border-l-2 border-[var(--err)]"
+        >
+          明细加载失败：{loadError}
+          {view
+            ? '（下面的明细仍是该查询上一次成功刷新的结果，不是本次刷新）'
+            : '（为避免误读，下面不显示上一次查询的旧数据；可点右上角「刷新明细」重试）'}
+        </div>
+      )}
 
       {/* 周期与筛选工具条 */}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -298,29 +328,31 @@ export function UsagePage({ active }: UsagePageProps) {
         </div>
       </div>
 
-      {/* 5 格 KPI */}
+      {/* 5 格 KPI：未加载成功前一律 '—'，不用 0 冒充「没有流量」 */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        <StatCard label="请求数" valueId="uRequests" value={(sum?.requests || 0).toLocaleString()} />
+        <StatCard label="请求数" valueId="uRequests" value={kpi(sum?.requests)} />
         <StatCard
           label="失败"
           valueId="uFailed"
-          value={(sum?.failed || 0).toLocaleString()}
-          valueClassName={(sum?.failed || 0) > 0 ? 'text-[var(--err)]' : ''}
+          value={kpi(sum?.failed)}
+          valueClassName={view && (sum?.failed ?? 0) > 0 ? 'text-[var(--err)]' : ''}
         />
         <StatCard
           label="Token 总量"
           valueId="uTotalTokens"
-          value={formatCompactNumber(sum?.totalTokens || 0)}
-          title={`精确总 Tokens：${(sum?.totalTokens || 0).toLocaleString()}`}
+          value={kpi(sum?.totalTokens, formatCompactNumber)}
+          title={`精确总 Tokens：${
+            view && sum?.totalTokens != null ? sum.totalTokens.toLocaleString() : '—（尚未加载）'
+          }`}
         />
         <StatCard
           label="缓存命中率"
           valueId="uCacheHit"
-          value={formatHitRate(sum?.cacheHitRate)}
+          value={view ? formatHitRate(sum?.cacheHitRate) : '—'}
           valueClassName={
-            (sum?.cacheHitRate ?? -1) >= 40
+            view && (sum?.cacheHitRate ?? -1) >= 40
               ? 'text-[var(--ok)]'
-              : (sum?.cacheHitRate ?? -1) >= 10
+              : view && (sum?.cacheHitRate ?? -1) >= 10
                 ? 'text-[var(--info)]'
                 : ''
           }
@@ -329,11 +361,9 @@ export function UsagePage({ active }: UsagePageProps) {
           label="Credits 累计"
           valueId="uCredits"
           value={
-            (sum?.creditRows || 0) > 0
-              ? (sum?.credits || 0).toFixed(4)
-              : '—'
+            view && (sum?.creditRows || 0) > 0 ? (sum?.credits || 0).toFixed(4) : '—'
           }
-          sub={(sum?.creditRows || 0) > 0 ? `${sum?.creditRows} 条` : undefined}
+          sub={view && (sum?.creditRows || 0) > 0 ? `${sum?.creditRows} 条` : undefined}
         />
       </div>
 
@@ -343,7 +373,7 @@ export function UsagePage({ active }: UsagePageProps) {
           <div className="text-sm font-medium text-[var(--fg)] mb-3">消耗与缓存命中趋势</div>
           <div id="usageChart">
             <UsageLineChart
-              series={data?.series || []}
+              series={view?.series || []}
               totalRequests={sum?.requests || 0}
               range={range}
               height={220}
@@ -358,8 +388,10 @@ export function UsagePage({ active }: UsagePageProps) {
             <span className="text-[11px] text-[var(--fg-3)]">cached ÷ prompt</span>
           </div>
           <div className="overflow-x-auto flex-1">
-            {!(data?.byModel || []).length ? (
-              <div className="py-12 text-center text-xs text-[var(--fg-3)]">暂无按模型统计</div>
+            {!(view?.byModel || []).length ? (
+              <div className="py-12 text-center text-xs text-[var(--fg-3)]">
+                {loadError ? '按模型统计加载失败' : view ? '暂无按模型统计' : '正在加载按模型统计…'}
+              </div>
             ) : (
               <table className="w-full text-left border-collapse text-xs" aria-label="按模型缓存命中">
                 <thead>
@@ -371,7 +403,7 @@ export function UsagePage({ active }: UsagePageProps) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
-                  {(data?.byModel || []).map((row) => {
+                  {(view?.byModel || []).map((row) => {
                     const rate = row.cacheHitRate ?? -1;
                     const pct = rate > 0 ? Math.min(100, rate) : 0;
                     return (
@@ -466,7 +498,11 @@ export function UsagePage({ active }: UsagePageProps) {
               {!rows.length ? (
                 <tr>
                   <td colSpan={14} className="py-10 text-center text-[var(--fg-3)]">
-                    暂无请求明细记录
+                    {loadError
+                      ? `加载失败：${loadError}`
+                      : !view
+                        ? '正在加载请求明细…'
+                        : '暂无请求明细记录'}
                   </td>
                 </tr>
               ) : (
@@ -557,9 +593,13 @@ export function UsagePage({ active }: UsagePageProps) {
 
         <div className="px-4 py-2.5 border-t border-[var(--border)] bg-[var(--surface-2)]/40 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--fg-2)]">
           <span id="usagePagerMeta" className="ds-mono">
-            {total
-              ? `第 ${page} / ${pages} 页 · 本页 ${rows.length} 条 · 共 ${total} 条`
-              : '暂无明细'}
+            {!view
+              ? loadError
+                ? '加载失败（分页信息不可用）'
+                : '正在加载…'
+              : total
+                ? `第 ${page} / ${pages} 页 · 本页 ${rows.length} 条 · 共 ${total} 条`
+                : '暂无明细'}
           </span>
           <div className="flex items-center gap-1.5">
             <Button

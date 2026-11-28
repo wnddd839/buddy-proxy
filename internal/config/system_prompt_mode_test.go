@@ -45,6 +45,7 @@ func TestSystemPromptModeIsValid(t *testing.T) {
 }
 
 func TestLoadSystemPromptModeDefaultsToAuto(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE", "")
 	if got := Load().SystemPromptMode; got != SystemPromptModeAuto {
 		t.Fatalf("未设置时应默认 auto，实际 %q", got)
@@ -52,6 +53,7 @@ func TestLoadSystemPromptModeDefaultsToAuto(t *testing.T) {
 }
 
 func TestLoadSystemPromptModeReadsEnv(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_SYSTEM_PROMPT_MODE", " keep ")
 	if got := Load().SystemPromptMode; got != SystemPromptModeKeep {
 		t.Fatalf("应读到 keep，实际 %q", got)

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wnddd839/codebuddy-proxy/internal/accounts"
 	"github.com/wnddd839/codebuddy-proxy/internal/config"
@@ -105,5 +106,49 @@ func TestCreateAccountBindingPersistsAndReloads(t *testing.T) {
 	srv.HTTP.Handler.ServeHTTP(rec, req)
 	if rec.Code != 400 || len(srv.Svc.Config().APIKeys) != 1 {
 		t.Fatal("区域冲突未拒绝或产生了配置副作用")
+	}
+}
+
+// 生成绑定 Key 是「读 APIKeys → 追加 → 落盘 + 写内存」的读改写。
+// 两个并发请求若各拿一份旧快照，后落盘的会把前一个绑定静默覆盖掉，
+// 而两边都收到 200 —— 用户看到的新 Key 其实已经不在配置里了。
+//
+// 不靠并发时序赌概率：直接持住 envMu，断言请求会等这把锁。
+// 没加锁的实现会在持锁期间就写完（本测试会立刻失败）。
+func TestBoundKeyCreateWaitsForEnvLock(t *testing.T) {
+	srv := testServer(t, true, "", "main")
+	account, _, err := srv.Svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+		Site: "domestic", BearerToken: "fixture", Enabled: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]any{"accountId": account.ID})
+
+	srv.envMu.Lock()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/direct-admin/api/client-config/bound-keys", strings.NewReader(string(raw)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.HTTP.Handler.ServeHTTP(rec, req)
+		done <- rec
+	}()
+
+	select {
+	case rec := <-done:
+		srv.envMu.Unlock()
+		t.Fatalf("生成绑定 Key 未受 envMu 保护：持锁期间就完成了写入（%d）", rec.Code)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	srv.envMu.Unlock()
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusOK {
+			t.Fatalf("解锁后请求应成功：%d %s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("解锁后请求仍未完成")
 	}
 }

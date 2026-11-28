@@ -27,6 +27,9 @@ const models = src('pages/ModelsPage.tsx');
 const checkin = src('pages/CheckinPage.tsx');
 const client = src('pages/ClientPage.tsx');
 const systemPrompt = src('pages/SystemPromptPage.tsx');
+const invariants = src('pages/InvariantsPage.tsx');
+const app = src('App.tsx');
+const apiLib = src('lib/api.ts');
 const apiTypes = src('types/api.ts');
 const domain = src('lib/domain.ts');
 
@@ -337,5 +340,178 @@ describe('05 模型页（旧 internal/admin/title_panel_test.go）', () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 静默失效不变式（本轮评审新增）：四条源码级契约，对应四类历史事故。
+// 状态竞态本身无法在源码字符串里断言，这里只钉住「守卫/兜底写法必须存在」。
+// ---------------------------------------------------------------------------
+describe('静默失效：乱序响应与后台刷新失败必须留痕', () => {
+  it('TestPollDoesNotSwallowErrors: 5s 轮询失败不得被空 catch 吞掉', () => {
+    const poll = region(systemPrompt, 'window.setInterval(() => {', '}, 5000)');
+    expect(poll).toContain('setOverviewError');
+    expect(poll).not.toMatch(/\.catch\(\(\) => \{\}\)/);
+  });
+
+  it('TestPollDoesNotRefetchHistory: 轮询只刷概览，不带渲染时的旧页码去抢历史表格', () => {
+    const poll = region(systemPrompt, 'window.setInterval(() => {', '}, 5000)');
+    expect(poll).toContain('fetchOverviewOnly');
+    expect(poll).not.toContain('fetchOverviewAndHistory');
+  });
+
+  it('TestStaleResponseGuards: 日期/翻页/筛选/区间必须有「只认最后一次响应」的守卫', () => {
+    // 06：概览与历史各自一条序号
+    expect(systemPrompt).toContain('if (seq !== overviewSeqRef.current) return null;');
+    expect(systemPrompt).toContain('if (seq !== historySeqRef.current) return;');
+    // 07：筛选/翻页
+    expect(usage).toContain('if (seq !== reqSeqRef.current) return;');
+    // 01：区间切换
+    expect(overview).toContain('if (seq !== usageSeqRef.current) return;');
+  });
+
+  it('TestOverviewUsageErrorIsVisible: 落盘统计读不到时必须说出来，并标明回退口径', () => {
+    expect(overview).toContain('setUsageError(');
+    expect(overview).toContain('落盘统计读取失败');
+    expect(overview).toContain('上面指标已回退为进程内累计');
+  });
+
+  it('TestApiRejectsNonJson200: 200 却不是 JSON（网关错误页）必须算失败，不能当成空数据', () => {
+    const apiRequestFn = region(apiLib, 'export async function apiRequest', 'export async function updateFetch');
+    expect(apiRequestFn).toContain('响应不是 JSON');
+    expect(apiRequestFn).not.toContain('data = { raw: text };');
+    // 更新接口同样不能把错误页当成功
+    expect(region(apiLib, 'export async function updateFetch', 'export async function copyToClipboard')).toContain(
+      '响应不是 JSON',
+    );
+  });
+
+  it('TestStaleLoadsAreLabelled: 刷新失败时旧数据必须被标注为「上一次成功加载的」', () => {
+    expect(systemPrompt).toContain('下面显示的是上一次成功加载的结果');
+    expect(invariants).toContain('下面仍是上一次成功加载的体检结果');
+    expect(models).toContain('下面的计数仍是上一次成功加载的结果');
+    expect(usage).toContain('下面不显示上一次查询的旧数据');
+  });
+});
+
+describe('静默失效：未知不得被显示成零', () => {
+  it('TestSystemPromptStatsUseDashUntilLoaded: 八个统计卡都走 statValue，未加载时显示 —', () => {
+    expect(systemPrompt).toMatch(
+      /const statValue = \(v\?: number \| null\) => \(overview && v != null \? v : '—'\);/,
+    );
+    expect((systemPrompt.match(/value=\{statValue\(/g) || []).length).toBeGreaterThanOrEqual(8);
+    // 旧写法：字段缺省 → 0，前端看不出「还没加载」还是「真的零次」
+    expect(systemPrompt).not.toMatch(/value=\{stats\.\w+ \?\? 0\}/);
+  });
+
+  it('TestSystemPromptStatsScopeDoesNotGuess: 概览未加载时不得断言「按今日落盘统计」', () => {
+    expect(systemPrompt).toContain("'—（概览尚未加载）'");
+    // 历史总数未知时也不能写 0 条
+    expect(systemPrompt).toContain('historyResp?.total ?? null');
+    expect(systemPrompt).not.toMatch(/historyResp\?\.total \|\| 0/);
+  });
+
+  it('TestUsageKpisUseDashUntilLoaded: 请求/失败/Token 三个 KPI 不得用 0 兜底', () => {
+    expect(usage).toContain('const kpi = (v?: number | null');
+    expect((usage.match(/value=\{kpi\(/g) || []).length).toBeGreaterThanOrEqual(3);
+    expect(usage).not.toContain('value={(sum?.requests || 0).toLocaleString()}');
+    expect(usage).not.toContain('value={formatCompactNumber(sum?.totalTokens || 0)}');
+  });
+
+  it('TestUsageDoesNotShowOtherQueryRows: 当前查询没拿到数据时不能展示上一个筛选的行', () => {
+    expect(usage).toContain('const view = data && loadedKey === queryKey ? data : null;');
+    expect(usage).toContain('const rows = view?.requests || [];');
+  });
+
+  it('TestOverviewFallbackIsLabelledByScope: 回退进程内累计时指标标签必须改口径', () => {
+    expect(overview).toContain('const uSum = usageForRange === range ? usageData?.summary : undefined;');
+    expect(overview).toContain("const rangeScopeLabel = usingFallback ? '进程内累计' : rangeLabel;");
+  });
+
+  it('TestOverviewPoolNotZeroBeforeStatus: 状态未到不得显示「0/0 启用」或「尚未添加账号」', () => {
+    expect(overview).toContain("{statusKnown ? poolSummary.healthy : '—'}");
+    expect(overview).toContain("{statusKnown ? poolSummary.enabled : '—'} 启用");
+    expect(domain).toContain('known: false');
+  });
+
+  it('TestModelsEmptyStateDistinguishesFailure: 拉取失败 / 筛选无命中 / 真的没数据 三种文案必须分开', () => {
+    expect(models).toContain('模型编目加载失败');
+    expect(models).toContain('没有匹配筛选条件的模型');
+    expect(models).toContain('拉取失败不等于没有模型');
+    expect(models).toContain('modelsError');
+  });
+
+  it('TestAutoFamilyPredicateSharedWithBackend: auto 判据必须是 auto / auto-*，不得把 autopilot 当成 auto', () => {
+    // 后端 isAutoFamily：m == "auto" || HasPrefix(m, "auto-")
+    expect(domain).toContain("m === 'auto' || m.startsWith('auto-')");
+    expect(models).toContain('isAutoFamilyModel(sent)');
+    expect(usage).toContain('isAutoFamilyModel as isAutoFamily');
+    expect(models).not.toMatch(/indexOf\('auto'\) === 0/);
+  });
+
+  it('TestEchoMismatchNotDefaultedToMatch: 旧条目缺 modelMismatch 时按判据本地算，不得默认「一致」', () => {
+    expect(models).toContain('r.modelMismatch ??');
+    expect(models).toContain('normalizeModelName(r.upstreamModel');
+  });
+});
+
+describe('静默失效：写入失败与被覆盖的草稿', () => {
+  it('TestTitleSaveKeepsRouteDrafts: 父级载荷回写不得冲掉未保存的路由草稿', () => {
+    expect(models).toContain('prevSnap && JSON.stringify(prev) !== prevSnap ? prev : normalized');
+    expect(models).toContain('savedSnapshotRef.current = snap;');
+  });
+
+  it('TestModelsScopeOnlyAfterSuccess: 编目范围是「已加载成功的那一份」，不是用户刚点的那个', () => {
+    const fn = region(app, 'const refreshModels = useCallback', '\n  }, []);');
+    expect(fn).toMatch(/setModelsScope\(target\);\n\s*setModelsError\(''\);/);
+    expect(app).toContain('modelsError={modelsError}');
+    // 范围切换不再由子页面乐观设置
+    expect(models).not.toContain('onSetModelsScope');
+    expect(app).not.toContain('onSetModelsScope');
+  });
+
+  it('TestBothSitesFetchFailsLoudly: 两站合并时单站失败不得静默只显示一站', () => {
+    const fn = region(app, 'const refreshModels = useCallback', '\n  }, []);');
+    expect(fn).toContain('if (failures.length) throw new Error(failures.join');
+  });
+
+  it('TestStripSwitchGuardsDoubleSubmit: 剥离开关写入期间不得二次提交', () => {
+    expect(systemPrompt).toContain('if (switchingStrip) return;');
+  });
+});
+
+describe('旧面板对账补齐（2026-11-28 第二轮）', () => {
+  const shell = src('components/layout/AppShell.tsx');
+  const invariants = src('pages/InvariantsPage.tsx');
+
+  it('P0 静默失效命中必须在导航与概览首屏可见', () => {
+    // 旧面板把命中数摆在 01 首屏；移植后不能只剩一个入口。
+    expect(shell).toContain("id: 'tab-invariants'");
+    expect(shell).toContain('invariantHits');
+    expect(overview).toContain('id="ovInvariantHits"');
+    expect(overview).toContain("onNavigate('tab-invariants')");
+    // 未知与 0 必须区分
+    expect(overview).toContain('尚未加载（未知 ≠ 无命中）');
+  });
+
+  it('P2 invList 容器 id 必须存在', () => {
+    expect(invariants).toContain('id="invList"');
+  });
+
+  it('P1 事件表 system 长度列必须带 UTF-8 字节 tooltip', () => {
+    expect(systemPrompt).toContain('system 长度');
+    expect(systemPrompt).toContain('UTF-8 字节数');
+    expect(systemPrompt).not.toContain('>大小<');
+  });
+
+  it('P1 标题改写三句安全口径必须写出来', () => {
+    for (const needle of [
+      'fail-closed',
+      '只改模型名',
+      'reasoning_effort',
+      '自动停止识别',
+    ]) {
+      expect(models, `缺少 ${needle}`).toContain(needle);
+    }
   });
 });

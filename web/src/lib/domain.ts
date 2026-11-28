@@ -21,6 +21,11 @@ export interface ConcurrencySummary {
   peakInFlight: number;
   rateLimits: number;
   byAccount: Record<string, ConcurrencyAccountView>;
+  /**
+   * false = 从未成功取到并发快照。此时四个数字都是 0，但那是「不知道」而不是
+   * 「没有请求」—— 调用方必须显示 '—'，不能把 0 当成事实。
+   */
+  known: boolean;
 }
 
 /**
@@ -30,7 +35,7 @@ export interface ConcurrencySummary {
  */
 export function summarizeConcurrency(c?: ConcurrencyPayload | null): ConcurrencySummary {
   if (!c) {
-    return { globalInFlight: 0, peakInFlight: 0, rateLimits: 0, byAccount: {} };
+    return { globalInFlight: 0, peakInFlight: 0, rateLimits: 0, byAccount: {}, known: false };
   }
   const views = Array.isArray(c.accounts) ? c.accounts : [];
   const globalInFlight = c.globalInFlight || 0;
@@ -48,7 +53,7 @@ export function summarizeConcurrency(c?: ConcurrencyPayload | null): Concurrency
     rateLimits = typeof c.rateLimits === 'number' ? c.rateLimits : 0;
   }
 
-  return { globalInFlight, peakInFlight, rateLimits, byAccount };
+  return { globalInFlight, peakInFlight, rateLimits, byAccount, known: true };
 }
 
 export interface ExpiryPackageRow {
@@ -453,6 +458,33 @@ export function usageRowHitRate(row: UsageEntry): number {
   const p = row.promptTokens || 0;
   if (p <= 0) return -1;
   return ((row.cachedTokens || 0) / p) * 100;
+}
+
+/** 剥掉客户端显式指定的站点前缀（cn: / global:），与后端 stripModelSitePrefix 同义。 */
+export function stripModelSitePrefix(model?: string): string {
+  return String(model || '')
+    .trim()
+    .replace(/^(cn:|global:)/i, '');
+}
+
+/**
+ * 与后端 internal/gateway/usage_record.go 的 isAutoFamily 同判据：
+ * auto / auto-*（先剥站点前缀、去空白）。写成 `startsWith('auto')` 会把
+ * autopilot 之类也当成 auto —— 那些请求的真实替换就会被静默漏计。
+ */
+export function isAutoFamilyModel(model?: string): boolean {
+  const m = stripModelSitePrefix(model).toLowerCase();
+  return m === 'auto' || m.startsWith('auto-');
+}
+
+/**
+ * 与后端 modelMismatch 的归一化同判据：小写 + 去掉 - _ . 空白。
+ * `hy4flash-free` 与 `hy4-flash-free` 视为同一模型，但 deepseek 与 glm 不会混。
+ */
+export function normalizeModelName(model?: string): string {
+  return stripModelSitePrefix(model)
+    .toLowerCase()
+    .replace(/[-_.\s]/g, '');
 }
 
 export function parseHHMMToMinutes(hhmm?: string): number | null {

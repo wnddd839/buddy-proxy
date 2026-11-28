@@ -33,14 +33,40 @@ func testServer(t *testing.T, requireAPIKey bool, adminPassword, apiKey string) 
 	})
 }
 
+// isolateEnvFile 把写入目标 .env 指到测试临时目录。
+//
+// ResolveEnvFilePath 的兜底是 ~/.codebuddy/proxy.env，任何「保存配置」
+// 端点（system-prompt / checkin-config / quota-floor / client-config /
+// tok-fingerprint）都会写它。不隔离时测试会改掉开发者真实配置
+// （2026-11-28 的评审就被 TestAdminCheckinConfigRoundTrip 等写过一次）。
+//
+// 所有造 Server 的测试助手都必须调用它；测试已显式指定路径时保持不动。
+func isolateEnvFile(t *testing.T, dir string) {
+	t.Helper()
+	if os.Getenv("CODEBUDDY_PROXY_ENV_FILE") != "" {
+		return
+	}
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", filepath.Join(dir, ".env"))
+}
+
+// isolateConfigHome 把 config.Load() 的 env 搜索根（cwd / HOME）挪到临时目录。
+//
+// config.Load 内部会调 LoadDotEnv，候选里固定含 ~/.codebuddy/proxy.env ——
+// 只设 CODEBUDDY_PROXY_ENV_FILE 挡不住它（那个变量只是「多一个优先候选」）。
+// 不隔离时测试会读进开发者真实的 proxy.env（含 API Key 与各开关），
+// 断言随本机文件变化，键还会泄漏到后续测试的进程环境里。
+func isolateConfigHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows 上 os.UserHomeDir 用它
+	t.Chdir(home)
+	return home
+}
+
 func testServerCfg(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
-	// 隔离 .env：ResolveEnvFilePath 的兜底是 ~/.codebuddy/proxy.env。
-	// 不设这个变量时，任何「保存配置」类测试都会改到开发者真实文件
-	//（本机已被 TestAdminCheckinConfigRoundTrip 等写过一次）。
-	if os.Getenv("CODEBUDDY_PROXY_ENV_FILE") == "" {
-		t.Setenv("CODEBUDDY_PROXY_ENV_FILE", filepath.Join(t.TempDir(), ".env"))
-	}
+	isolateEnvFile(t, t.TempDir())
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
 	}
@@ -1227,15 +1253,29 @@ func envAPIKeysValue(envText string) string {
 	return ""
 }
 
-// 回归：测试助手绝不能把配置写到用户真实目录。
-// 背景：2026-11-28 的评审跑测试时，checkin / tok 两个测试把配置写进了
+// 回归：所有造 Server 的测试助手都必须隔离 .env。
+//
+// 背景：2026-11-28 的评审跑测试时，checkin / tok 两个助手把配置写进了
 // /home/ova/.codebuddy/proxy.env（ResolveEnvFilePath 的兜底路径）。
+// 这条测试逐个构造助手，确认写入目标已不在真实 HOME 下 —— 新增助手
+// 忘了调 isolateEnvFile 时，这里会直接红。
 func TestTestHelpersIsolateEnvFile(t *testing.T) {
-	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", "")
-	if srv := testServer(t, false, "", ""); srv == nil {
-		t.Fatal("server 为 nil")
+	cases := []struct {
+		name  string
+		build func(t *testing.T)
+	}{
+		{"testServer", func(t *testing.T) { testServer(t, false, "", "") }},
+		{"checkinTestServer", func(t *testing.T) { checkinTestServer(t, nil) }},
+		{"tokBaselineTestServer", func(t *testing.T) { tokBaselineTestServer(t) }},
 	}
-	if got := config.ResolveEnvFilePath(); got == config.DefaultEnvFilePath() {
-		t.Fatalf("测试仍然指向真实 .env：%s（会污染开发者配置）", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CODEBUDDY_PROXY_ENV_FILE", "")
+			_ = os.Unsetenv("CODEBUDDY_PROXY_ENV_FILE")
+			tc.build(t)
+			if got := config.ResolveEnvFilePath(); got == config.DefaultEnvFilePath() {
+				t.Fatalf("%s 仍然指向真实 .env：%s（会污染开发者配置）", tc.name, got)
+			}
+		})
 	}
 }

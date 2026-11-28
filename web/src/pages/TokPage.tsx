@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { RefreshCw, ScanSearch, TriangleAlert } from 'lucide-react';
 import type {
   TokBaseline,
@@ -67,26 +67,23 @@ function vocabularyBadge(vocabulary?: string) {
   return <StatusBadge tone="warn">{vocabulary || '无法判定'}</StatusBadge>;
 }
 
-function templateBadge(ok?: boolean, title?: string) {
+function templateBadge(ok?: boolean) {
   if (ok === true) {
-    return (
-      <StatusBadge tone="ok" title={title}>
-        符合
-      </StatusBadge>
-    );
+    return <StatusBadge tone="ok">符合</StatusBadge>;
   }
   if (ok === false) {
-    return (
-      <StatusBadge tone="err" title={title}>
-        不符
-      </StatusBadge>
-    );
+    return <StatusBadge tone="err">不符</StatusBadge>;
   }
-  return (
-    <StatusBadge tone="neutral" title={title}>
-      未测
-    </StatusBadge>
-  );
+  return <StatusBadge tone="neutral">未测</StatusBadge>;
+}
+
+// 模板公式只有「词表判定通过」时才真的测过：后端只在 VerdictPass 分支调
+// checkTemplateFormula（internal/gateway/tokidentity.go），其余情况
+// TemplateOK 都是零值 false。不能把它直接渲染成红色「不符」——
+// 「无法判定」说明探测没拿到可用结论，模板校验根本没跑。
+function templateState(row: TokIdentityResult): boolean | undefined {
+  if (row.vocabulary !== '官方 DeepSeek 词表') return undefined;
+  return row.templateOK;
 }
 
 function sampleEvidence(row: TokIdentityResult): string {
@@ -99,9 +96,9 @@ function sampleEvidence(row: TokIdentityResult): string {
     .join(' · ');
 }
 
-function templateDetailTitle(row: TokIdentityResult): string | undefined {
+function templateDetailText(row: TokIdentityResult): string {
   const details = row.templateDetail || [];
-  if (!details.length) return undefined;
+  if (!details.length) return '';
   return details
     .map((d) => {
       const observed = d.observed == null ? '?' : String(d.observed);
@@ -516,7 +513,7 @@ export function TokPage({ active }: TokPageProps) {
 
               <div className="overflow-x-auto max-h-[520px]">
                 <table
-                  className="w-full text-left border-collapse text-xs min-w-[880px]"
+                  className="w-full text-left border-collapse text-xs min-w-[1040px]"
                   aria-label="词表身份鉴定结果"
                 >
                   <thead className="sticky top-0 z-10 bg-[var(--surface-2)]">
@@ -537,76 +534,67 @@ export function TokPage({ active }: TokPageProps) {
                       </th>
                       <th
                         className="py-2.5 px-3 font-medium"
-                        title="上游给出的判定说明与校准证据；校准失败时会写明原因"
+                        title="四种消息结构的模板开销是否符合实测公式"
                       >
-                        备注
+                        模板公式
                       </th>
+                      <th className="py-2.5 px-3 font-medium">样本明细</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--border)]">
                     {identityResults.map((r, idx) => {
                       const evidence = sampleEvidence(r);
-                      const hasEvidence =
-                        !!evidence ||
-                        r.templateOK !== undefined ||
-                        (r.templateDetail || []).length > 0;
+                      const tplDetail = templateDetailText(r);
                       return (
-                        <tr
-                          key={`${r.model}·${r.site || ''}·${idx}`}
-                          className={
-                            r.vocabulary === '无法判定'
-                              ? 'bg-[var(--warn-bg)]/25'
-                              : 'hover:bg-[var(--surface-2)]/50'
-                          }
-                        >
-                          <td className="py-2.5 px-3 ds-mono text-[var(--fg)] whitespace-nowrap">
-                            {r.model || '—'}
-                          </td>
-                          <td className="py-2.5 px-3 text-[var(--fg-2)] whitespace-nowrap">
-                            {siteText(r.site)}
-                          </td>
-                          <td className="py-2.5 px-3">{vocabularyBadge(r.vocabulary)}</td>
-                          <td className="py-2.5 px-3">
-                            <StatusBadge
-                              tone="neutral"
-                              title="上游不返回 logprobs，词表相同也不能证明权重相同"
-                            >
-                              {r.weight || '无法验证（上游不提供 logprobs）'}
-                            </StatusBadge>
-                          </td>
-                          <td className="py-2.5 px-3 align-top">
-                            {!r.note && !hasEvidence ? (
-                              <span className="text-[var(--fg-3)]">—</span>
-                            ) : (
-                              <div className="space-y-1.5">
-                                {r.note && (
-                                  <div className="text-[11px] leading-relaxed text-[var(--fg-2)]">
-                                    {r.note}
-                                  </div>
-                                )}
-                                {(r.templateOK !== undefined || evidence) && (
-                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-[var(--fg-3)]">
-                                    <span>模板公式</span>
-                                    {templateBadge(
-                                      // 校准失败时后端 TemplateOK 是零值 false，
-                                      // 直接渲染会显示红色「不符」——但根本没测。
-                                      r.vocabulary === '无法判定' ? undefined : r.templateOK,
-                                      templateDetailTitle(r),
-                                    )}
-                                    {evidence && (
-                                      <>
-                                        <span className="ml-1">样本明细</span>
-                                        <span className="ds-mono text-[var(--fg-2)]">
-                                          {evidence}
-                                        </span>
-                                      </>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                        </tr>
+                        <Fragment key={`${r.model}·${r.site || ''}·${idx}`}>
+                          <tr
+                            className={
+                              r.vocabulary === '无法判定'
+                                ? 'bg-[var(--warn-bg)]/25'
+                                : 'hover:bg-[var(--surface-2)]/50'
+                            }
+                          >
+                            <td className="py-2.5 px-3 ds-mono text-[var(--fg)] whitespace-nowrap">
+                              {r.model || '—'}
+                            </td>
+                            <td className="py-2.5 px-3 text-[var(--fg-2)] whitespace-nowrap">
+                              {siteText(r.site)}
+                            </td>
+                            <td className="py-2.5 px-3">{vocabularyBadge(r.vocabulary)}</td>
+                            <td className="py-2.5 px-3">
+                              <StatusBadge
+                                tone="neutral"
+                                title="上游不返回 logprobs，词表相同也不能证明权重相同"
+                              >
+                                {r.weight || '无法验证（上游不提供 logprobs）'}
+                              </StatusBadge>
+                            </td>
+                            <td className="py-2.5 px-3 align-top">
+                              {templateBadge(templateState(r))}
+                              {tplDetail && (
+                                <div className="mt-1 ds-mono text-[10px] leading-relaxed text-[var(--fg-3)]">
+                                  {tplDetail}
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 align-top ds-mono text-[10px] leading-relaxed text-[var(--fg-2)]">
+                              {evidence || <span className="text-[var(--fg-3)]">—</span>}
+                            </td>
+                          </tr>
+                          {r.note && (
+                            // 备注没有独立列：整行一条，不把长文案挤进任何单元格，
+                            // 也保证 note 永远可见（不是只能悬浮看的 tooltip）。
+                            <tr className="bg-[var(--surface-2)]/30">
+                              <td
+                                colSpan={6}
+                                className="px-3 pb-2 pt-0 text-[11px] leading-relaxed text-[var(--fg-2)]"
+                              >
+                                <span className="text-[var(--fg-3)]">备注 </span>
+                                {r.note}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       );
                     })}
                   </tbody>

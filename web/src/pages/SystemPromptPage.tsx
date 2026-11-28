@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BookOpen,
   CheckCircle2,
@@ -84,6 +84,14 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
   const [historyPage, setHistoryPage] = useState(1);
   const [historyResp, setHistoryResp] = useState<SystemPromptHistoryResponse | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // 拉取失败必须留痕：轮询/切日期的失败被 toast 一闪而过之后，界面会继续
+  // 挂着旧数字，看起来仍是「最新」——那就是静默失效。
+  const [overviewError, setOverviewError] = useState('');
+  const [historyError, setHistoryError] = useState('');
+  // 响应乱序守卫：两次请求同时在飞时，只认最后发出的那一次。切日期/翻页
+  // 很快时旧响应晚到，否则表格会把 A 日的数据显示在 B 日下面。
+  const overviewSeqRef = useRef(0);
+  const historySeqRef = useRef(0);
 
   // system 预览（不发请求）——纯本地试算，不改配置、不碰请求路径。
   // 档位留空 = 跟随当前生效配置；strip / echo 用 null 表示「未指定」，
@@ -104,23 +112,47 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
   const fetchHistory = useCallback(
     async (dateStr: string, pageNum: number, problemsOnly: boolean) => {
       if (!dateStr) return;
+      const seq = ++historySeqRef.current;
       let url = `/direct-admin/api/system-prompt/events?date=${encodeURIComponent(
         dateStr,
       )}&page=${pageNum}&size=${historyPageSize}`;
       if (problemsOnly) url += '&onlyProblems=1';
-      const data = await apiRequest<SystemPromptHistoryResponse>(url);
-      setHistoryResp(data);
+      try {
+        const data = await apiRequest<SystemPromptHistoryResponse>(url);
+        // 更晚的请求已经发出去 ⇒ 这次响应是旧日期/旧页的，丢掉。
+        if (seq !== historySeqRef.current) return;
+        setHistoryResp(data);
+        setHistoryError('');
+      } catch (e: unknown) {
+        if (seq !== historySeqRef.current) return;
+        // 不抛给调用方：调用点是事件处理器，抛出去只会变成 unhandled rejection。
+        // 失败信息进状态，由界面常驻显示（含「下面是哪一天」）。
+        setHistoryError(e instanceof Error ? e.message : String(e));
+      }
     },
     [],
   );
 
+  // 只刷新概览。轮询用它：历史是按日落盘的不可变数据，没必要每 5 秒重取
+  // 一次；更糟的是轮询带的是渲染时的闭包页码，可能与用户刚翻到的页打架。
+  // 返回 null 表示这次响应因乱序被丢弃，调用方不应继续拿它去拉历史。
+  const fetchOverviewOnly = useCallback(async (): Promise<SystemPromptOverview | null> => {
+    const seq = ++overviewSeqRef.current;
+    const data = await apiRequest<SystemPromptOverview>('/direct-admin/api/system-prompt');
+    // 期间发生过写入或切页 ⇒ 这份快照可能早于那次写入，不能拿来覆盖界面。
+    if (seq !== overviewSeqRef.current) return null;
+    setOverview(data);
+    const nextMode = (data.mode || 'auto') as SystemPromptMode;
+    setMode(nextMode);
+    onModeSynced(nextMode);
+    setOverviewError('');
+    return data;
+  }, [onModeSynced]);
+
   const fetchOverviewAndHistory = useCallback(
     async (explicitDate?: string, explicitPage?: number, explicitProblems?: boolean) => {
-      const data = await apiRequest<SystemPromptOverview>('/direct-admin/api/system-prompt');
-      setOverview(data);
-      const nextMode = (data.mode || 'auto') as SystemPromptMode;
-      setMode(nextMode);
-      onModeSynced(nextMode);
+      const data = await fetchOverviewOnly();
+      if (!data) return;
 
       const availableDates = resolveLocalDateList(data.dates || [], explicitDate || selectedDate);
       const targetDate =
@@ -138,15 +170,29 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
         );
       }
     },
-    [fetchHistory, historyPage, onModeSynced, onlyProblems, selectedDate],
+    [fetchHistory, fetchOverviewOnly, historyPage, onlyProblems, selectedDate],
   );
+
+  // 写入完成后的回读：写都成功了，回读失败不该再弹「保存失败」，但必须
+  // 让「数据可能已过期」这条告警留在界面上。
+  const readAfterWrite = useCallback(async () => {
+    try {
+      await fetchOverviewAndHistory();
+    } catch (e: unknown) {
+      setOverviewError(e instanceof Error ? e.message : String(e));
+    }
+  }, [fetchOverviewAndHistory]);
 
   // 切换到本页时立刻刷新
   useEffect(() => {
     if (!active) return;
-    fetchOverviewAndHistory().catch((e) =>
-      showToast(e instanceof Error ? e.message : String(e), 'error'),
-    );
+    fetchOverviewAndHistory().catch((e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      setOverviewError(msg);
+      showToast(msg, 'error');
+    });
+    // 只在激活时拉一次；其余靠 5s 轮询与手动刷新。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
   // 每 5 秒轮询（页面隐藏或未激活本页时暂停）
@@ -154,14 +200,18 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
     if (!active) return;
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'hidden') return;
-      fetchOverviewAndHistory().catch(() => {});
+      fetchOverviewOnly().catch((e: unknown) => {
+        setOverviewError(e instanceof Error ? e.message : String(e));
+      });
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [active, fetchOverviewAndHistory]);
+  }, [active, fetchOverviewOnly]);
 
   const handleSwitchMode = async (next: SystemPromptMode) => {
     if (next === mode || switchingMode) return;
     setSwitchingMode(true);
+    // 让还在飞的概览请求作废：它读到的是切换前的模式，晚到会把界面改回去。
+    overviewSeqRef.current++;
     try {
       const data = await apiRequest<{ mode?: SystemPromptMode }>('/direct-admin/api/system-prompt', {
         method: 'POST',
@@ -171,7 +221,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
       setMode(applied);
       onModeSynced(applied);
       showToast(`System Prompt 模式已切换：${applied}`, 'success');
-      await fetchOverviewAndHistory();
+      await readAfterWrite();
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
     } finally {
@@ -189,7 +239,9 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
     which: 'strip' | 'stripAssistant' | 'echoUser',
     value: boolean,
   ) => {
+    if (switchingStrip) return;
     setSwitchingStrip(which);
+    overviewSeqRef.current++;
     try {
       const data = await apiRequest<{
         mode?: SystemPromptMode;
@@ -223,11 +275,12 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
       } else {
         showToast(`assistant 剥离已${value ? '开启' : '关闭'}`, 'success');
       }
-      await fetchOverviewAndHistory();
+      await readAfterWrite();
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
-      // 失败时回读服务端真值，把复选框拉回实际状态。
-      await fetchOverviewAndHistory();
+      // 失败时回读服务端真值，把复选框拉回实际状态（回读再失败也只是告警，
+      // 不能再从事件处理器里抛出去）。
+      await readAfterWrite();
     } finally {
       setSwitchingStrip(null);
     }
@@ -238,7 +291,9 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
     try {
       await fetchOverviewAndHistory();
     } catch (e: unknown) {
-      showToast(e instanceof Error ? e.message : String(e), 'error');
+      const msg = e instanceof Error ? e.message : String(e);
+      setOverviewError(msg);
+      showToast(msg, 'error');
     } finally {
       setRefreshing(false);
     }
@@ -281,6 +336,9 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
 
   const dateList = resolveLocalDateList(overview?.dates || [], selectedDate);
   const stats = overview?.stats || {};
+  // 概览没加载 / 字段缺省 = 未知，显示 '—'。写成 `?? 0` 会把「不知道」
+  // 变成「零次」，正是本分支要禁止的那类假信号。
+  const statValue = (v?: number | null) => (overview && v != null ? v : '—');
   const realtimeRows = (overview?.recent || []).filter((e) => {
     if (!onlyProblems) return true;
     return (e.status ?? 0) === 0 || (e.status ?? 0) >= 400 || !!e.errorCode || !!e.degraded;
@@ -288,9 +346,10 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
   const historyRows = historyResp?.events || [];
 
   // 预览结果里的派生值：条数 / system 长度变化要在渲染时直接可读。
-  const dryInLen = dryResult?.inSystemLen ?? 0;
-  const dryOutLen = dryResult?.outSystemLen ?? 0;
-  const dryLenDelta = dryOutLen - dryInLen;
+  // 字段缺省（旧后端）时是「未知」，不是 0 字节。
+  const dryInLen = dryResult?.inSystemLen ?? null;
+  const dryOutLen = dryResult?.outSystemLen ?? null;
+  const dryLenDelta = dryInLen != null && dryOutLen != null ? dryOutLen - dryInLen : null;
   const dryWarnings = dryResult?.warnings ?? [];
   const dryNotes = dryResult?.notes ?? [];
   const dryModeLabelText = dryResult?.modeLabel || dryResult?.mode || '—';
@@ -376,7 +435,12 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
               客户端
             </th>
             <th className="py-2.5 px-3 font-medium">指纹</th>
-            <th className="py-2.5 px-3 font-medium">大小</th>
+            <th
+              className="py-2.5 px-3 font-medium"
+              title="system 内容的 UTF-8 字节数（Go 的 len(string)）；中文每字约 3 字节，别读成字符数或 token 数"
+            >
+              system 长度
+            </th>
             <th className="py-2.5 px-3 font-medium">账号</th>
             <th className="py-2.5 px-3 font-medium">模型</th>
             <th className="py-2.5 px-3 font-medium">耗时</th>
@@ -480,9 +544,15 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
     </div>
   );
 
-  const totalHist = historyResp?.total || 0;
-  const fromIdx = totalHist === 0 ? 0 : (historyPage - 1) * historyPageSize + 1;
-  const toIdx = Math.min(historyPage * historyPageSize, totalHist);
+  // 历史响应还没回来 / 加载失败 ⇒ 总数未知，显示 '—'，不能拿 0 冒充「这一天没有事件」。
+  const totalHist = historyResp?.total ?? null;
+  const fromIdx =
+    totalHist == null
+      ? null
+      : totalHist === 0
+        ? 0
+        : (historyPage - 1) * historyPageSize + 1;
+  const toIdx = totalHist == null ? null : Math.min(historyPage * historyPageSize, totalHist);
 
   return (
     <div id="tab-system-prompt" className="ds-page-enter space-y-5">
@@ -518,6 +588,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
               key={card.mode}
               type="button"
               data-mode={card.mode}
+              aria-pressed={isActive}
               disabled={switchingMode}
               onClick={() => handleSwitchMode(card.mode)}
               className={[
@@ -618,11 +689,13 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
           <span>
             统计口径：
             <strong id="spStatsScope" className="text-[var(--fg-2)] font-medium ml-1">
-              {overview?.statsScope === 'memory'
-                ? '进程内近 24h（重启会清零）'
-                : overview?.statsScope
-                  ? `按 ${overview.statsScope} 落盘事件统计（重启不清零）`
-                  : '按今日落盘事件统计（重启不清零）'}
+              {!overview
+                ? '—（概览尚未加载）'
+                : overview.statsScope === 'memory'
+                  ? '进程内近 24h（重启会清零）'
+                  : overview.statsScope
+                    ? `按 ${overview.statsScope} 落盘事件统计（重启不清零）`
+                    : '按今日落盘事件统计（重启不清零）'}
             </strong>
           </span>
           <span className="inline-flex items-center gap-1">
@@ -631,49 +704,59 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
           </span>
         </div>
 
+        {overviewError && (
+          <div
+            role="alert"
+            className="ds-surface-2 px-3.5 py-2.5 text-xs leading-relaxed text-[var(--warn)] bg-[var(--warn-bg)] border-l-2 border-[var(--warn)]"
+          >
+            数据可能已过期：最近一次刷新失败 —— {overviewError}
+            {overview ? '（下面显示的是上一次成功加载的结果）' : '（尚未成功加载过，数字不可用）'}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2.5">
           <StatCard
             label={overview?.statsScope === 'memory' ? '近 24h 事件' : '今日事件'}
             labelId="spTotalLabel"
             valueId="spTotal"
-            value={stats.total ?? 0}
+            value={statValue(stats.total)}
             className="p-3"
           />
-          <StatCard label="keep 直传" valueId="spKeep" value={stats.keep ?? 0} className="p-3" />
-          <StatCard label="fold 改写" valueId="spFold" value={stats.fold ?? 0} className="p-3" />
+          <StatCard label="keep 直传" valueId="spKeep" value={statValue(stats.keep)} className="p-3" />
+          <StatCard label="fold 改写" valueId="spFold" value={statValue(stats.fold)} className="p-3" />
           <StatCard
             label="已剥离"
             valueId="spStripped"
             title="首试前剥离（或剥离后直传）发生的事件数；关掉剥离开关后该值会停止增长"
-            value={stats.stripped ?? 0}
+            value={statValue(stats.stripped)}
             className="p-3"
           />
           <StatCard
             label="11128 降级"
             title="degraded:true 的事件数，即被 11128 拦截的失败尝试次数"
             valueId="spDegraded"
-            value={stats.degraded ?? 0}
+            value={statValue(stats.degraded)}
             valueClassName={(stats.degraded ?? 0) > 0 ? 'text-[var(--warn)]' : ''}
             className="p-3"
           />
           <StatCard
             label="被拦截"
             valueId="spBlocked"
-            value={stats.blocked ?? 0}
+            value={statValue(stats.blocked)}
             valueClassName={(stats.blocked ?? 0) > 0 ? 'text-[var(--err)]' : ''}
             className="p-3"
           />
           <StatCard
             label="其它失败"
             valueId="spFailed"
-            value={stats.failed ?? 0}
+            value={statValue(stats.failed)}
             valueClassName={(stats.failed ?? 0) > 0 ? 'text-[var(--err)]' : ''}
             className="p-3"
           />
           <StatCard
             label="降级重放成功"
             valueId="spRecovered"
-            value={stats.recovered == null ? '—' : stats.recovered}
+            value={statValue(stats.recovered)}
             valueClassName={(stats.recovered ?? 0) > 0 ? 'text-[var(--ok)]' : ''}
             className="p-3"
           />
@@ -691,7 +774,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
               onChange={setViewTab}
               options={[
                 { value: 'realtime', label: '实时事件流 (5s)', badge: realtimeRows.length },
-                { value: 'history', label: '按日历史回溯', badge: totalHist },
+                { value: 'history', label: '按日历史回溯', badge: totalHist ?? '—' },
               ]}
             />
             <label
@@ -706,7 +789,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
                   const checked = e.target.checked;
                   setOnlyProblems(checked);
                   setHistoryPage(1);
-                  fetchHistory(selectedDate, 1, checked).catch(() => {});
+                  fetchHistory(selectedDate, 1, checked);
                 }}
                 className="accent-[var(--accent)]"
               />
@@ -726,7 +809,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
                     const d = e.target.value;
                     setSelectedDate(d);
                     setHistoryPage(1);
-                    fetchHistory(d, 1, onlyProblems).catch(() => {});
+                    fetchHistory(d, 1, onlyProblems);
                   }}
                   className="ds-select ds-mono px-2 py-1 text-xs"
                 >
@@ -749,7 +832,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
                 onClick={() => {
                   const p = Math.max(1, historyPage - 1);
                   setHistoryPage(p);
-                  fetchHistory(selectedDate, p, onlyProblems).catch(() => {});
+                  fetchHistory(selectedDate, p, onlyProblems);
                 }}
               >
                 上一页
@@ -762,7 +845,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
                 onClick={() => {
                   const p = historyPage + 1;
                   setHistoryPage(p);
-                  fetchHistory(selectedDate, p, onlyProblems).catch(() => {});
+                  fetchHistory(selectedDate, p, onlyProblems);
                 }}
               >
                 下一页
@@ -784,6 +867,17 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
           )
         ) : (
           <>
+            {historyError && (
+              <div
+                role="alert"
+                className="px-4 py-2.5 text-xs leading-relaxed text-[var(--err)] bg-[var(--err-bg)] border-b border-[var(--border)]"
+              >
+                历史加载失败：{historyError}
+                {historyResp?.date
+                  ? `；下面仍然是 ${historyResp.date} 的数据，不是当前所选日期`
+                  : '；尚未取到任何历史数据'}
+              </div>
+            )}
             {renderEventTable(
               historyRows,
               'system 提示词历史事件',
@@ -792,8 +886,11 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
             )}
             <div className="px-4 py-2.5 border-t border-[var(--border)] bg-[var(--surface-2)]/40 text-xs text-[var(--fg-3)] flex items-center justify-between">
               <span id="spPagerMeta" className="ds-mono">
-                {totalHist} 条 · {fromIdx}–{toIdx} · 第 {historyPage} 页 ·{' '}
-                {historyResp?.date || selectedDate || '—'}
+                {totalHist == null
+                  ? '—（总数尚未加载）'
+                  : `${totalHist} 条 · ${fromIdx}–${toIdx} · 第 ${historyPage} 页 · ${
+                      historyResp?.date || selectedDate || '—'
+                    }`}
               </span>
             </div>
           </>
@@ -953,7 +1050,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
                 <div className="px-3.5 py-2.5">
                   <span className="text-[var(--fg-3)]">条数</span>
                   <span id="dryMsgCount" className="ds-mono text-[var(--fg)] ml-2">
-                    {dryResult.inMessages ?? 0} → {dryResult.outMessages ?? 0}
+                    {dryResult.inMessages ?? '—'} → {dryResult.outMessages ?? '—'}
                   </span>
                 </div>
                 <div
@@ -962,25 +1059,31 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
                 >
                   <span className="text-[var(--fg-3)]">system 长度</span>
                   <span id="drySysLen" className="ds-mono text-[var(--fg)] ml-2">
-                    {fmtLen(dryInLen)} → {fmtLen(dryOutLen)}
+                    {dryInLen != null && dryOutLen != null
+                      ? `${fmtLen(dryInLen)} → ${fmtLen(dryOutLen)}`
+                      : '—'}
                   </span>
-                  <span className="ds-mono text-[10px] text-[var(--fg-3)] ml-2">
-                    （{dryInLen} → {dryOutLen} 字节）
-                  </span>
-                  <span
-                    className={[
-                      'ds-mono ml-2',
-                      dryLenDelta === 0
-                        ? 'text-[var(--fg-3)]'
-                        : dryLenDelta < 0
-                          ? 'text-[var(--warn)]'
-                          : 'text-[var(--info)]',
-                    ].join(' ')}
-                  >
-                    {dryLenDelta === 0
-                      ? '（不变）'
-                      : `（${dryLenDelta > 0 ? '+' : '-'}${formatBytes(Math.abs(dryLenDelta))}）`}
-                  </span>
+                  {dryInLen != null && dryOutLen != null && (
+                    <span className="ds-mono text-[10px] text-[var(--fg-3)] ml-2">
+                      （{dryInLen} → {dryOutLen} 字节）
+                    </span>
+                  )}
+                  {dryLenDelta != null && (
+                    <span
+                      className={[
+                        'ds-mono ml-2',
+                        dryLenDelta === 0
+                          ? 'text-[var(--fg-3)]'
+                          : dryLenDelta < 0
+                            ? 'text-[var(--warn)]'
+                            : 'text-[var(--info)]',
+                      ].join(' ')}
+                    >
+                      {dryLenDelta === 0
+                        ? '（不变）'
+                        : `（${dryLenDelta > 0 ? '+' : '-'}${formatBytes(Math.abs(dryLenDelta))}）`}
+                    </span>
+                  )}
                 </div>
                 <div className="px-3.5 py-2.5">
                   <span className="text-[var(--fg-3)]">剥离</span>

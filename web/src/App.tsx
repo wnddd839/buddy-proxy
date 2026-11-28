@@ -15,6 +15,7 @@ import type {
   SystemPromptOverview,
   TitleRoute,
 } from '@/types/api';
+import type { InvariantsPayload } from '@/types/invariants';
 import { apiRequest } from '@/lib/api';
 import {
   computeAccountStates,
@@ -108,6 +109,7 @@ function ConsoleApp() {
   const [modelsScope, setModelsScope] = useState<'domestic' | 'global' | 'both'>('domestic');
   const [modelsList, setModelsList] = useState<ModelItem[]>([]);
   const [modelsRaw, setModelsRaw] = useState('[]');
+  const [modelsError, setModelsError] = useState('');
 
   const [routesPayload, setRoutesPayload] = useState<ModelRoutesPayload | null>(null);
   const [routesError, setRoutesError] = useState('');
@@ -115,14 +117,50 @@ function ConsoleApp() {
   const [quotaFloorSaved, setQuotaFloorSaved] = useState<number | null>(null);
   const [spMode, setSpMode] = useState<SystemPromptMode>('auto');
 
+  // 静默失效命中数：概览首屏与导航徽标都要能直接看到。旧面板把它摆在
+  // 首屏，移植后只剩一个入口 —— 等于让「静默失效」本身静默了。
+  // null = 未知（加载中或接口失败），绝不伪装成 0。
+  const [invariantHits, setInvariantHits] = useState<number | null>(null);
+  const [invariantEnabled, setInvariantEnabled] = useState<boolean | null>(null);
+
   const statusSeqRef = useRef(0);
   const usageKickRef = useRef(false);
   const activeSiteRef = useRef<Site>('domestic');
+  const invariantSeqRef = useRef(0);
 
   const uiRevision = useMemo(() => {
     const meta = document.querySelector('meta[name="cbp-ui-revision"]');
     return meta?.getAttribute('content') || '';
   }, []);
+
+  const refreshInvariants = useCallback(async () => {
+    const seq = ++invariantSeqRef.current;
+    try {
+      const data = await apiRequest<InvariantsPayload>('/direct-admin/api/invariants?limit=1');
+      if (seq !== invariantSeqRef.current) return;
+      setInvariantEnabled(data.enabled !== false);
+      if (data.enabled === false) {
+        setInvariantHits(null);
+        return;
+      }
+      const counts = data.counts || {};
+      setInvariantHits(
+        Object.values(counts).reduce<number>((sum, n) => sum + (Number(n) || 0), 0),
+      );
+    } catch {
+      if (seq !== invariantSeqRef.current) return;
+      // 失败不伪装成 0：保留上一次已知值；首次失败保持 null（未知）。
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshInvariants().catch(() => {});
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      refreshInvariants().catch(() => {});
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [refreshInvariants, refreshTick]);
 
   const selectTab = useCallback((tab: TabId, pushHash = true) => {
     setActiveTab(tab);
@@ -251,26 +289,41 @@ function ConsoleApp() {
 
   const refreshModels = useCallback(async (scope?: 'domestic' | 'global' | 'both') => {
     const target = scope || activeSiteRef.current || 'domestic';
-    setModelsScope(target);
-    if (target === 'both') {
-      const [dom, glob] = await Promise.all([
-        apiRequest('/direct-admin/api/codebuddy/models?fresh=1&site=domestic').catch((e: unknown) => ({
-          error: e instanceof Error ? e.message : String(e),
-        })),
-        apiRequest('/direct-admin/api/codebuddy/models?fresh=1&site=global').catch((e: unknown) => ({
-          error: e instanceof Error ? e.message : String(e),
-        })),
-      ]);
-      const merged = mergeModelLists(dom, glob);
-      setModelsRaw(JSON.stringify({ domestic: dom, global: glob }, null, 2));
-      setModelsList(merged);
-      return;
+    try {
+      if (target === 'both') {
+        const [dom, glob] = await Promise.all([
+          apiRequest('/direct-admin/api/codebuddy/models?fresh=1&site=domestic').catch((e: unknown) => ({
+            error: e instanceof Error ? e.message : String(e),
+          })),
+          apiRequest('/direct-admin/api/codebuddy/models?fresh=1&site=global').catch((e: unknown) => ({
+            error: e instanceof Error ? e.message : String(e),
+          })),
+        ]);
+        // 单站失败时不能把「两站合并」显示成只剩一站 —— 那看起来像另一站
+        // 真的没有模型。整次作废、保留上一份编目，并把错误抛给界面。
+        const failures = [
+          (dom as { error?: string }).error ? `国内站：${(dom as { error?: string }).error}` : '',
+          (glob as { error?: string }).error ? `国际站：${(glob as { error?: string }).error}` : '',
+        ].filter(Boolean);
+        if (failures.length) throw new Error(failures.join('；'));
+        const merged = mergeModelLists(dom, glob);
+        setModelsRaw(JSON.stringify({ domestic: dom, global: glob }, null, 2));
+        setModelsList(merged);
+      } else {
+        const data = await apiRequest(
+          `/direct-admin/api/codebuddy/models?fresh=1&site=${encodeURIComponent(target)}`,
+        );
+        setModelsRaw(JSON.stringify(data, null, 2));
+        setModelsList(extractModelList(data));
+      }
+      // 范围标签跟着「真的拉到了哪一份」走。先切标签会让界面在失败时
+      // 显示「国际站」却挂着国内站的列表。
+      setModelsScope(target);
+      setModelsError('');
+    } catch (e: unknown) {
+      setModelsError(e instanceof Error ? e.message : String(e));
+      throw e;
     }
-    const data = await apiRequest(
-      `/direct-admin/api/codebuddy/models?fresh=1&site=${encodeURIComponent(target)}`,
-    );
-    setModelsRaw(JSON.stringify(data, null, 2));
-    setModelsList(extractModelList(data));
   }, []);
 
   const refreshClientConfig = useCallback(async () => {
@@ -326,7 +379,9 @@ function ConsoleApp() {
       });
       applyStatusPayload(data);
       if (data.note) showToast(data.note);
-      refreshModels(site).catch(() => {});
+      refreshModels(site).catch((e: unknown) =>
+        showToast(`站点已切换，但模型编目拉取失败：${e instanceof Error ? e.message : String(e)}`, 'error'),
+      );
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
     } finally {
@@ -343,7 +398,9 @@ function ConsoleApp() {
       });
       applyStatusPayload(data);
       if (data.note) showToast(data.note);
-      refreshModels(activeSiteRef.current).catch(() => {});
+      refreshModels(activeSiteRef.current).catch((e: unknown) =>
+        showToast(`产品已切换，但模型编目拉取失败：${e instanceof Error ? e.message : String(e)}`, 'error'),
+      );
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
     } finally {
@@ -418,6 +475,8 @@ function ConsoleApp() {
         onRefreshStatus={() => refreshStatus(true)}
         refreshing={refreshing}
         attentionCount={attentionCount}
+        invariantHits={invariantHits}
+        invariantEnabled={invariantEnabled}
         poolCountLabel={siteAccountsCount ? `${siteEnabledCount}/${siteAccountsCount}` : ''}
         checkinAutoEnabled={!!checkinConfig?.auto}
         spMode={spMode}
@@ -436,6 +495,8 @@ function ConsoleApp() {
             activeSite={poolSite}
             usageByAccount={usageByAccount}
             concurrency={concurrency}
+            invariantHits={invariantHits}
+            invariantEnabled={invariantEnabled}
             onNavigate={(t) => selectTab(t, true)}
             onNavigatePoolIssues={() => {
               setPoolInitialFilter('issue');
@@ -489,13 +550,12 @@ function ConsoleApp() {
 
         {activeTab === 'tab-models' && (
           <ModelsPage
-            activeSite={poolSite}
             accounts={allAccounts}
             quotaFloorSaved={quotaFloorSaved || 0}
             models={modelsList}
             modelsRaw={modelsRaw}
+            modelsError={modelsError}
             modelsScope={modelsScope}
-            onSetModelsScope={setModelsScope}
             onRefreshModels={refreshModels}
             routesPayload={routesPayload}
             routesError={routesError}

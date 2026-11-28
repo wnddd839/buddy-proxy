@@ -56,6 +56,8 @@ export interface TokIdentityResult {
   // 保留它们是为了不丢掉 legacy 面板的「模板公式 / 样本明细」证据。
   accountId?: string;
   samples?: TokIdentitySample[];
+  /** 后端是 bool（非指针）：没跑过模板校验时它也是 false 零值。
+   *  展示时必须结合 vocabulary 判「未测」，不能直接信 false。 */
   templateOK?: boolean;
   templateDetail?: TokTemplateCase[];
   cost?: string;

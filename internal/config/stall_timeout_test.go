@@ -8,6 +8,7 @@ import (
 // TestLoadStallTimeoutDefaults 锁住用户要求：默认从 3 分钟提到 10 分钟，
 // 且首字节后阈值也放宽（不再是写死 3 分钟）。
 func TestLoadStallTimeoutDefaults(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_STALL_TIMEOUT_MS", "")
 	t.Setenv("CODEBUDDY_PROXY_STALL_AFTER_FIRST_BYTE_MS", "")
 	cfg := Load()
@@ -25,6 +26,7 @@ func TestLoadStallTimeoutDefaults(t *testing.T) {
 
 // TestLoadStallTimeoutFromEnv 锁住两个 env 可独立配置。
 func TestLoadStallTimeoutFromEnv(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_STALL_TIMEOUT_MS", "60000")
 	t.Setenv("CODEBUDDY_PROXY_STALL_AFTER_FIRST_BYTE_MS", "1800000")
 	cfg := Load()
@@ -38,6 +40,7 @@ func TestLoadStallTimeoutFromEnv(t *testing.T) {
 
 // TestLoadStallTimeoutInvalidFallsBack 锁住垃圾值回落默认，不产生 0（0 会关闭看门狗）。
 func TestLoadStallTimeoutInvalidFallsBack(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_STALL_TIMEOUT_MS", "abc")
 	t.Setenv("CODEBUDDY_PROXY_STALL_AFTER_FIRST_BYTE_MS", "-1")
 	cfg := Load()

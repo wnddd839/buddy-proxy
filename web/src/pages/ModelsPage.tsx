@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowRight,
@@ -16,13 +16,14 @@ import type {
   ModelRouteRule,
   ModelRoutesPayload,
   RouteMode,
-  Site,
   TitleRoute,
   UsageEntry,
 } from '@/types/api';
 import {
   computeModelAvailability,
+  isAutoFamilyModel,
   mergeModelLists,
+  normalizeModelName,
   normalizeRouteMode,
   routeRuleKey,
   validateModelRoutes,
@@ -58,13 +59,13 @@ function EchoMetric({ id, label, value, title }: EchoMetricProps) {
 }
 
 interface ModelsPageProps {
-  activeSite: Site;
   accounts: AccountSummary[];
   quotaFloorSaved: number;
   models: ModelItem[];
   modelsRaw: string;
+  /** 编目拉取失败的原因（空串 = 没失败）。失败时不能显示「暂无模型数据」。 */
+  modelsError: string;
   modelsScope: 'domestic' | 'global' | 'both';
-  onSetModelsScope: (scope: 'domestic' | 'global' | 'both') => void;
   onRefreshModels: (scope?: 'domestic' | 'global' | 'both') => Promise<void>;
   routesPayload: ModelRoutesPayload | null;
   routesError: string;
@@ -76,8 +77,8 @@ export function ModelsPage({
   quotaFloorSaved,
   models,
   modelsRaw,
+  modelsError,
   modelsScope,
-  onSetModelsScope,
   onRefreshModels,
   routesPayload,
   routesError,
@@ -86,12 +87,17 @@ export function ModelsPage({
   const { showToast } = useToast();
   const [search, setSearch] = useState('');
   const [onlyFree, setOnlyFree] = useState(false);
-  const [loadingModels, setLoadingModels] = useState(false);
+  // 正在拉取的范围。显示范围（modelsScope）只在成功后才切换，所以加载指示
+  // 不能挂在 modelsScope 上，否则点了新范围看不到任何反馈。
+  const [loadingScope, setLoadingScope] = useState<'domestic' | 'global' | 'both' | null>(null);
   const [priorityDrawerOpen, setPriorityDrawerOpen] = useState(false);
 
   // 路由草稿状态
   const [rules, setRules] = useState<ModelRouteRule[]>([]);
   const [savedSnapshot, setSavedSnapshot] = useState('');
+  // 同步用的镜像：effect 里要判断「本地是不是还有未保存的草稿」，读 state 会
+  // 被闭包钉死在旧值上，用 ref 取渲染时的最新值。
+  const savedSnapshotRef = useRef('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [justSaved, setJustSaved] = useState(false);
@@ -120,7 +126,11 @@ export function ModelsPage({
       note: r.note || '',
     }));
     const snap = JSON.stringify(normalized);
-    setRules(normalized);
+    // 父级载荷更新时不能无脑覆盖草稿：保存「标题改写」会回写父级 payload，
+    // 若这里直接把 rules 换成服务端版本，用户还没保存的路由编辑会静默消失。
+    const prevSnap = savedSnapshotRef.current;
+    savedSnapshotRef.current = snap;
+    setRules((prev) => (prevSnap && JSON.stringify(prev) !== prevSnap ? prev : normalized));
     setSavedSnapshot(snap);
     // titleRoute 与 rules 同源同载荷，必须一起同步；否则保存路由时
     // 会用初始空值覆盖线上标题配置。
@@ -182,17 +192,22 @@ export function ModelsPage({
     let auto = 0;
     const bad: UsageEntry[] = [];
     for (const r of echoRows) {
-      if (r.modelMismatch) {
-        mismatch++;
-        bad.push(r);
+      const sent = r.routedModel || r.model || '';
+      // 与后端 / 07 明细同一判据（lib/domain），不要写 startsWith('auto')：
+      // autopilot 之类会被当成 auto，真实的模型替换就被漏计了。
+      if (isAutoFamilyModel(sent)) {
+        auto++;
         continue;
       }
-      // 与后端 isAutoFamily 一致：先去掉 cn:/global: 站点前缀再判 auto。
-      const sent = (r.routedModel || r.model || '')
-        .toLowerCase()
-        .replace(/^(cn|global):/, '');
-      if (sent.indexOf('auto') === 0) {
-        auto++;
+      // 旧条目没有 modelMismatch 字段：按同一判据本地算，而不是默认「一致」——
+      // 默认一致会让「不知道」冒充「没有替换」，正是本页最危险的假阴性。
+      const isMismatch =
+        r.modelMismatch ??
+        (sent !== '' &&
+          normalizeModelName(sent) !== normalizeModelName(r.upstreamModel || ''));
+      if (isMismatch) {
+        mismatch++;
+        bad.push(r);
         continue;
       }
       match++;
@@ -210,14 +225,16 @@ export function ModelsPage({
     );
 
   const handleFetchScope = async (scope: 'domestic' | 'global' | 'both') => {
-    setLoadingModels(true);
+    if (loadingScope) return;
+    setLoadingScope(scope);
     try {
-      onSetModelsScope(scope);
+      // 范围由父级在拉取成功后才切换；这里先切会让标签说谎
+      //（显示「国际站」而列表还是国内站那一份）。
       await onRefreshModels(scope);
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
     } finally {
-      setLoadingModels(false);
+      setLoadingScope(null);
     }
   };
 
@@ -364,6 +381,7 @@ export function ModelsPage({
         body: JSON.stringify({ rules, titleRoute }),
       });
       const snap = JSON.stringify(rules);
+      savedSnapshotRef.current = snap;
       setSavedSnapshot(snap);
       setJustSaved(true);
       onRoutesSaved(rules, titleRoute);
@@ -422,7 +440,7 @@ export function ModelsPage({
               id="btnModelsDomestic"
               variant="ghost"
               size="xs"
-              loading={loadingModels && modelsScope === 'domestic'}
+              loading={loadingScope === 'domestic'}
               onClick={() => handleFetchScope('domestic')}
             >
               <RefreshCw className="w-3 h-3" />
@@ -432,7 +450,7 @@ export function ModelsPage({
               id="btnModelsGlobal"
               variant="ghost"
               size="xs"
-              loading={loadingModels && modelsScope === 'global'}
+              loading={loadingScope === 'global'}
               onClick={() => handleFetchScope('global')}
             >
               <RefreshCw className="w-3 h-3" />
@@ -442,7 +460,7 @@ export function ModelsPage({
               id="btnModelsBoth"
               variant="ghost"
               size="xs"
-              loading={loadingModels && modelsScope === 'both'}
+              loading={loadingScope === 'both'}
               onClick={() => handleFetchScope('both')}
             >
               两站都拉
@@ -473,9 +491,15 @@ export function ModelsPage({
               ]}
             />
             <span id="modelsScopeHint" className="text-xs text-[var(--fg-3)]">
-              当前显示：
-              {modelsScope === 'both' ? '两站合并' : `${siteLabel(modelsScope)}站`}模型（
-              {visibleModels.length}）
+              {modelsError ? (
+                <>最近一次拉取失败 · 上次成功：{modelsScope === 'both' ? '两站合并' : `${siteLabel(modelsScope)}站`}模型（{visibleModels.length}）</>
+              ) : (
+                <>
+                  当前显示：
+                  {modelsScope === 'both' ? '两站合并' : `${siteLabel(modelsScope)}站`}模型（
+                  {visibleModels.length}）
+                </>
+              )}
             </span>
           </div>
 
@@ -483,6 +507,7 @@ export function ModelsPage({
             <div className="relative w-56 max-w-full">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--fg-3)]" />
               <input
+                aria-label="筛选模型 ID"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="筛选模型 ID..."
@@ -501,13 +526,39 @@ export function ModelsPage({
           </div>
         </div>
 
+        {modelsError && (
+          <div
+            role="alert"
+            className="ds-surface-2 px-3 py-2 text-xs leading-relaxed text-[var(--err)] bg-[var(--err-bg)] border-l-2 border-[var(--err)]"
+          >
+            模型编目拉取失败：{modelsError}
+            {models.length
+              ? '（下面显示的是上一次成功拉取的结果，不代表上游当前编目）'
+              : '（拉取失败不等于没有模型）'}
+          </div>
+        )}
+
         <div id="modelChips">
           {!visibleModels.length ? (
-            <EmptyState
-              title="暂无模型数据"
-              description="请确认当前站点有已授权账号，或点击右上角重新拉取上游编目。"
-              className="py-7"
-            />
+            modelsError && !models.length ? (
+              <EmptyState
+                title="模型编目加载失败"
+                description={`${modelsError}。拉取失败不等于上游没有模型，请点右上角重试。`}
+                className="py-7"
+              />
+            ) : models.length ? (
+              <EmptyState
+                title="没有匹配筛选条件的模型"
+                description="清空搜索词或取消「仅免费」再看。"
+                className="py-7"
+              />
+            ) : (
+              <EmptyState
+                title="暂无模型数据"
+                description="请确认当前站点有已授权账号，或点击右上角重新拉取上游编目。"
+                className="py-7"
+              />
+            )
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
               {visibleModels.map((m) => (
@@ -809,6 +860,12 @@ export function ModelsPage({
             <p className="text-xs text-[var(--fg-3)] mt-1 m-0 max-w-2xl leading-relaxed">
               会话标题由一次独立的模型请求生成。把它单独指到便宜或免费模型，正文请求完全不受影响；
               目标留空 = 不改写 = 标题仍由当前会话的主模型生成。
+              识别是 <strong className="text-[var(--fg-2)]">fail-closed</strong> 的：只有「恰好一条 user、
+              没有 assistant/tool、且以标题模板开头」才改写，模板一变就自动停止识别（失败方向安全）。
+              命中时<strong className="text-[var(--fg-2)]">只改模型名</strong>，
+              messages / stream / max_tokens / 任何请求头都不动；同时会删掉
+              <code className="ds-mono">reasoning_effort</code> 与
+              <code className="ds-mono">reasoning</code>，避免给轻量模型塞它不接受的思考预算。
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -917,7 +974,12 @@ export function ModelsPage({
             刷新对照
           </Button>
         </div>
-        {echoError && <p className="text-xs text-[var(--err)] m-0">{echoError}</p>}
+        {echoError && (
+          <p className="text-xs text-[var(--err)] m-0" role="alert">
+            {echoError}
+            {echoRows ? '（下面的计数仍是上一次成功加载的结果，不代表最近 7 天）' : ''}
+          </p>
+        )}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
           <EchoMetric
             id="echoTotal"

@@ -129,8 +129,12 @@ export function InvariantsPage({ active }: InvariantsPageProps) {
         </div>
 
         {error && (
-          <div className="rounded-[var(--radius-sm)] border border-[var(--err)] bg-[var(--err-bg)] px-3 py-2 text-xs text-[var(--err)] break-words">
+          <div
+            role="alert"
+            className="rounded-[var(--radius-sm)] border border-[var(--err)] bg-[var(--err-bg)] px-3 py-2 text-xs text-[var(--err)] break-words"
+          >
             加载失败：{error}
+            {data ? '（下面仍是上一次成功加载的体检结果，可能已经过期）' : '（尚未成功加载过，无法判断有没有命中）'}
           </div>
         )}
 
@@ -177,7 +181,7 @@ export function InvariantsPage({ active }: InvariantsPageProps) {
             {!findings.length ? (
               <p className="text-xs text-[var(--fg-3)] m-0">近 24h 未命中任何不变量。</p>
             ) : (
-              <div className="divide-y divide-[var(--border)]">
+              <div id="invList" className="divide-y divide-[var(--border)]">
                 {findings.map((f, idx) => {
                   const sev = severityBadge(f.severity);
                   const supN = f.suppressed || 0;

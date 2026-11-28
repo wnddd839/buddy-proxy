@@ -9,6 +9,7 @@ import (
 )
 
 func TestLoadUsagePathDefault(t *testing.T) {
+	isolateConfigEnv(t)
 	dir := t.TempDir()
 	t.Chdir(dir)
 	accounts := filepath.Join(dir, "proxy-accounts.json")
@@ -30,6 +31,7 @@ func TestLoadUsagePathDefault(t *testing.T) {
 }
 
 func TestLoadDefaults(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_HOST", "")
 	t.Setenv("CURSOR_DIRECT_HOST", "")
 	t.Setenv("CODEBUDDY_PROXY_PORT", "")
@@ -91,6 +93,7 @@ func TestOptionalSiteEmptyStaysEmpty(t *testing.T) {
 }
 
 func TestLoadAPIKeys(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_API_KEY", "")
 	t.Setenv("CURSOR_DIRECT_API_KEY", "")
 	t.Setenv("CURSOR_GATEWAY_API_KEY", "")
@@ -231,6 +234,7 @@ func TestProductPortalBaseURL(t *testing.T) {
 }
 
 func TestCheckinAllowDirectFallbackCanBeEnabled(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_CHECKIN_ALLOW_DIRECT_FALLBACK", "true")
 	t.Setenv("CODEBUDDY_PROXY_ACCOUNTS_PATH", filepath.Join(t.TempDir(), "a.json"))
 	cfg := config.Load()
@@ -240,6 +244,7 @@ func TestCheckinAllowDirectFallbackCanBeEnabled(t *testing.T) {
 }
 
 func TestCheckinAllowDirectFallbackDefaultsFalse(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_CHECKIN_ALLOW_DIRECT_FALLBACK", "")
 	t.Setenv("CODEBUDDY_PROXY_ACCOUNTS_PATH", filepath.Join(t.TempDir(), "a.json"))
 	cfg := config.Load()
@@ -249,6 +254,7 @@ func TestCheckinAllowDirectFallbackDefaultsFalse(t *testing.T) {
 }
 
 func TestQuotaFloorCanBeEnabled(t *testing.T) {
+	isolateConfigEnv(t)
 	t.Setenv("CODEBUDDY_PROXY_QUOTA_FLOOR_CREDITS", "5")
 	t.Setenv("CODEBUDDY_PROXY_ACCOUNTS_PATH", filepath.Join(t.TempDir(), "a.json"))
 	cfg := config.Load()
