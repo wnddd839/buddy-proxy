@@ -1503,7 +1503,7 @@ func (s *Server) handleAccountAction(w http.ResponseWriter, r *http.Request, pat
 			httputil.WriteJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		result := s.Svc.TestAccountChat(r.Context(), selected, model)
+		result := s.Svc.TestAccountChatWithCooldown(r.Context(), selected, model)
 		httputil.WriteJSON(w, http.StatusOK, result)
 		return
 	default:
