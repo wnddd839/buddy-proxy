@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -78,6 +79,9 @@ func TestTokBaselinesAPIShowsObservedBaseline(t *testing.T) {
 func tokBaselineTestServer(t *testing.T) (*Server, *invariant.Sink) {
 	t.Helper()
 	dir := t.TempDir()
+	if os.Getenv("CODEBUDDY_PROXY_ENV_FILE") == "" {
+		t.Setenv("CODEBUDDY_PROXY_ENV_FILE", filepath.Join(dir, ".env"))
+	}
 	store, err := decision.OpenStore(dir, 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)

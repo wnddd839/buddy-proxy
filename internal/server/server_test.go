@@ -35,6 +35,12 @@ func testServer(t *testing.T, requireAPIKey bool, adminPassword, apiKey string) 
 
 func testServerCfg(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
+	// 隔离 .env：ResolveEnvFilePath 的兜底是 ~/.codebuddy/proxy.env。
+	// 不设这个变量时，任何「保存配置」类测试都会改到开发者真实文件
+	//（本机已被 TestAdminCheckinConfigRoundTrip 等写过一次）。
+	if os.Getenv("CODEBUDDY_PROXY_ENV_FILE") == "" {
+		t.Setenv("CODEBUDDY_PROXY_ENV_FILE", filepath.Join(t.TempDir(), ".env"))
+	}
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
 	}
@@ -1219,4 +1225,17 @@ func envAPIKeysValue(envText string) string {
 		}
 	}
 	return ""
+}
+
+// 回归：测试助手绝不能把配置写到用户真实目录。
+// 背景：2026-11-28 的评审跑测试时，checkin / tok 两个测试把配置写进了
+// /home/ova/.codebuddy/proxy.env（ResolveEnvFilePath 的兜底路径）。
+func TestTestHelpersIsolateEnvFile(t *testing.T) {
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", "")
+	if srv := testServer(t, false, "", ""); srv == nil {
+		t.Fatal("server 为 nil")
+	}
+	if got := config.ResolveEnvFilePath(); got == config.DefaultEnvFilePath() {
+		t.Fatalf("测试仍然指向真实 .env：%s（会污染开发者配置）", got)
+	}
 }
