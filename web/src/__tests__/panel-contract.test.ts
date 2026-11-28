@@ -425,7 +425,10 @@ describe('静默失效：未知不得被显示成零', () => {
 
   it('TestOverviewFallbackIsLabelledByScope: 回退进程内累计时指标标签必须改口径', () => {
     expect(overview).toContain('const uSum = usageForRange === range ? usageData?.summary : undefined;');
-    expect(overview).toContain("const rangeScopeLabel = usingFallback ? '进程内累计' : rangeLabel;");
+    expect(overview).toContain('const rangeScopeLabel = usingFallback');
+    // 区间切换、新数据未到时必须写「加载中」，不能冒充进程内累计。
+    expect(overview).toContain('加载中…（暂显进程内累计）');
+    expect(overview).toContain('rangeSwitching');
   });
 
   it('TestOverviewPoolNotZeroBeforeStatus: 状态未到不得显示「0/0 启用」或「尚未添加账号」', () => {
@@ -540,5 +543,25 @@ describe('终审修复', () => {
   it('非 JSON 响应必须带上 HTTP 状态码', () => {
     const api = src('lib/api.ts');
     expect(api).toContain('HTTP ${res.status}（响应不是 JSON');
+  });
+});
+
+describe('剩余项（超时 / 草稿 / 切换中标签）', () => {
+  it('apiRequest 必须有超时出口', () => {
+    const api = src('lib/api.ts');
+    expect(api).toContain('AbortController');
+    expect(api).toContain('请求超时');
+    expect(api).toContain('window.clearTimeout(timer)');
+  });
+
+  it('标题草稿必须可放弃，且 payload 更新不覆盖未保存草稿', () => {
+    expect(models).toContain('titleSavedRef');
+    expect(models).toContain('放弃标题草稿');
+    expect(models).toContain('handleResetTitleRoute');
+  });
+
+  it('区间切换中必须明说加载中，而不是冒充进程内累计', () => {
+    expect(overview).toContain('加载中…（暂显进程内累计）');
+    expect(overview).toContain('rangeSwitching');
   });
 });

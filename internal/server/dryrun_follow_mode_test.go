@@ -293,3 +293,13 @@ func TestSystemDryRunFoldRewritesWithoutStripping(t *testing.T) {
 		t.Fatalf("fold 应把原 system 折进首条 user（原文不得被剥），实际 %q", firstUser)
 	}
 }
+
+// 拼错的档位必须 400：静默按 auto 试算会让「预览」展示一个没测的档位。
+func TestSystemDryRunRejectsInvalidMode(t *testing.T) {
+	srv := systemPromptTestServer(t)
+	rec := doAdminRequest(t, srv, http.MethodPost, "/direct-admin/api/system-dryrun",
+		`{"system":"x","mode":"garbage"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("非法 mode 应 400，实际 %d：%s", rec.Code, rec.Body.String())
+	}
+}

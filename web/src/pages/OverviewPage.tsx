@@ -152,7 +152,13 @@ export function OverviewPage({
   const rangeLabel =
     range === 'day' ? '今日' : range === 'week' ? '近 7 日' : range === 'month' ? '近 30 日' : '全部历史';
   // 回退到进程内累计时，数字是「重启以来」而不是所选区间 —— 标签必须跟着改。
-  const rangeScopeLabel = usingFallback ? '进程内累计' : rangeLabel;
+  // 切换区间但新数据还没到时，明确写「加载中」而不是让人以为这就是所选区间。
+  const rangeSwitching = usingFallback && !usageError && usageForRange !== range;
+  const rangeScopeLabel = usingFallback
+    ? rangeSwitching
+      ? '加载中…（暂显进程内累计）'
+      : '进程内累计'
+    : rangeLabel;
 
   // 未知（status 未到 / 字段缺省）一律 undefined，由渲染层显示 '—'。
   const displayTokens = uSum?.totalTokens ?? (statusKnown ? stats.totalTokens : undefined);

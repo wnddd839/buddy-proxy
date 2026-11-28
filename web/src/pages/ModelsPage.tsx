@@ -106,6 +106,8 @@ export function ModelsPage({
   // 保存路由时如果不带 titleRoute，后端会把标题配置写成 nil。
   const [titleRoute, setTitleRoute] = useState<TitleRoute>({ enabled: false });
   const [savingTitle, setSavingTitle] = useState(false);
+  // 上一次服务端 titleRoute 快照：payload 更新时用它判断草稿是否脏。
+  const titleSavedRef = useRef('');
 
   // 上游模型回显对照（I8）：直接复用 /usage 已有的 upstreamModel /
   // modelMismatch 字段，不新增后端接口。
@@ -135,11 +137,18 @@ export function ModelsPage({
     // titleRoute 与 rules 同源同载荷，必须一起同步；否则保存路由时
     // 会用初始空值覆盖线上标题配置。
     const tr = routesPayload.titleRoute;
-    setTitleRoute({
+    const nextTitle = {
       enabled: tr?.enabled === true,
       domestic: tr?.domestic || '',
       global: tr?.global || '',
-    });
+    };
+    // 与 rules 同规则：服务端载荷更新时不能覆盖未保存的标题草稿，
+    // 否则保存路由 / 另一操作者改动会让正在编辑的标题配置静默丢失。
+    const prevTitleSnap = titleSavedRef.current;
+    titleSavedRef.current = JSON.stringify(nextTitle);
+    setTitleRoute((prev) =>
+      prevTitleSnap && JSON.stringify(prev) !== prevTitleSnap ? prev : nextTitle,
+    );
   }, [routesPayload]);
 
   const isDirty = useMemo(() => {
@@ -339,6 +348,15 @@ export function ModelsPage({
     titleStateText = `已启用：国内 → ${titleDom || '不改写'} · 国际 → ${titleGlo || '不改写'}`;
   }
   if (titleDirty) titleStateText += ' · 有未保存的更改';
+
+  const handleResetTitleRoute = () => {
+    const tr = routesPayload?.titleRoute;
+    setTitleRoute({
+      enabled: tr?.enabled === true,
+      domestic: tr?.domestic || '',
+      global: tr?.global || '',
+    });
+  };
 
   const handleSaveTitleRoute = async () => {
     // payload 没加载完时 rules / savedSnapshot 都是空的：此时 POST 会
@@ -879,6 +897,11 @@ export function ModelsPage({
             <span id="titleRouteState" className="ds-mono text-xs text-[var(--fg-3)]">
               {titleStateText}
             </span>
+            {titleDirty && (
+              <Button variant="ghost" size="xs" onClick={handleResetTitleRoute}>
+                放弃标题草稿
+              </Button>
+            )}
             <Button
               id="btnSaveTitleRoute"
               variant="primary"

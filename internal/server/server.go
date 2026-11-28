@@ -1072,19 +1072,53 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		})
 		return
 	case path == "/direct-admin/api/model-routes" && r.Method == http.MethodPost:
+		// rules / titleRoute 都是「给了才改」：漏传一个字段不能把另一块清空。
+		// 用 RawMessage 区分「没给」与「显式 null」—— null 表示清空。
 		var body struct {
-			Rules      []modelroute.Rule      `json:"rules"`
-			TitleRoute *modelroute.TitleRoute `json:"titleRoute,omitempty"`
+			Rules      json.RawMessage `json:"rules"`
+			TitleRoute json.RawMessage `json:"titleRoute"`
 		}
 		if err := httputil.ReadJSONLimited(r, &body, s.maxJSONBodyBytes); err != nil {
 			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		before, _ := s.ModelRoutes.Read()
-		if err := s.ModelRoutes.Write(modelroute.Store{
-			Rules:      body.Rules,
-			TitleRoute: body.TitleRoute,
-		}); err != nil {
+		if len(body.Rules) == 0 && len(body.TitleRoute) == 0 {
+			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+				"ok": false, "error": "至少要给 rules 或 titleRoute（null 表示清空）",
+			})
+			return
+		}
+		before, err := s.ModelRoutes.Read()
+		if err != nil {
+			// 读不到现有表就不能合并写入：把损坏/不可读的文件当空表覆盖，
+			// 会静默清空整张路由表。
+			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
+				"ok": false, "error": "读取现有路由失败，已拒绝写入：" + err.Error(),
+			})
+			return
+		}
+		next := before
+		if len(body.Rules) > 0 {
+			if string(body.Rules) == "null" {
+				next.Rules = nil
+			} else if err := json.Unmarshal(body.Rules, &next.Rules); err != nil {
+				httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "rules 解析失败：" + err.Error()})
+				return
+			}
+		}
+		if len(body.TitleRoute) > 0 {
+			if string(body.TitleRoute) == "null" {
+				next.TitleRoute = nil
+			} else {
+				var tr modelroute.TitleRoute
+				if err := json.Unmarshal(body.TitleRoute, &tr); err != nil {
+					httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "titleRoute 解析失败：" + err.Error()})
+					return
+				}
+				next.TitleRoute = &tr
+			}
+		}
+		if err := s.ModelRoutes.Write(next); err != nil {
 			httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
@@ -1092,9 +1126,9 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		// 每次写入都留一条 WARN 级审计（默认日志级别下也会落盘），
 		// 记下条数变化和每条规则的完整内容，事后可追溯。
 		s.Svc.Log.Warn("model routes updated",
-			"before", len(before.Rules), "after", len(body.Rules),
+			"before", len(before.Rules), "after", len(next.Rules),
 			"remote", r.RemoteAddr,
-			"rules", modelroute.AuditLine(body.Rules))
+			"rules", modelroute.AuditLine(next.Rules))
 		httputil.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	// 签到结果查询：返回 48h 内的明细，供管理台渲染徽章与「48 小时 N/2」。
@@ -2026,6 +2060,14 @@ func (s *Server) handleSystemDryRun(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(body.System) == "" && len(body.Messages) == 0 {
 		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
 			"ok": false, "error": "至少要给 system 或 messages",
+		})
+		return
+	}
+	if raw := strings.TrimSpace(body.Mode); raw != "" && !config.IsValidSystemPromptMode(raw) {
+		// 拼错的档位不能静默按 auto 试算 —— 那会让「预览」展示一个
+		// 操作者以为在测、实际没测的档位。
+		httputil.WriteJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "mode 只能是 auto / keep / fold / strip（留空 = 跟随当前）",
 		})
 		return
 	}
