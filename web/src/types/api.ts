@@ -416,7 +416,6 @@ export interface UsageEntry {
   accountLabel?: string;
   promptTokens?: number;
   completionTokens?: number;
-  totalTokens?: number;
   cachedTokens?: number;
   credit?: number | null;
   durationMs?: number;

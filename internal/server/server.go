@@ -2045,7 +2045,11 @@ func (s *Server) handleSystemDryRun(w http.ResponseWriter, r *http.Request) {
 		stripEnabled = *body.Strip
 	}
 	var strip *provider.StripConfig
-	if keepSystem && stripEnabled {
+	// 生产只在 auto / strip 档剥离（gateway.applyStripConfig）；keep 直传
+	// 不剥，fold 改写也不剥。试算必须与生产一致，否则会展示一个线上
+	// 永远不会发生的 outbound。
+	if (mode == config.SystemPromptModeAuto || mode == config.SystemPromptModeStrip) &&
+		keepSystem && stripEnabled {
 		strip = &provider.StripConfig{
 			Enabled:       true,
 			Rules:         provider.RulesForSite(site),

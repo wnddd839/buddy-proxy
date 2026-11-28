@@ -18,6 +18,12 @@ export async function apiRequest<T = unknown>(
   } catch {
     data = { raw: text };
   }
+  // 200 + {"ok":false} 也是失败：这类响应如果当成功，界面会显示
+  // 「已保存」并继续用旧数据，属于本分支最忌讳的静默失效。
+  if (data && typeof data === "object" && (data as { ok?: unknown }).ok === false) {
+    const err = (data as { error?: unknown }).error;
+    throw new Error(typeof err === "string" && err ? err : "请求返回 ok:false");
+  }
   if (!res.ok) {
     const errObj = data?.error as { message?: string } | string | undefined;
     const msg =

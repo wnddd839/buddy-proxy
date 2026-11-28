@@ -442,9 +442,11 @@ export function validateModelRoutes(rules: ModelRouteRule[]): string | null {
 }
 
 export function usageRowTotalTokens(row: UsageEntry): number {
+  // usagejournal.Entry 没有 totalTokens 字段（只有 Summary / ModelStat /
+  // ChartPoint 有），读它只会得到 undefined —— 那是死分支，不是兜底。
   const p = row.promptTokens || 0;
   const c = row.completionTokens || 0;
-  return row.totalTokens || p + c;
+  return p + c;
 }
 
 export function usageRowHitRate(row: UsageEntry): number {

@@ -82,7 +82,7 @@ export function InvariantsPage({ active }: InvariantsPageProps) {
   const hits = Math.max(countsTotal, findings.length);
 
   return (
-    <div className="space-y-4">
+    <div id="tab-invariants" className="ds-page-enter space-y-4">
       <div className="space-y-1">
         <div className="text-[10px] font-medium tracking-[0.2em] uppercase text-[var(--fg-3)]">
           Silent Failure Watch

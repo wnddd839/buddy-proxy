@@ -455,7 +455,7 @@ export function UsagePage({ active }: UsagePageProps) {
                   className="py-2.5 px-3 font-medium"
                   title="本次请求上游返回的单次扣费（不是余额）。余额看 01 概览或 02 账号池"
                 >
-                  Credit
+                  单次 Credit
                 </th>
                 <th className="py-2.5 px-3 font-medium">耗时</th>
                 <th className="py-2.5 px-3 font-medium">账号</th>

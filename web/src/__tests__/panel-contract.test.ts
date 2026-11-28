@@ -72,7 +72,7 @@ describe('usage table (旧 internal/admin/usage_table_cols_test.go)', () => {
     const labels = thLabels(usageThead);
     const model = labels.indexOf('模型');
     const upstream = labels.indexOf('上游模型');
-    const credit = labels.indexOf('Credit');
+    const credit = labels.indexOf('单次 Credit');
     expect(model, `表头未找齐: ${JSON.stringify(labels)}`).toBeGreaterThanOrEqual(0);
     expect(upstream).toBeGreaterThanOrEqual(0);
     expect(credit).toBeGreaterThanOrEqual(0);
@@ -98,7 +98,7 @@ describe('usage table (旧 internal/admin/usage_table_cols_test.go)', () => {
 
   it('TestUsageTableNoDuplicateColumns: 关键列不得重复（历史事故：重复的「上游模型」让整表错位）', () => {
     const labels = thLabels(usageThead);
-    for (const name of ['模型', 'System', '上游模型', '分词器比例', 'Credit']) {
+    for (const name of ['模型', 'System', '上游模型', '分词器比例', '单次 Credit']) {
       expect(labels.filter((l) => l === name), `列 ${name} 应恰好 1 个，实际 ${JSON.stringify(labels)}`).toHaveLength(1);
     }
     // 整表标签也不能撞名
@@ -106,7 +106,7 @@ describe('usage table (旧 internal/admin/usage_table_cols_test.go)', () => {
   });
 
   it('TestUsageCreditColumnIsDistinguishedFromBalance: Credit 列必须写明是单次扣费，不是余额', () => {
-    const cell = thBlockByLabel(usageThead, 'Credit');
+    const cell = thBlockByLabel(usageThead, '单次 Credit');
     expect(cell).toContain('单次扣费');
     expect(cell).toContain('不是余额');
     expect(cell).toMatch(/余额看/);
@@ -114,14 +114,13 @@ describe('usage table (旧 internal/admin/usage_table_cols_test.go)', () => {
     expect(usage).toContain('Credits 累计');
   });
 
-  it('TestUsageRowTotalTokensHasNoDeadBranch: 读 row.totalTokens 就必须在类型里声明该字段', () => {
-    // lib/domain.ts 的 usageRowTotalTokens 在 totalTokens 缺省时回退到 p+c
-    expect(domain).toContain('row.totalTokens ||');
+  it('TestUsageRowTotalTokensHasNoDeadBranch: 不得读后端不存在的 totalTokens 字段', () => {
+    // usagejournal.Entry 没有 totalTokens（只有 Summary / ModelStat /
+    // ChartPoint 有）。一旦回到 `row.totalTokens ||` 就是死分支 ——
+    // 那也是这条测试在旧面板上要防的原始 bug。
+    expect(domain).not.toContain('row.totalTokens');
     const entry = region(apiTypes, 'export interface UsageEntry {', '\n}');
-    // 死分支的判据不是「有没有 ||」，而是「读的字段是否存在」
-    expect(entry).toMatch(/totalTokens\?: number;/);
-    expect(entry).toMatch(/promptTokens\?: number;/);
-    expect(entry).toMatch(/completionTokens\?: number;/);
+    expect(entry).not.toContain('totalTokens');
   });
 });
 
@@ -238,11 +237,12 @@ describe('01 概览（旧 internal/admin/panel_semantics2_test.go）', () => {
 describe('口径说明（旧 internal/admin/panel_semantics_test.go / panel_semantics2_test.go）', () => {
   it('TestPanelMetricScopesAreDocumented: 每个跨页面口径差异都必须写明', () => {
     const expected: Array<[string, string, string]> = [
-      [overview, '本次启动以来累计', '01 的成功/失败是进程内累计'],
-      [overview, '重启清零', '同上'],
+      [overview, '落盘统计，随上方所选区间变化', '01 的请求/Token 优先用落盘统计'],
+      [overview, '回退到进程内累计', '落盘不可用时回退到进程内累计'],
+      [overview, '重启清零', '进程内累计重启清零'],
       [overview, '各分钟桶峰值的最大值', '并发峰值是 1h 内各分钟桶的最大值'],
       [overview, '限流事件次数，不是账号数', '1h 限流计数是事件数'],
-      [overview, '只显示首个账号', '概览 Credits 余额只来自 primary 账号'],
+      [overview, '有余额快照账号的合计', 'Credits 是快照账号合计，不是首个账号'],
       [usage, '缓存 token ÷ prompt token', '07 命中率的分母口径'],
       [systemPrompt, 'UTF-8 字节数', '06 的 system 长度是字节数（Go 的 len(string)）'],
       [systemPrompt, '中文 system 的字节数约为字符数的 3 倍', '说明字节与字符的关系，避免误读'],

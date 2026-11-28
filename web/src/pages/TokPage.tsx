@@ -587,7 +587,12 @@ export function TokPage({ active }: TokPageProps) {
                                 {(r.templateOK !== undefined || evidence) && (
                                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-[var(--fg-3)]">
                                     <span>模板公式</span>
-                                    {templateBadge(r.templateOK, templateDetailTitle(r))}
+                                    {templateBadge(
+                                      // 校准失败时后端 TemplateOK 是零值 false，
+                                      // 直接渲染会显示红色「不符」——但根本没测。
+                                      r.vocabulary === '无法判定' ? undefined : r.templateOK,
+                                      templateDetailTitle(r),
+                                    )}
                                     {evidence && (
                                       <>
                                         <span className="ml-1">样本明细</span>

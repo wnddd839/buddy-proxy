@@ -68,7 +68,7 @@ interface ModelsPageProps {
   onRefreshModels: (scope?: 'domestic' | 'global' | 'both') => Promise<void>;
   routesPayload: ModelRoutesPayload | null;
   routesError: string;
-  onRoutesSaved: (rules: ModelRouteRule[]) => void;
+  onRoutesSaved: (rules: ModelRouteRule[], titleRoute?: TitleRoute) => void;
 }
 
 export function ModelsPage({
@@ -103,7 +103,9 @@ export function ModelsPage({
 
   // 上游模型回显对照（I8）：直接复用 /usage 已有的 upstreamModel /
   // modelMismatch 字段，不新增后端接口。
-  const [echoRows, setEchoRows] = useState<UsageEntry[]>([]);
+  // null = 还没成功加载过。绝不能初始化为 []：那会让四个计数显示 0，
+  // 看起来像「没有模型替换」——本页最危险的假阴性。
+  const [echoRows, setEchoRows] = useState<UsageEntry[] | null>(null);
   const [echoLoading, setEchoLoading] = useState(false);
   const [echoError, setEchoError] = useState('');
 
@@ -136,6 +138,10 @@ export function ModelsPage({
   }, [rules, savedSnapshot]);
 
   const catalog = routesPayload?.catalog || { domestic: [], global: [] };
+  // 标题改写优先只列免费模型：后端 freeModels 就是为此算的。拿不到时
+  // 退回全量编目，避免下拉为空导致「看起来没配」。
+  const titleDomOptions = routesPayload?.freeModels?.domestic ?? catalog.domestic ?? [];
+  const titleGloOptions = routesPayload?.freeModels?.global ?? catalog.global ?? [];
 
   // 最近 7 天里带上游回显的请求。旧数据没有该字段，过滤掉以免把
   // 「没观测」混进「一致」。
@@ -162,6 +168,15 @@ export function ModelsPage({
   }, []);
 
   const echoStats = useMemo(() => {
+    if (!echoRows) {
+      return {
+        total: null as number | null,
+        match: null as number | null,
+        mismatch: null as number | null,
+        auto: null as number | null,
+        bad: [] as UsageEntry[],
+      };
+    }
     let match = 0;
     let mismatch = 0;
     let auto = 0;
@@ -172,7 +187,10 @@ export function ModelsPage({
         bad.push(r);
         continue;
       }
-      const sent = (r.routedModel || r.model || '').toLowerCase();
+      // 与后端 isAutoFamily 一致：先去掉 cn:/global: 站点前缀再判 auto。
+      const sent = (r.routedModel || r.model || '')
+        .toLowerCase()
+        .replace(/^(cn|global):/, '');
       if (sent.indexOf('auto') === 0) {
         auto++;
         continue;
@@ -281,6 +299,12 @@ export function ModelsPage({
 
   const titleDom = titleRoute.domestic || '';
   const titleGlo = titleRoute.global || '';
+  // 未保存提示：不能让「改了下拉但没点保存」看起来已生效。
+  const titleDirty =
+    !!routesPayload &&
+    (titleRoute.enabled !== (routesPayload.titleRoute?.enabled === true) ||
+      titleDom !== (routesPayload.titleRoute?.domestic || '') ||
+      titleGlo !== (routesPayload.titleRoute?.global || ''));
   let titleStateText: string;
   if (titleRoute.enabled !== true) {
     titleStateText = '未启用（会话标题按原模型计费）';
@@ -290,8 +314,15 @@ export function ModelsPage({
   } else {
     titleStateText = `已启用：国内 → ${titleDom || '不改写'} · 国际 → ${titleGlo || '不改写'}`;
   }
+  if (titleDirty) titleStateText += ' · 有未保存的更改';
 
   const handleSaveTitleRoute = async () => {
+    // payload 没加载完时 rules / savedSnapshot 都是空的：此时 POST 会
+    // 用 rules:[] 覆盖线上整张路由表（后端是整体写入）。必须硬拦。
+    if (!routesPayload) {
+      showToast('路由配置还没加载完，已阻止保存（避免把线上路由清空）', 'error');
+      return;
+    }
     if (savingTitle) return;
     setSavingTitle(true);
     try {
@@ -304,6 +335,9 @@ export function ModelsPage({
         method: 'POST',
         body: JSON.stringify({ rules: rulesToPersist, titleRoute }),
       });
+      // 回写父级 payload：否则切页回来会显示旧配置，下一次保存路由
+      //（父级 payload 里的旧 titleRoute）会把它静默改回去。
+      onRoutesSaved(rulesToPersist, titleRoute);
       showToast('标题改写配置已保存并生效', 'success');
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
@@ -332,7 +366,7 @@ export function ModelsPage({
       const snap = JSON.stringify(rules);
       setSavedSnapshot(snap);
       setJustSaved(true);
-      onRoutesSaved(rules);
+      onRoutesSaved(rules, titleRoute);
       showToast('模型路由已保存并生效', 'success');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -786,6 +820,7 @@ export function ModelsPage({
               variant="primary"
               size="sm"
               loading={savingTitle}
+              disabled={!routesPayload || savingTitle}
               onClick={handleSaveTitleRoute}
             >
               保存标题改写
@@ -798,6 +833,7 @@ export function ModelsPage({
               id="titleRouteEnabled"
               type="checkbox"
               className="accent-[var(--accent)]"
+              disabled={savingTitle}
               checked={titleRoute.enabled === true}
               onChange={(e) =>
                 setTitleRoute((prev) => ({ ...prev, enabled: e.target.checked }))
@@ -810,32 +846,48 @@ export function ModelsPage({
             <select
               className="ds-input ds-mono text-xs px-2 py-1"
               value={titleDom}
-              disabled={titleRoute.enabled !== true}
+              disabled={titleRoute.enabled !== true || savingTitle}
               onChange={(e) => setTitleRoute((prev) => ({ ...prev, domestic: e.target.value }))}
             >
               <option value="">沿用请求模型（不改写）</option>
-              {(catalog.domestic || []).map((m) => (
+              {titleDom && !titleDomOptions.includes(titleDom) && (
+                <option value={titleDom}>{titleDom}（不在免费列表）</option>
+              )}
+              {titleDomOptions.map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>
               ))}
             </select>
+            <span className="text-[10px] text-[var(--fg-3)]">
+              {titleDomOptions.length > 0
+                ? `可选 ${titleDomOptions.length} 个免费模型`
+                : '该站点没有免费模型'}
+            </span>
           </label>
           <label className="text-xs text-[var(--fg-2)] flex items-center gap-2">
             国际站
             <select
               className="ds-input ds-mono text-xs px-2 py-1"
               value={titleGlo}
-              disabled={titleRoute.enabled !== true}
+              disabled={titleRoute.enabled !== true || savingTitle}
               onChange={(e) => setTitleRoute((prev) => ({ ...prev, global: e.target.value }))}
             >
               <option value="">沿用请求模型（不改写）</option>
-              {(catalog.global || []).map((m) => (
+              {titleGlo && !titleGloOptions.includes(titleGlo) && (
+                <option value={titleGlo}>{titleGlo}（不在免费列表）</option>
+              )}
+              {titleGloOptions.map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>
               ))}
             </select>
+            <span className="text-[10px] text-[var(--fg-3)]">
+              {titleGloOptions.length > 0
+                ? `可选 ${titleGloOptions.length} 个免费模型`
+                : '该站点没有免费模型'}
+            </span>
           </label>
         </div>
       </Card>
@@ -870,20 +922,20 @@ export function ModelsPage({
           <EchoMetric
             id="echoTotal"
             label="观测到的请求"
-            value={echoStats.total}
+            value={echoStats.total ?? '—'}
             title="最近 7 天里带上游回显的请求数"
           />
-          <EchoMetric id="echoMatch" label="一致" value={echoStats.match} />
+          <EchoMetric id="echoMatch" label="一致" value={echoStats.match ?? '—'} />
           <EchoMetric
             id="echoMismatch"
             label="不一致"
-            value={echoStats.mismatch}
+            value={echoStats.mismatch ?? '—'}
             title="归一化后仍不一致 —— 这才是真的模型替换"
           />
           <EchoMetric
             id="echoAuto"
             label="上游解析"
-            value={echoStats.auto}
+            value={echoStats.auto ?? '—'}
             title="auto 一族由上游解析成具体模型，不算异常"
           />
         </div>
@@ -912,6 +964,12 @@ export function ModelsPage({
               </tbody>
             </table>
           </div>
+        ) : echoRows === null ? (
+          <p className="text-xs text-[var(--fg-3)] m-0">
+            {echoError
+              ? '回显对照尚未成功加载，无法判断有没有模型替换。'
+              : '正在加载最近 7 天的回显记录…'}
+          </p>
         ) : (
           <p className="text-xs text-[var(--fg-3)] m-0">
             {echoRows.length === 0

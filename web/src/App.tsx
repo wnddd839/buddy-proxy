@@ -13,6 +13,7 @@ import type {
   StatusPayload,
   SystemPromptMode,
   SystemPromptOverview,
+  TitleRoute,
 } from '@/types/api';
 import { apiRequest } from '@/lib/api';
 import {
@@ -498,8 +499,16 @@ function ConsoleApp() {
             onRefreshModels={refreshModels}
             routesPayload={routesPayload}
             routesError={routesError}
-            onRoutesSaved={(nextRules: ModelRouteRule[]) =>
-              setRoutesPayload((prev) => (prev ? { ...prev, rules: nextRules } : prev))
+            onRoutesSaved={(nextRules: ModelRouteRule[], nextTitleRoute?: TitleRoute) =>
+              setRoutesPayload((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      rules: nextRules,
+                      ...(nextTitleRoute ? { titleRoute: nextTitleRoute } : {}),
+                    }
+                  : prev,
+              )
             }
           />
         )}

@@ -325,6 +325,8 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
           id={opts.id}
           type="checkbox"
           checked={opts.checked}
+          // overview 未加载时不知道线上值，先禁用；此时请求也不会发送该字段。
+          disabled={!overview}
           onChange={(e) => opts.onToggle(e.target.checked)}
           className="accent-[var(--accent)]"
         />
@@ -833,7 +835,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
             <span className="text-[11px] text-[var(--fg-3)]">试算档位</span>
             <span
               className="inline-flex"
-              title="不传档位按契约是「跟随当前」，但后端 NormalizeSystemPromptMode 会把空串归一成 auto，所以实际只等于 auto；与当前档位不一致时结果区会明确提示"
+              title="留空 = 用线上当前生效档位；结果区会显示实际生效的档位。档位只是试算参数，不会写回配置。"
             >
               <SegmentedControl<'' | 'auto' | 'keep' | 'fold' | 'strip'>
                 id="dryModeSeg"
@@ -989,20 +991,6 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
                   </span>
                 </div>
               </div>
-
-              {/* 后端把空 mode 归一成 auto（NormalizeSystemPromptMode 从不返回空串），
-                  所以「跟随当前」拿到的其实是 auto 的结果 —— 与线上档位不一致时必须明说。 */}
-              {dryMode === '' && dryResult.mode && dryResult.mode !== mode && (
-                <div className="ds-surface-2 px-3.5 py-2.5 text-xs leading-relaxed text-[var(--warn)] bg-[var(--warn-bg)] border-l-2 border-[var(--warn)]">
-                  注意：空 mode 会被后端归一成{' '}
-                  <span className="ds-mono text-[var(--fg)]">{dryResult.mode}</span>
-                  ，而当前生效档位是 <span className="ds-mono text-[var(--fg)]">{mode}</span>
-                  —— 也就是说上面这些结果按 <span className="ds-mono text-[var(--fg)]">{dryResult.mode}</span>{' '}
-                  算，不是 {mode}。要看 {mode} 的真实行为，请点{' '}
-                  <span className="ds-mono text-[var(--fg)]">{mode}</span> 那个档位按钮再预览一次
-                  （同样不改配置、不发请求）。
-                </div>
-              )}
 
               {/* 警告放在最上面：它们存在的意义就是提示操作者「有东西不对」 */}
               {dryWarnings.length > 0 && (
