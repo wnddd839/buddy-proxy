@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,6 +103,7 @@ func NewClient(cfg config.Config) *Client {
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
+			Resolver:  systemResolver(),
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          cfg.MaxIdleConns,
@@ -122,6 +125,75 @@ func NewClient(cfg config.Config) *Client {
 		StallTimeout:               cfg.StallTimeout,
 		StallTimeoutAfterFirstByte: cfg.StallTimeoutAfterFirstByte,
 	}
+}
+
+const (
+	primaryResolvConf = "/etc/resolv.conf"
+	termuxResolvConf  = "/data/data/com.termux/files/usr/etc/resolv.conf"
+	systemResolvConf  = "/system/etc/resolv.conf"
+	dnsPort           = "53"
+	maxNameservers    = 3
+)
+
+func systemResolver() *net.Resolver {
+	servers := fallbackNameservers()
+	if len(servers) == 0 {
+		return nil
+	}
+	addrs := make([]string, len(servers))
+	for i, server := range servers {
+		addrs[i] = net.JoinHostPort(server, dnsPort)
+	}
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var err error
+			for _, addr := range addrs {
+				var conn net.Conn
+				conn, err = (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
+				if err == nil {
+					return conn, nil
+				}
+			}
+			return nil, err
+		},
+	}
+}
+
+func fallbackNameservers() []string {
+	if len(readNameservers(primaryResolvConf)) > 0 {
+		return nil
+	}
+	paths := make([]string, 0, 3)
+	if prefix := strings.TrimSpace(os.Getenv("PREFIX")); prefix != "" {
+		paths = append(paths, filepath.Join(prefix, "etc", "resolv.conf"))
+	}
+	paths = append(paths, termuxResolvConf, systemResolvConf)
+	for _, path := range paths {
+		if servers := readNameservers(path); len(servers) > 0 {
+			return servers
+		}
+	}
+	return nil
+}
+
+func readNameservers(path string) []string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var servers []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || fields[0] != "nameserver" || net.ParseIP(fields[1]) == nil {
+			continue
+		}
+		servers = append(servers, fields[1])
+		if len(servers) == maxNameservers {
+			break
+		}
+	}
+	return servers
 }
 
 type ChatOptions struct {

@@ -73,8 +73,15 @@ func (s *Service) ResolveChatTestModel(ctx context.Context, site, model string) 
 	return id, nil
 }
 
-// TestAccountChat sends a minimal chat against a pinned account without pool side effects.
 func (s *Service) TestAccountChat(ctx context.Context, account accounts.Account, model string) AccountChatTestResult {
+	return s.testAccountChat(ctx, account, model, false)
+}
+
+func (s *Service) TestAccountChatWithCooldown(ctx context.Context, account accounts.Account, model string) AccountChatTestResult {
+	return s.testAccountChat(ctx, account, model, true)
+}
+
+func (s *Service) testAccountChat(ctx context.Context, account accounts.Account, model string, cooldownOnFailure bool) AccountChatTestResult {
 	site := config.NormalizeSite(strutil.First(account.Site, s.Config().Site))
 	model = strings.TrimSpace(model)
 	if model == "" {
@@ -107,6 +114,19 @@ func (s *Service) TestAccountChat(ctx context.Context, account accounts.Account,
 	out.LatencyMs = time.Since(started).Milliseconds()
 	if err != nil {
 		out.Message = strutil.Truncate(err.Error(), 240)
+		if cooldownOnFailure && s.Pool != nil {
+			cooldown := failureCooldown(err)
+			_ = s.Pool.MarkResult(accounts.Selection{
+				Source:  "pool",
+				Account: account,
+				Model:   model,
+			}, false, err.Error(), cooldown, 0)
+			if s.Log != nil {
+				s.Log.Warn("account moved to cooldown after failed chat test",
+					"accountId", account.ID, "site", site, "model", model,
+					"cooldown", cooldown.String(), "error", err.Error())
+			}
+		}
 		return out
 	}
 	out.OK = true
@@ -172,7 +192,7 @@ func (s *Service) RunPoolChatTest(ctx context.Context, poolSite, model string, o
 			}
 		}
 		reqCtx, cancel := context.WithTimeout(batchCtx, chatTestRequestTimeout)
-		item := s.TestAccountChat(reqCtx, account, model)
+		item := s.testAccountChat(reqCtx, account, model, true)
 		cancel()
 		out.add(item)
 	}

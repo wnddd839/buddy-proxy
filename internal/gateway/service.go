@@ -757,6 +757,26 @@ func (s *Service) CompleteFromPool(ctx context.Context, opts CompleteOptions) (C
 				return s.CompleteFromPool(ctx, opts)
 			}
 		}
+		if !opts.FixedAccount && isAccountRejection(err) {
+			next := append(append([]string{}, opts.ExcludeIDs...), account.ID)
+			if id, ok := s.nextSelectableAccount(site, opts.Model, next); ok {
+				_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err), 0)
+				s.recordSystemPromptAttempt(opts, account, site, att, err, false)
+				if pinKey != "" {
+					s.Pins.Forget(pinKey)
+				}
+				s.Log.Warn("retrying with next account after account rejection",
+					"from", account.ID, "to", id, "site", site, "model", opts.Model, "error", err.Error())
+				opts.ExcludeIDs = next
+				opts.AccountID = id
+				opts.sameAccountRetry = false
+				opts.RetryDepth++
+				return s.CompleteFromPool(ctx, opts)
+			}
+			_ = s.Pool.MarkResult(selection, false, err.Error(), s.resolveFailureCooldown(ctx, account, err), 0)
+			s.recordSystemPromptAttempt(opts, account, site, att, err, false)
+			return CompleteResult{}, err
+		}
 		// 空 completed 回合（上游发了收尾帧但没有任何内容）：同一账号重放一次。
 		// 这是上游的收尾帧不可信，不是账号问题，所以不罚号。
 		// 独立预算（EmptyTurnReplays），避免 429/流重置等无关失败提前把它耗尽。
@@ -2127,6 +2147,21 @@ func isQuotaExhausted(err error) bool {
 		strings.Contains(msg, "6004") ||
 		strings.Contains(msg, "quota")
 }
+
+func isAccountRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "11128") || strings.Contains(msg, "unapproved channel") {
+		return false
+	}
+	if !strings.Contains(msg, "403") {
+		return false
+	}
+	return strings.Contains(msg, "11140") || strings.Contains(msg, "request illegal")
+}
+
 
 // nextSelectableAccount 在指定站点/模型上找一个「真正能被选中」的账号。
 // 找不到就返回 false —— 调用方据此返回冷却提示而不是继续打上游。
