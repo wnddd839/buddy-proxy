@@ -371,3 +371,27 @@ describe('ModelsPage 接线（源码级）', () => {
     expect(models).toContain('visible={isDirty}');
   });
 });
+
+describe('草稿持久化的失败面', () => {
+  const page = src('pages/ModelsPage.tsx');
+
+  it('服务端路由结构非法时不得当成空表，且两个保存入口都被锁', () => {
+    expect(page).toContain('routesPayloadInvalid');
+    expect(page).toContain('normalizeRulesDraft(rawRules)');
+    expect(page).toContain('服务端返回的路由表结构不合法');
+    expect(page).toContain('已阻止保存');
+  });
+
+  it('存储不可用或写失败时必须明说草稿不会持久化', () => {
+    expect(page).toContain('routesDraftPersisted');
+    expect(page).toContain('titleDraftPersisted');
+    expect(page).toContain('草稿无法持久化');
+    expect(page).toContain('草稿只在本页');
+  });
+
+  it('服务端在草稿期间被修改必须提示', () => {
+    expect(page).toContain('routesBaseStale');
+    expect(page).toContain('titleBaseStale');
+    expect(page).toContain('服务端已被修改');
+  });
+});

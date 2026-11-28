@@ -124,6 +124,14 @@ export function ModelsPage({
   const titleSavedRef = useRef('');
   // 同一份快照的 state 副本：持久化 effect 需要它做依赖（ref 变化不触发渲染）。
   const [titleBase, setTitleBase] = useState('');
+  // 草稿持久化状态：sessionStorage 不可用 / 写满时必须明说，不能继续承诺
+  // 「草稿已保留」。基线过期 = 写草稿之后服务端又被改过，保存会覆盖别人的改动。
+  const [routesDraftPersisted, setRoutesDraftPersisted] = useState(true);
+  const [titleDraftPersisted, setTitleDraftPersisted] = useState(true);
+  const [routesBaseStale, setRoutesBaseStale] = useState(false);
+  const [titleBaseStale, setTitleBaseStale] = useState(false);
+  // 服务端路由表结构非法：保留上一份内存状态并锁死两个保存入口。
+  const [routesPayloadInvalid, setRoutesPayloadInvalid] = useState(false);
 
   // 会话级草稿：切换侧边栏标签会卸载本页，未保存的编辑必须活下来。
   // 只有 sessionStorage 可用时才持久化；隐私模式下退化为纯内存（draftStorage = null）。
@@ -157,25 +165,38 @@ export function ModelsPage({
   useEffect(() => {
     if (!routesPayload || consumedPayloadRef.current === routesPayload) return;
     consumedPayloadRef.current = routesPayload;
-    const normalized = normalizeRulesDraft(routesPayload.rules || []) ?? [];
-    const snap = rulesFingerprint(normalized);
-    // 父级载荷更新时不能无脑覆盖草稿：保存「标题改写」会回写父级 payload，
-    // 若这里直接把 rules 换成服务端版本，用户还没保存的路由编辑会静默消失。
-    const prevSnap = savedSnapshotRef.current;
-    savedSnapshotRef.current = snap;
-    if (!routesHydratedRef.current) {
-      // 首次拿到载荷：会话里若留着上次没保存的草稿就恢复它。
-      // 与当前服务端一致（别人已保存同一份）/ 载荷未就绪时不恢复 —— 见 shouldRestoreDraft。
-      routesHydratedRef.current = true;
-      const stored = pendingRoutesDraft.current;
-      pendingRoutesDraft.current = null;
-      setRules(
-        stored && shouldRestoreDraft(stored, snap, rulesFingerprint) ? stored.draft : normalized,
-      );
+    const rawRules = routesPayload.rules;
+    // rules 缺省 / null = 服务端空表，允许；但「不是数组」或「某条结构不合法」
+    // 绝不能 `?? []` 当成空表 —— 那会让保存标题时顺手把线上路由清空。
+    // 此时保留上一份内存状态，并锁死两个保存入口。
+    const normalized = rawRules == null ? [] : normalizeRulesDraft(rawRules);
+    if (normalized === null) {
+      setRoutesPayloadInvalid(true);
+      setRoutesBaseStale(false);
     } else {
-      setRules((prev) => (prevSnap && JSON.stringify(prev) !== prevSnap ? prev : normalized));
+      setRoutesPayloadInvalid(false);
+      const snap = rulesFingerprint(normalized);
+      // 父级载荷更新时不能无脑覆盖草稿：保存「标题改写」会回写父级 payload，
+      // 若这里直接把 rules 换成服务端版本，用户还没保存的路由编辑会静默消失。
+      const prevSnap = savedSnapshotRef.current;
+      savedSnapshotRef.current = snap;
+      if (!routesHydratedRef.current) {
+        // 首次拿到载荷：会话里若留着上次没保存的草稿就恢复它。
+        routesHydratedRef.current = true;
+        const stored = pendingRoutesDraft.current;
+        pendingRoutesDraft.current = null;
+        const restore = stored !== null && shouldRestoreDraft(stored, snap, rulesFingerprint);
+        setRules(restore && stored ? stored.draft : normalized);
+        setRoutesBaseStale(
+          restore && stored !== null && stored.base !== '' && stored.base !== snap,
+        );
+      } else {
+        setRules((prev) => (prevSnap && JSON.stringify(prev) !== prevSnap ? prev : normalized));
+        // 服务端在草稿期间又变了：即使没恢复草稿也要提示「保存会覆盖它」。
+        if (prevSnap && snap !== prevSnap) setRoutesBaseStale(true);
+      }
+      setSavedSnapshot(snap);
     }
-    setSavedSnapshot(snap);
     // titleRoute 与 rules 同源同载荷，必须一起同步；否则保存路由时
     // 会用初始空值覆盖线上标题配置。
     const nextTitle = titleFromPayload(routesPayload.titleRoute);
@@ -189,15 +210,20 @@ export function ModelsPage({
       titleHydratedRef.current = true;
       const storedTitle = pendingTitleDraft.current;
       pendingTitleDraft.current = null;
-      setTitleRoute(
-        storedTitle && shouldRestoreDraft(storedTitle, nextTitleSnap, titleFingerprint)
-          ? storedTitle.draft
-          : nextTitle,
+      const restoreTitle =
+        storedTitle !== null && shouldRestoreDraft(storedTitle, nextTitleSnap, titleFingerprint);
+      setTitleRoute(restoreTitle && storedTitle ? storedTitle.draft : nextTitle);
+      setTitleBaseStale(
+        restoreTitle &&
+          storedTitle !== null &&
+          storedTitle.base !== '' &&
+          storedTitle.base !== nextTitleSnap,
       );
     } else {
       setTitleRoute((prev) =>
         prevTitleSnap && JSON.stringify(prev) !== prevTitleSnap ? prev : nextTitle,
       );
+      if (prevTitleSnap && nextTitleSnap !== prevTitleSnap) setTitleBaseStale(true);
     }
   }, [routesPayload]);
 
@@ -208,9 +234,10 @@ export function ModelsPage({
     if (!routesHydratedRef.current || !draftStorage || !savedSnapshot) return;
     if (rulesFingerprint(rules) === savedSnapshot) {
       clearDraft(draftStorage, ROUTES_DRAFT_KEY);
+      setRoutesDraftPersisted(true);
       return;
     }
-    writeDraft(draftStorage, ROUTES_DRAFT_KEY, rules, savedSnapshot);
+    setRoutesDraftPersisted(writeDraft(draftStorage, ROUTES_DRAFT_KEY, rules, savedSnapshot));
   }, [rules, savedSnapshot, draftStorage]);
 
   useEffect(() => {
@@ -218,9 +245,10 @@ export function ModelsPage({
     const normalized = titleFromPayload(titleRoute);
     if (titleFingerprint(normalized) === titleBase) {
       clearDraft(draftStorage, TITLE_DRAFT_KEY);
+      setTitleDraftPersisted(true);
       return;
     }
-    writeDraft(draftStorage, TITLE_DRAFT_KEY, normalized, titleBase);
+    setTitleDraftPersisted(writeDraft(draftStorage, TITLE_DRAFT_KEY, normalized, titleBase));
   }, [titleRoute, titleBase, draftStorage]);
 
   const isDirty = useMemo(() => {
@@ -420,11 +448,14 @@ export function ModelsPage({
     titleStateText = `已启用：国内 → ${titleDom || '不改写'} · 国际 → ${titleGlo || '不改写'}`;
   }
   if (titleDirty) titleStateText += ' · 有未保存的更改';
+  if (titleDirty && titleBaseStale) titleStateText += ' · 服务端已被修改（保存会覆盖它）';
 
   const handleResetTitleRoute = () => {
     setTitleRoute(titleFromPayload(routesPayload?.titleRoute));
     // 「放弃」必须同时清掉会话草稿：否则切页回来草稿会被重新恢复。
     clearDraft(draftStorage, TITLE_DRAFT_KEY);
+    setTitleBaseStale(false);
+    setTitleDraftPersisted(true);
   };
 
   const handleSaveTitleRoute = async () => {
@@ -432,6 +463,10 @@ export function ModelsPage({
     // 用 rules:[] 覆盖线上整张路由表（后端是整体写入）。必须硬拦。
     if (!routesPayload) {
       showToast('路由配置还没加载完，已阻止保存（避免把线上路由清空）', 'error');
+      return;
+    }
+    if (routesPayloadInvalid) {
+      showToast('服务端路由表结构不合法，已阻止保存（避免把线上路由清空）', 'error');
       return;
     }
     if (savingTitle) return;
@@ -451,6 +486,8 @@ export function ModelsPage({
       // 回写父级 payload：否则切页回来会显示旧配置，下一次保存路由
       //（父级 payload 里的旧 titleRoute）会把它静默改回去。
       onRoutesSaved(rulesToPersist, titleRoute);
+      setTitleBaseStale(false);
+      setTitleDraftPersisted(true);
       showToast('标题改写配置已保存并生效', 'success');
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : String(e), 'error');
@@ -461,6 +498,10 @@ export function ModelsPage({
 
   const handleSaveRoutes = async () => {
     if (saving) return;
+    if (routesPayloadInvalid) {
+      showToast('服务端路由表结构不合法，已阻止保存（避免把线上路由清空）', 'error');
+      return;
+    }
     const err = validateModelRoutes(rules);
     if (err) {
       setSaveError(err);
@@ -483,10 +524,17 @@ export function ModelsPage({
       clearDraft(draftStorage, ROUTES_DRAFT_KEY);
       setJustSaved(true);
       onRoutesSaved(rules, titleRoute);
+      setRoutesBaseStale(false);
+      setTitleBaseStale(false);
+      setRoutesDraftPersisted(true);
       showToast('模型路由已保存并生效', 'success');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setSaveError(`保存失败，草稿已保留：${msg}`);
+      setSaveError(
+        (!draftStorage || !routesDraftPersisted
+          ? '保存失败，草稿只在本页（切换标签页会丢失）'
+          : '保存失败，草稿已保留') + `：${msg}`,
+      );
       showToast(msg, 'error');
     } finally {
       setSaving(false);
@@ -743,6 +791,11 @@ export function ModelsPage({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="ds-heading text-lg text-[var(--fg)] m-0">有方向的模型路由与备用链</h2>
+            {routesPayloadInvalid && (
+              <p className="text-xs text-[var(--err)] mt-1 m-0">
+                服务端返回的路由表结构不合法，已拒绝加载；恢复前两个保存入口都被禁用（避免把线上路由清空）。
+              </p>
+            )}
             <p className="text-xs text-[var(--fg-3)] mt-1 m-0 max-w-2xl leading-relaxed">
               同一「源区域 + 源模型」可配置多条形成有序备用链。没命中规则的模型一字节不改。
             </p>
@@ -782,7 +835,7 @@ export function ModelsPage({
               variant="primary"
               size="sm"
               loading={saving}
-              disabled={!routesPayload}
+              disabled={!routesPayload || routesPayloadInvalid}
               onClick={handleSaveRoutes}
             >
               保存路由
@@ -970,6 +1023,11 @@ export function ModelsPage({
             <span id="titleRouteState" className="ds-mono text-xs text-[var(--fg-3)]">
               {titleStateText}
             </span>
+            {titleDirty && (!draftStorage || !titleDraftPersisted) && (
+              <span className="text-[10px] text-[var(--warn)]">
+                草稿无法持久化：切换标签页会丢失，请先保存
+              </span>
+            )}
             {titleDirty && (
               <Button variant="ghost" size="xs" onClick={handleResetTitleRoute}>
                 放弃标题草稿
@@ -980,7 +1038,7 @@ export function ModelsPage({
               variant="primary"
               size="sm"
               loading={savingTitle}
-              disabled={!routesPayload || savingTitle}
+              disabled={!routesPayload || savingTitle || routesPayloadInvalid}
               onClick={handleSaveTitleRoute}
             >
               保存标题改写
@@ -1147,13 +1205,23 @@ export function ModelsPage({
       <DirtySaveBar
         visible={isDirty}
         saving={saving}
-        message="模型路由规则有未保存的更改"
-        subMessage="保存后将立即写入并审计落盘"
+        message={
+          routesBaseStale
+            ? '模型路由规则有未保存的更改 · 服务端在此期间已被修改（保存会覆盖它）'
+            : '模型路由规则有未保存的更改'
+        }
+        subMessage={
+          !draftStorage || !routesDraftPersisted
+            ? '草稿无法持久化：切换标签页会丢失，请先保存'
+            : '保存后将立即写入并审计落盘'
+        }
         onReset={() => {
           if (savedSnapshot) setRules(JSON.parse(savedSnapshot) as ModelRouteRule[]);
           setSaveError('');
           // 放弃 = 状态 + 会话存储一起清，否则切页回来草稿会复活。
           clearDraft(draftStorage, ROUTES_DRAFT_KEY);
+          setRoutesBaseStale(false);
+          setRoutesDraftPersisted(true);
         }}
         onSave={handleSaveRoutes}
       />

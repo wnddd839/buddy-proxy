@@ -336,7 +336,8 @@ export interface SystemPromptStats {
 
 export interface SystemPromptOverview {
   ok?: boolean;
-  mode: SystemPromptMode;
+  /** 未知（尚未加载 / 加载失败）时为 null，不要默认成 auto。 */
+  mode?: SystemPromptMode | null;
   /**
    * 实时生效的剥离开关。面板用它给「system 预览」的勾选框做默认显示，
    * 试算请求不指定时后端也会按这三个值执行。
