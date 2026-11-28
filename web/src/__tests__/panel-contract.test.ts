@@ -126,7 +126,11 @@ describe('usage table (旧 internal/admin/usage_table_cols_test.go)', () => {
 });
 
 describe('上游模型回显（旧 internal/admin/model_echo_panel_test.go）', () => {
-  it('TestModelEchoHasThreeBuckets: 07 单元格必须区分「未观测 / 一致 / 被替换 / auto 解析」', () => {
+  it('TestModelEchoHasThreeBuckets: 05 必须有「一致 / 不一致 / 上游解析」三个分类计数，07 单元格四态可分', () => {
+    // 05 的三个分类：只报总数无法区分「没被换」与「auto 本来就不同」
+    for (const id of ['echoMatch', 'echoMismatch', 'echoAuto']) {
+      expect(models, `缺少分类计数 ${id}`).toContain(`id="${id}"`);
+    }
     const cell = region(usage, 'const renderUpstreamModelCell', 'const renderTokRatioCell');
     // 未观测
     expect(cell).toMatch(/if \(!upstream\)/);
