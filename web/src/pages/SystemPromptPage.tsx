@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BookOpen, CheckCircle2, Copy, RefreshCw, ShieldCheck } from 'lucide-react';
+import {
+  BookOpen,
+  CheckCircle2,
+  Copy,
+  FlaskConical,
+  RefreshCw,
+  ShieldCheck,
+  TriangleAlert,
+} from 'lucide-react';
 import type {
+  SystemDryRunRequest,
+  SystemDryRunResponse,
   SystemPromptEvent,
   SystemPromptHistoryResponse,
   SystemPromptMode,
   SystemPromptOverview,
 } from '@/types/api';
 import { resolveLocalDateList, spFormInfo, spResultInfo } from '@/lib/domain';
-import { formatBytes, formatShortClock, formatTime, shortId } from '@/lib/format';
+import { formatBytes, formatShortClock, formatTime, shortId, siteLabel } from '@/lib/format';
 import { apiRequest, copyToClipboard } from '@/lib/api';
 import { useToast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/Button';
@@ -58,6 +68,12 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
   const [overview, setOverview] = useState<SystemPromptOverview | null>(null);
   const [mode, setMode] = useState<SystemPromptMode>('auto');
   const [switchingMode, setSwitchingMode] = useState(false);
+  // 线上剥离开关正在提交哪一个（旧面板的 spStripEnabled /
+  // spStripAssistant / spEchoUser）。提交中禁用全部开关，避免连点
+  // 造成「界面显示 A、服务端实际 B」的分叉。
+  const [switchingStrip, setSwitchingStrip] = useState<
+    'strip' | 'stripAssistant' | 'echoUser' | null
+  >(null);
 
   const [viewTab, setViewTab] = useState<'realtime' | 'history'>('realtime');
   const [onlyProblems, setOnlyProblems] = useState(false);
@@ -68,6 +84,20 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
   const [historyPage, setHistoryPage] = useState(1);
   const [historyResp, setHistoryResp] = useState<SystemPromptHistoryResponse | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+
+  // system 预览（不发请求）——纯本地试算，不改配置、不碰请求路径。
+  // 档位留空 = 跟随当前生效配置；strip / echo 用 null 表示「未指定」，
+  // 只有用户真的动过勾选框才会带上布尔值（带 false 也会覆盖线上配置）。
+  const [drySystem, setDrySystem] = useState('');
+  const [dryMode, setDryMode] = useState<'' | 'auto' | 'keep' | 'fold' | 'strip'>('');
+  const [dryStrip, setDryStrip] = useState<boolean | null>(null);
+  const [dryEcho, setDryEcho] = useState<boolean | null>(null);
+  const [dryRunning, setDryRunning] = useState(false);
+  const [dryResult, setDryResult] = useState<SystemDryRunResponse | null>(null);
+  const [dryError, setDryError] = useState('');
+  // 上一次真正跑过的输入签名：输入改了但没重跑时，结果要标成过期，
+  // 否则操作者会把旧结果当成新文本的预览（本分支最忌讳的静默失效）。
+  const [dryRanSignature, setDryRanSignature] = useState('');
 
   const historyPageSize = 100;
 
@@ -149,6 +179,60 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
     }
   };
 
+  // 线上配置的剥离开关。只发被点的那一个字段 —— 后端按
+  // 「只改开关、不动模式」处理，不会顺带覆写档位。
+  const stripState = overview?.strip;
+  const stripAssistantState = overview?.stripAssistant;
+  const echoUserState = overview?.echoUser;
+
+  const handleSwitchStrip = async (
+    which: 'strip' | 'stripAssistant' | 'echoUser',
+    value: boolean,
+  ) => {
+    setSwitchingStrip(which);
+    try {
+      const data = await apiRequest<{
+        mode?: SystemPromptMode;
+        strip?: boolean;
+        stripAssistant?: boolean;
+        echoUser?: boolean;
+      }>('/direct-admin/api/system-prompt', {
+        method: 'POST',
+        body: JSON.stringify({ [which]: value }),
+      });
+      // 以服务端回显为准，别让界面停在本地推测值上。
+      setOverview((prev) =>
+        prev
+          ? {
+              ...prev,
+              strip: data.strip ?? prev.strip,
+              stripAssistant: data.stripAssistant ?? prev.stripAssistant,
+              echoUser: data.echoUser ?? prev.echoUser,
+            }
+          : prev,
+      );
+      if (which === 'echoUser') {
+        showToast(
+          value
+            ? 'system 复制进 user 已开启（每次请求多消耗约 system 长度的 token）'
+            : 'system 复制进 user 已关闭',
+          'success',
+        );
+      } else if (which === 'strip') {
+        showToast(`首试前剥离已${value ? '开启' : '关闭'}`, 'success');
+      } else {
+        showToast(`assistant 剥离已${value ? '开启' : '关闭'}`, 'success');
+      }
+      await fetchOverviewAndHistory();
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : String(e), 'error');
+      // 失败时回读服务端真值，把复选框拉回实际状态。
+      await fetchOverviewAndHistory();
+    } finally {
+      setSwitchingStrip(null);
+    }
+  };
+
   const handleManualRefresh = async () => {
     setRefreshing(true);
     try {
@@ -160,6 +244,41 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
     }
   };
 
+  // 跑一次本地试算。请求体里只带用户显式指定的字段：
+  const handleDryRun = async () => {
+    const system = drySystem;
+    if (!system.trim()) {
+      setDryError('先在上面贴一段 system。');
+      setDryResult(null);
+      return;
+    }
+    setDryRunning(true);
+    setDryError('');
+    // 与旧面板一致：开跑即清掉上一次结果并显示「计算中…」，
+    // 不让旧 outbound 在等待期间冒充新结果。
+    setDryResult(null);
+    setDryRanSignature('');
+    try {
+      // mode 始终显式带上：`跟随当前` 就是空串（按契约由服务端解释）。
+      // strip / echo 则只有动过勾选框才出现 —— 传 false 同样会覆盖线上配置。
+      const body: SystemDryRunRequest = { system, mode: dryMode };
+      if (dryStrip !== null) body.strip = dryStrip;
+      if (dryEcho !== null) body.echo = dryEcho;
+      const data = await apiRequest<SystemDryRunResponse>('/direct-admin/api/system-dryrun', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      setDryResult(data);
+      setDryRanSignature(JSON.stringify({ system, mode: dryMode, strip: dryStrip, echo: dryEcho }));
+    } catch (e: unknown) {
+      setDryResult(null);
+      setDryRanSignature('');
+      setDryError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDryRunning(false);
+    }
+  };
+
   const dateList = resolveLocalDateList(overview?.dates || [], selectedDate);
   const stats = overview?.stats || {};
   const realtimeRows = (overview?.recent || []).filter((e) => {
@@ -167,6 +286,67 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
     return (e.status ?? 0) === 0 || (e.status ?? 0) >= 400 || !!e.errorCode || !!e.degraded;
   });
   const historyRows = historyResp?.events || [];
+
+  // 预览结果里的派生值：条数 / system 长度变化要在渲染时直接可读。
+  const dryInLen = dryResult?.inSystemLen ?? 0;
+  const dryOutLen = dryResult?.outSystemLen ?? 0;
+  const dryLenDelta = dryOutLen - dryInLen;
+  const dryWarnings = dryResult?.warnings ?? [];
+  const dryNotes = dryResult?.notes ?? [];
+  const dryModeLabelText = dryResult?.modeLabel || dryResult?.mode || '—';
+
+  // formatBytes(0) 会回 '—'，但「出站 system 被剥成 0」正是需要看见的事实，
+  // 所以零值单独写 0 B，不拿破折号糊过去。
+  const fmtLen = (n: number) => (n > 0 ? formatBytes(n) : '0 B');
+
+  // 勾选框的显示值：未指定时跟随后端当前配置（overview 里的 strip / echoUser）。
+  const dryStripChecked = dryStrip ?? !!(overview?.strip ?? false);
+  const dryEchoChecked = dryEcho ?? !!(overview?.echoUser ?? false);
+
+  // 输入改过但没重跑：结果仍在屏幕上，必须显式标过期。
+  const dryStale =
+    !!dryResult &&
+    dryRanSignature !==
+      JSON.stringify({ system: drySystem, mode: dryMode, strip: dryStrip, echo: dryEcho });
+
+  const renderDryToggle = (opts: {
+    id: string;
+    label: string;
+    hint: string;
+    checked: boolean;
+    live: boolean | undefined;
+    overridden: boolean;
+    onToggle: (next: boolean) => void;
+    onFollow: () => void;
+  }) => (
+    <div className="inline-flex items-center gap-2 text-xs text-[var(--fg-2)]" title={opts.hint}>
+      <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+        <input
+          id={opts.id}
+          type="checkbox"
+          checked={opts.checked}
+          onChange={(e) => opts.onToggle(e.target.checked)}
+          className="accent-[var(--accent)]"
+        />
+        {opts.label}
+      </label>
+      <span className="text-[10px] text-[var(--fg-3)]">
+        {opts.overridden
+          ? `本次显式${opts.checked ? '开' : '关'}`
+          : `跟随当前：${opts.live === undefined ? '—' : opts.live ? '开' : '关'}`}
+      </span>
+      {opts.overridden && (
+        <button
+          type="button"
+          onClick={opts.onFollow}
+          className="text-[10px] text-[var(--fg-3)] hover:text-[var(--fg)] underline underline-offset-2 cursor-pointer"
+          title="取消本次显式指定，回到「不发送该字段、由服务端跟随当前配置」"
+        >
+          恢复跟随
+        </button>
+      )}
+    </div>
+  );
 
   const renderEventTable = (
     rows: SystemPromptEvent[],
@@ -369,6 +549,67 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
         })}
       </div>
 
+      {/* 线上生效的剥离 / echo 开关（旧面板 spStripEnabled /
+          spStripAssistant / spEchoUser）。点一下立刻热更新，不重启。 */}
+      <Card className="p-3.5 space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] text-[var(--fg-3)]">
+            指纹剥离开关 · 点一下立刻生效（热更新，不重启）
+          </span>
+          <span id="spStripState" className="text-[11px] text-[var(--fg-3)]">
+            {!overview
+              ? '—'
+              : `${stripState === false ? '剥离已关闭' : '剥离已开启'} · assistant ${
+                  stripAssistantState === false ? '不剥' : '同剥'
+                } · echo ${echoUserState ? '开' : '关'}`}
+          </span>
+        </div>
+        <div className="flex flex-col sm:flex-row flex-wrap gap-x-5 gap-y-2">
+          <label
+            className="inline-flex items-center gap-2 text-xs text-[var(--fg-2)] cursor-pointer"
+            title="总开关。关掉后 auto/strip 退回 v0.7.6 行为：先直传原 system，被 11128 拒了才折叠重试 —— 每个请求都会先吃一次 400"
+          >
+            <input
+              id="spStripEnabled"
+              type="checkbox"
+              className="accent-[var(--accent)]"
+              checked={stripState !== false}
+              disabled={!overview || switchingStrip !== null}
+              onChange={(e) => handleSwitchStrip('strip', e.target.checked)}
+            />
+            首试前剥离已知指纹
+          </label>
+          <label
+            className="inline-flex items-center gap-2 text-xs text-[var(--fg-2)] cursor-pointer"
+            title="只控制 assistant 正文这一路。关掉后 system 仍照剥，但历史里带指纹的会话会永久 502（折叠救不了）"
+          >
+            <input
+              id="spStripAssistant"
+              type="checkbox"
+              className="accent-[var(--accent)]"
+              checked={stripAssistantState !== false}
+              disabled={!overview || stripState === false || switchingStrip !== null}
+              onChange={(e) => handleSwitchStrip('stripAssistant', e.target.checked)}
+            />
+            连 assistant 正文一起剥
+          </label>
+          <label
+            className="inline-flex items-center gap-2 text-xs text-[var(--fg-2)] cursor-pointer"
+            title="实验开关。system 仍留在 system 位不动，同时把同一份内容复制一份到第一条 user 开头（client_instructions 包裹）。用于对照验证模型是靠 system 位还是 user 副本更能遵循指令。开启后每次请求多消耗约等于 system 长度的 prompt tokens"
+          >
+            <input
+              id="spEchoUser"
+              type="checkbox"
+              className="accent-[var(--accent)]"
+              checked={echoUserState === true}
+              disabled={!overview || switchingStrip !== null}
+              onChange={(e) => handleSwitchStrip('echoUser', e.target.checked)}
+            />
+            额外把 system 复制进 user（实验）
+          </label>
+        </div>
+      </Card>
+
       {/* 整齐对称的统计指标 */}
       <div className="space-y-2">
         <div className="text-[11px] text-[var(--fg-3)] flex flex-wrap items-center justify-between gap-2">
@@ -388,7 +629,7 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
           </span>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 gap-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2.5">
           <StatCard
             label={overview?.statsScope === 'memory' ? '近 24h 事件' : '今日事件'}
             labelId="spTotalLabel"
@@ -398,6 +639,13 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
           />
           <StatCard label="keep 直传" valueId="spKeep" value={stats.keep ?? 0} className="p-3" />
           <StatCard label="fold 改写" valueId="spFold" value={stats.fold ?? 0} className="p-3" />
+          <StatCard
+            label="已剥离"
+            valueId="spStripped"
+            title="首试前剥离（或剥离后直传）发生的事件数；关掉剥离开关后该值会停止增长"
+            value={stats.stripped ?? 0}
+            className="p-3"
+          />
           <StatCard
             label="11128 降级"
             title="degraded:true 的事件数，即被 11128 拦截的失败尝试次数"
@@ -548,6 +796,306 @@ export function SystemPromptPage({ active, onModeSynced }: SystemPromptPageProps
             </div>
           </>
         )}
+      </Card>
+
+      {/* system 预览：纯本地试算，零网络、零 credit */}
+      <Card id="spDryRun" className="p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--fg-3)]">
+              System Dry Run · Zero Cost
+            </div>
+            <h2 className="ds-heading text-lg text-[var(--fg)] mt-1 mb-0">system 预览（不发请求）</h2>
+            <p className="text-xs text-[var(--fg-2)] mt-1.5 mb-0 max-w-3xl leading-relaxed">
+              贴一段 system，立刻看到<strong className="text-[var(--fg)]">网关会把它变成什么</strong>再发给上游。纯本地计算，
+              <strong className="text-[var(--fg)]">零网络、零 credit</strong>；用的是当前生效的档位与开关，也可以临时指定档位试算（不改配置）。
+            </p>
+          </div>
+        </div>
+
+        <div>
+          <label htmlFor="drySystem" className="block text-[11px] text-[var(--fg-3)] mb-1">
+            客户端会发的 system
+          </label>
+          <textarea
+            id="drySystem"
+            rows={6}
+            spellCheck={false}
+            value={drySystem}
+            onChange={(e) => setDrySystem(e.target.value)}
+            placeholder="You are Claude Code, Anthropic's official CLI for Claude."
+            className="ds-input ds-mono w-full p-3 text-[11px] leading-relaxed resize-y"
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-[var(--fg-3)]">试算档位</span>
+            <span
+              className="inline-flex"
+              title="不传档位按契约是「跟随当前」，但后端 NormalizeSystemPromptMode 会把空串归一成 auto，所以实际只等于 auto；与当前档位不一致时结果区会明确提示"
+            >
+              <SegmentedControl<'' | 'auto' | 'keep' | 'fold' | 'strip'>
+                id="dryModeSeg"
+                ariaLabel="试算档位"
+                size="sm"
+                value={dryMode}
+                onChange={setDryMode}
+                options={[
+                  { value: '', label: '跟随当前', dataAttrs: { 'data-drymode': '' } },
+                  { value: 'auto', label: 'auto', dataAttrs: { 'data-drymode': 'auto' } },
+                  { value: 'keep', label: 'keep', dataAttrs: { 'data-drymode': 'keep' } },
+                  { value: 'fold', label: 'fold', dataAttrs: { 'data-drymode': 'fold' } },
+                  { value: 'strip', label: 'strip', dataAttrs: { 'data-drymode': 'strip' } },
+                ]}
+              />
+            </span>
+          </div>
+          <Button
+            id="btnDryRun"
+            variant="primary"
+            size="sm"
+            loading={dryRunning}
+            disabled={!drySystem.trim()}
+            onClick={handleDryRun}
+          >
+            <FlaskConical className="w-3.5 h-3.5" />
+            预览
+          </Button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          {renderDryToggle({
+            id: 'dryStrip',
+            label: '强制剥离指纹',
+            hint: '对应 strip 开关：开 = 首试前剥掉已知身份句 / 段落指纹。不动它就跟随后端当前配置，不发送该字段。',
+            checked: dryStripChecked,
+            live: overview?.strip,
+            overridden: dryStrip !== null,
+            onToggle: setDryStrip,
+            onFollow: () => setDryStrip(null),
+          })}
+          {renderDryToggle({
+            id: 'dryEcho',
+            label: '额外把 system 复制进 user',
+            hint: '对应 echo 开关：system 仍留在 system 位，另一份内容以 client_instructions 包裹复制到首条 user 开头，会多消耗约 system 长度的 prompt tokens。',
+            checked: dryEchoChecked,
+            live: overview?.echoUser,
+            overridden: dryEcho !== null,
+            onToggle: setDryEcho,
+            onFollow: () => setDryEcho(null),
+          })}
+        </div>
+
+        {!drySystem.trim() && (
+          <p className="text-xs text-[var(--fg-3)] m-0">先在上面贴一段 system。</p>
+        )}
+
+        {dryError && (
+          <div
+            role="alert"
+            className="ds-surface-2 px-3.5 py-3 text-xs leading-relaxed text-[var(--err)] bg-[var(--err-bg)] border-l-2 border-[var(--err)] whitespace-pre-wrap break-words"
+          >
+            {dryError}
+          </div>
+        )}
+
+        {/* 容器常驻（沿用旧面板的 #dryResult），没有结果时为空，便于外部探针判断有无数据 */}
+        <div id="dryResult" className="space-y-3">
+          {dryRunning && (
+            <div className="ds-surface-2 px-3.5 py-3 text-xs text-[var(--fg-3)]">计算中…</div>
+          )}
+          {dryResult && (
+            <div className="space-y-3 border-t border-[var(--border)] pt-4">
+              {dryStale && (
+                <div className="ds-surface-2 px-3.5 py-2.5 text-xs leading-relaxed text-[var(--warn)] bg-[var(--warn-bg)] border-l-2 border-[var(--warn)]">
+                  下面的结果是上一次输入的预览，system 文本或档位 / 开关已经改过 —— 点「预览」重算后再信。
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge tone="info" title="本次试算实际使用的档位说明">
+                  {dryModeLabelText}
+                </StatusBadge>
+                <StatusBadge
+                  tone={dryResult.keepSystem ? 'ok' : 'warn'}
+                  title="keepSystem=true：system 留在 system 位直传；false：fold 进首条 user"
+                >
+                  <span className="ds-mono">keepSystem</span>
+                  {dryResult.keepSystem ? '开' : '关'}
+                </StatusBadge>
+                <StatusBadge
+                  tone={dryResult.stripEnabled ? 'ok' : 'neutral'}
+                  title="本次试算是否启用了已知指纹剥离"
+                >
+                  剥离{dryResult.stripEnabled ? '开' : '关'}
+                </StatusBadge>
+                <StatusBadge
+                  tone={dryResult.echoEnabled ? 'warn' : 'neutral'}
+                  title={
+                    !dryResult.keepSystem && dryResult.echoEnabled
+                      ? 'echo 开关是开的，但 fold 档不直传 system，复制进 user 这一步不会发生（后端 DryRun 只在 keepSystem 时执行 echo）'
+                      : '本次试算是否把 system 复制进首条 user'
+                  }
+                >
+                  echo{dryResult.echoEnabled ? '开' : '关'}
+                  {!dryResult.keepSystem && dryResult.echoEnabled ? '（fold 下不生效）' : ''}
+                </StatusBadge>
+                {dryResult.site && (
+                  <StatusBadge tone="neutral" title="剥离规则按站点区分：国内区多拦一条 DeepSeek Harness 身份句">
+                    站点 · {siteLabel(dryResult.site)}
+                  </StatusBadge>
+                )}
+              </div>
+
+              <div className="ds-surface-2 flex flex-wrap items-stretch divide-x divide-[var(--border)] text-xs">
+                <div className="px-3.5 py-2.5">
+                  <span className="text-[var(--fg-3)]">条数</span>
+                  <span id="dryMsgCount" className="ds-mono text-[var(--fg)] ml-2">
+                    {dryResult.inMessages ?? 0} → {dryResult.outMessages ?? 0}
+                  </span>
+                </div>
+                <div
+                  className="px-3.5 py-2.5"
+                  title="后端统计的 system 长度（Go 的 len(string)，即 UTF-8 字节数；中文 system 的字节数约为字符数的 3 倍）"
+                >
+                  <span className="text-[var(--fg-3)]">system 长度</span>
+                  <span id="drySysLen" className="ds-mono text-[var(--fg)] ml-2">
+                    {fmtLen(dryInLen)} → {fmtLen(dryOutLen)}
+                  </span>
+                  <span className="ds-mono text-[10px] text-[var(--fg-3)] ml-2">
+                    （{dryInLen} → {dryOutLen} 字节）
+                  </span>
+                  <span
+                    className={[
+                      'ds-mono ml-2',
+                      dryLenDelta === 0
+                        ? 'text-[var(--fg-3)]'
+                        : dryLenDelta < 0
+                          ? 'text-[var(--warn)]'
+                          : 'text-[var(--info)]',
+                    ].join(' ')}
+                  >
+                    {dryLenDelta === 0
+                      ? '（不变）'
+                      : `（${dryLenDelta > 0 ? '+' : '-'}${formatBytes(Math.abs(dryLenDelta))}）`}
+                  </span>
+                </div>
+                <div className="px-3.5 py-2.5">
+                  <span className="text-[var(--fg-3)]">剥离</span>
+                  <span id="dryStripSummary" className="ds-mono text-[var(--fg)] ml-2">
+                    {dryResult.stripReport?.Stripped
+                      ? `${dryResult.stripReport.Bytes} 字节`
+                      : '无'}
+                  </span>
+                </div>
+              </div>
+
+              {/* 后端把空 mode 归一成 auto（NormalizeSystemPromptMode 从不返回空串），
+                  所以「跟随当前」拿到的其实是 auto 的结果 —— 与线上档位不一致时必须明说。 */}
+              {dryMode === '' && dryResult.mode && dryResult.mode !== mode && (
+                <div className="ds-surface-2 px-3.5 py-2.5 text-xs leading-relaxed text-[var(--warn)] bg-[var(--warn-bg)] border-l-2 border-[var(--warn)]">
+                  注意：空 mode 会被后端归一成{' '}
+                  <span className="ds-mono text-[var(--fg)]">{dryResult.mode}</span>
+                  ，而当前生效档位是 <span className="ds-mono text-[var(--fg)]">{mode}</span>
+                  —— 也就是说上面这些结果按 <span className="ds-mono text-[var(--fg)]">{dryResult.mode}</span>{' '}
+                  算，不是 {mode}。要看 {mode} 的真实行为，请点{' '}
+                  <span className="ds-mono text-[var(--fg)]">{mode}</span> 那个档位按钮再预览一次
+                  （同样不改配置、不发请求）。
+                </div>
+              )}
+
+              {/* 警告放在最上面：它们存在的意义就是提示操作者「有东西不对」 */}
+              {dryWarnings.length > 0 && (
+                <div
+                  role="alert"
+                  className="ds-surface-2 px-3.5 py-3 bg-[var(--err-bg)] border-l-2 border-[var(--err)] space-y-1.5"
+                >
+                  <div className="flex items-center gap-1.5 text-[11px] font-medium text-[var(--err)]">
+                    <TriangleAlert className="w-3.5 h-3.5" />
+                    警告（{dryWarnings.length}）
+                  </div>
+                  <ul className="m-0 pl-4 list-disc space-y-1 text-xs leading-relaxed text-[var(--err)]">
+                    {dryWarnings.map((w, i) => (
+                      <li key={`dry-warn-${i}`}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {dryNotes.length > 0 && (
+                <div className="ds-surface-2 px-3.5 py-3 space-y-1.5">
+                  <div className="text-[11px] font-medium text-[var(--fg-2)]">说明（{dryNotes.length}）</div>
+                  <ul className="m-0 pl-4 list-disc space-y-1 text-xs leading-relaxed text-[var(--fg-2)]">
+                    {dryNotes.map((n, i) => (
+                      <li key={`dry-note-${i}`}>{n}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {dryResult.stripReport && (
+                <div className="ds-surface-2 px-3.5 py-3">
+                  <div className="text-[11px] font-medium text-[var(--fg-2)]">剥离明细</div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs ds-mono text-[var(--fg-2)]">
+                    <span>
+                      Stripped
+                      <b className="text-[var(--fg)] ml-1.5">
+                        {dryResult.stripReport.Stripped ? 'true' : 'false'}
+                      </b>
+                    </span>
+                    <span title="本次删掉的总字节数（Go 的 len(string)）">
+                      Bytes
+                      <b className="text-[var(--fg)] ml-1.5">{dryResult.stripReport.Bytes}</b>
+                    </span>
+                    <span title="其中来自 system 的字节数">
+                      SystemBytes
+                      <b className="text-[var(--fg)] ml-1.5">{dryResult.stripReport.SystemBytes}</b>
+                    </span>
+                    <span title="其中来自 assistant 历史的字节数">
+                      AssistantBytes
+                      <b className="text-[var(--fg)] ml-1.5">{dryResult.stripReport.AssistantBytes}</b>
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium text-[var(--fg)]">最终发给上游的 messages</div>
+                    <p className="text-[11px] text-[var(--fg-3)] mt-0.5 mb-0">
+                      这就是模型会看到的内容
+                    </p>
+                  </div>
+                  <Button
+                    id="btnDryCopy"
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => {
+                      copyToClipboard(JSON.stringify(dryResult.outbound ?? [], null, 2))
+                        .then(() => showToast('最终 outbound 已复制', 'success'))
+                        .catch((e: unknown) =>
+                          showToast(
+                            `复制失败：${e instanceof Error ? e.message : String(e)}`,
+                            'error',
+                          ),
+                        );
+                    }}
+                  >
+                    <Copy className="w-3 h-3" />
+                    复制 JSON
+                  </Button>
+                </div>
+                <pre
+                  id="dryOutbound"
+                  className="ds-surface-2 ds-mono text-[11px] leading-relaxed p-3.5 mt-2 overflow-auto max-h-[420px] text-[var(--fg-2)] m-0 whitespace-pre"
+                >
+                  {JSON.stringify(dryResult.outbound ?? [], null, 2)}
+                </pre>
+              </div>
+            </div>
+          )}
+        </div>
       </Card>
 
       {/* 右侧抽屉：四档模式详细原理、改写前后对比与隐私自检 */}

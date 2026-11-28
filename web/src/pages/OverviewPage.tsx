@@ -28,6 +28,7 @@ import { apiRequest, copyToClipboard } from '@/lib/api';
 import { useToast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/Button';
 import { Card, PageHeader } from '@/components/ui/Card';
+import { ScopeNote } from '@/components/ui/ScopeNote';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { SlideDrawer } from '@/components/ui/SlideDrawer';
 import { StatusBadge } from '@/components/ui/StatusBadge';
@@ -180,6 +181,11 @@ export function OverviewPage({
         }
       />
 
+      <ScopeNote>
+        口径：成功/失败为本次启动以来累计（重启清零）；「1h 峰值」取各分钟桶峰值的最大值，
+        不是最近 1 分钟；「限流」是限流事件次数，不是账号数；Credits 余额只显示首个账号。
+            </ScopeNote>
+
       {/* 扁平极简指标带（纯细线分割，彻底告别堆叠方块） */}
       <div className="border-y border-[var(--border)] grid grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 lg:divide-x divide-[var(--border)]">
         <div className="py-4 pr-4 lg:px-5 lg:first:pl-0">
@@ -221,7 +227,7 @@ export function OverviewPage({
               {concurrency.globalInFlight}
             </span>
             <span className="text-xs text-[var(--fg-3)]">
-              在途 · 峰值 <strong id="ccPeak" className="ds-mono text-[var(--fg-2)] font-medium">{concurrency.peakInFlight}</strong>
+              在途 · 1h 峰值 <strong id="ccPeak" className="ds-mono text-[var(--fg-2)] font-medium">{concurrency.peakInFlight}</strong>
               {concurrency.rateLimits > 0 && (
                 <>
                   {' · '}

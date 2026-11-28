@@ -23,6 +23,7 @@ import { apiRequest } from '@/lib/api';
 import { useToast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, PageHeader, StatCard } from '@/components/ui/Card';
+import { ScopeNote } from '@/components/ui/ScopeNote';
 import { DirtySaveBar } from '@/components/ui/DirtySaveBar';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { SlideDrawer } from '@/components/ui/SlideDrawer';
@@ -425,6 +426,11 @@ export function CheckinPage({
           </>
         }
       />
+
+      <ScopeNote>
+        口径：统计按北京时间自然日；「规则数」是本地草稿，不是已生效配置；
+        保存始终包含两站全部规则，范围过滤只影响统计与批量操作。
+            </ScopeNote>
 
       {/* 范围切换 + 4 格统计 */}
       <div className="flex items-center justify-between flex-wrap gap-3">

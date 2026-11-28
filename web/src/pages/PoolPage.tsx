@@ -50,6 +50,7 @@ import { useToast } from '@/hooks/useToast';
 import { useConfirm } from '@/hooks/useConfirm';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, PageHeader } from '@/components/ui/Card';
+import { ScopeNote } from '@/components/ui/ScopeNote';
 import { Modal } from '@/components/ui/Modal';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { SlideDrawer } from '@/components/ui/SlideDrawer';
@@ -875,6 +876,12 @@ export function PoolPage({
           </>
         }
       />
+
+      <ScopeNote>
+        口径：每个账号的成功/失败是该账号<strong>历史累计</strong>，落盘保存、重启不清零
+        （与 01 概览的进程内累计相反）；「已登录」只表示有凭据，不代表 token 没过期；
+        选号门槛依赖快照 6 小时内有效，过期即放行。
+            </ScopeNote>
 
       {/* 整合后的号池扁平总览带（总剩余额度 / 健康分布 / 双区号池计数） */}
       <div className="border-y border-[var(--border)] grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-[var(--border)]">

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Copy, RefreshCw } from 'lucide-react';
+import { Copy, RefreshCw, TriangleAlert } from 'lucide-react';
 import type { UsageEntry, UsageViewPayload } from '@/types/api';
 import { usageRowHitRate, usageRowTotalTokens } from '@/lib/domain';
 import {
@@ -12,6 +12,7 @@ import { apiRequest, copyToClipboard } from '@/lib/api';
 import { useToast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/Button';
 import { Card, PageHeader, StatCard } from '@/components/ui/Card';
+import { ScopeNote } from '@/components/ui/ScopeNote';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { UsageLineChart, type UsageChartRange } from '@/components/charts/UsageLineChart';
@@ -21,6 +22,38 @@ interface UsagePageProps {
 }
 
 type RangeKey = UsageChartRange;
+
+// 上游模型对照（I8）：normalizeModelName / isAutoFamily 与后端
+// internal/gateway/usage_record.go 的判据保持一致 —— 后端已给出
+// modelMismatch，这里只为旧条目（字段缺省）留一条本地回退路径。
+const stripSitePrefix = (model: string) => model.trim().replace(/^(cn:|global:)/i, '');
+
+const normalizeModelName = (model: string) =>
+  stripSitePrefix(model).toLowerCase().replace(/[-_. /:]/g, '');
+
+const isAutoFamily = (model: string) => {
+  const m = stripSitePrefix(model).toLowerCase();
+  return m === 'auto' || m.startsWith('auto-');
+};
+
+// 分词器比例（I8/I9/I10）：后端只会给出 cjk / digits / ascii / tiny / none，
+// digit / alpha / sym 是历史与别名口径，一并映射，别让新桶名掉成英文。
+const TOK_BUCKET_LABEL: Record<string, string> = {
+  cjk: '中文',
+  digit: '数字',
+  digits: '数字',
+  alpha: '英文',
+  ascii: '英文',
+  sym: '符号',
+  symbol: '符号',
+  tiny: '不参与',
+  none: '不参与',
+};
+
+// 与 internal/invariant/tokbaseline.go 的 tokRatioMin/MaxPlausible 同值：
+// 超出这个区间说明采样或分母出了问题，比例本身不可信。
+const TOK_RATIO_MIN = 0.05;
+const TOK_RATIO_MAX = 1.0;
 
 export function UsagePage({ active }: UsagePageProps) {
   const { showToast } = useToast();
@@ -80,6 +113,110 @@ export function UsagePage({ active }: UsagePageProps) {
     );
   };
 
+  // I8：上游模型回显。三种状态与旧面板一致 ——
+  // 未观测「—」/ 一致（原样）/ 被替换（告警色 + 标记）/ auto 一族（上游解析，正常）。
+  const renderUpstreamModelCell = (row: UsageEntry) => {
+    const upstream = row.upstreamModel || '';
+    if (!upstream) return <span className="text-[var(--fg-3)]">—</span>;
+    const sent = row.routedModel || row.model || '';
+    // 后端已算好 modelMismatch；旧条目没有该字段时按同一判据本地回退。
+    const mismatch =
+      row.modelMismatch ??
+      (sent !== '' &&
+        !isAutoFamily(sent) &&
+        normalizeModelName(sent) !== normalizeModelName(upstream));
+    if (mismatch) {
+      return (
+        <StatusBadge
+          tone="warn"
+          title={`发出去 ${sent}，上游回显 ${upstream} —— 模型被替换`}
+          className="!text-[10px]"
+        >
+          <TriangleAlert className="w-2.5 h-2.5 shrink-0" />
+          <span className="ds-mono">{upstream}</span>
+        </StatusBadge>
+      );
+    }
+    if (isAutoFamily(sent)) {
+      return (
+        <StatusBadge
+          tone="neutral"
+          title={`请求的是 ${sent}，由上游解析成 ${upstream}（正常）`}
+          className="!text-[10px]"
+        >
+          <span className="ds-mono">{upstream}</span>
+          <span className="opacity-70">/ 解析</span>
+        </StatusBadge>
+      );
+    }
+    return <span className="ds-mono text-[var(--fg)]">{upstream}</span>;
+  };
+
+  // 分词器比例（prompt_tokens ÷ 入站字符数）。未观测时不显示数字 ——
+  // 显示 0.0000 会被误读成「比例为零」，那是假信号。
+  const renderTokRatioCell = (row: UsageEntry) => {
+    const bucket = String(row.tokBucket || '');
+    const ratio = row.tokRatio ?? 0;
+    const inactive = bucket === 'tiny' || bucket === 'none';
+    const chars = row.tokChars || 0;
+    const parts: string[] = [];
+    if (row.tokCJK) parts.push(`中文 ${row.tokCJK}`);
+    if (row.tokDigits) parts.push(`数字 ${row.tokDigits}`);
+    if (row.tokASCII) parts.push(`ASCII ${row.tokASCII}`);
+    const title = chars
+      ? parts.length
+        ? `字符 ${chars}（${parts.join(' / ')}）`
+        : `字符 ${chars}`
+      : undefined;
+
+    // tiny/none 桶本来就不参与判定（短 prompt 模板开销占比过高 / 无文本），
+    // 给出「不参与」说明原因，但不给比例 —— 它没有可比性。
+    if (inactive) {
+      return (
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap" title={title}>
+          <span className="text-[var(--fg-3)]">—</span>
+          <StatusBadge tone="neutral" className="!text-[10px] !px-1.5 !py-0">
+            {TOK_BUCKET_LABEL[bucket] ?? bucket}
+          </StatusBadge>
+        </span>
+      );
+    }
+    if (!ratio) {
+      return (
+        <span className="text-[var(--fg-3)]" title={title}>
+          —
+        </span>
+      );
+    }
+    const bucketLabel = TOK_BUCKET_LABEL[bucket] ?? bucket;
+    // 旧面板注释里的「偏高/偏低配色」：与后端 tokRatioPlausible 同区间，
+    // 超出即分母或采样可疑（实测 1.2MB 长上下文曾被算成 2.11）。
+    const implausible = ratio < TOK_RATIO_MIN || ratio > TOK_RATIO_MAX;
+    return (
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap" title={title}>
+        <span
+          className={
+            implausible
+              ? 'ds-mono font-medium text-[var(--warn)]'
+              : 'ds-mono text-[var(--fg)]'
+          }
+          title={
+            implausible
+              ? `比例超出物理可能区间 ${TOK_RATIO_MIN}~${TOK_RATIO_MAX}（分母或采样可疑），判定见 I9/I10/I11`
+              : undefined
+          }
+        >
+          {ratio.toFixed(4)}
+        </span>
+        {bucketLabel ? (
+          <StatusBadge tone="neutral" className="!text-[10px] !px-1.5 !py-0">
+            {bucketLabel}
+          </StatusBadge>
+        ) : null}
+      </span>
+    );
+  };
+
   return (
     <div id="tab-usage" className="ds-page-enter space-y-5">
       <PageHeader
@@ -98,6 +235,11 @@ export function UsagePage({ active }: UsagePageProps) {
           </Button>
         }
       />
+
+      <ScopeNote>
+        口径：请求数为落盘统计（保留 90 天，重启不清零）；命中率的分母口径为
+        缓存 token ÷ prompt token，不是「缓存 ÷ 总 token」。
+            </ScopeNote>
 
       {/* 周期与筛选工具条 */}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -276,7 +418,7 @@ export function UsagePage({ active }: UsagePageProps) {
         </Card>
       </div>
 
-      {/* 12 列请求追踪明细表 */}
+      {/* 14 列请求追踪明细表 */}
       <Card className="overflow-hidden">
         <div className="px-4 py-3 border-b border-[var(--border)] bg-[var(--surface-2)]/50 flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm font-medium text-[var(--fg)]">请求追踪明细</span>
@@ -286,7 +428,7 @@ export function UsagePage({ active }: UsagePageProps) {
         </div>
 
         <div className="overflow-x-auto max-h-[420px]">
-          <table className="w-full text-left border-collapse text-xs min-w-[1040px]" aria-label="请求明细">
+          <table className="w-full text-left border-collapse text-xs min-w-[1240px]" aria-label="请求明细">
             <thead className="sticky top-0 z-10 bg-[var(--surface-2)]">
               <tr className="border-b border-[var(--border)] text-[11px] uppercase tracking-wider text-[var(--fg-3)]">
                 <th className="py-2.5 px-3 font-medium">时间</th>
@@ -297,7 +439,24 @@ export function UsagePage({ active }: UsagePageProps) {
                 <th className="py-2.5 px-3 font-medium">System</th>
                 <th className="py-2.5 px-3 font-medium">Token 总量</th>
                 <th className="py-2.5 px-3 font-medium">缓存命中</th>
-                <th className="py-2.5 px-3 font-medium">Credit</th>
+                <th
+                  className="py-2.5 px-3 font-medium"
+                  title="上游 SSE 帧里回显的 model 字段。与「模型」列不一致即说明上游换了模型；auto 一族由上游解析，属正常"
+                >
+                  上游模型
+                </th>
+                <th
+                  className="py-2.5 px-3 font-medium"
+                  title="prompt_tokens ÷ 入站字符数。同一模型对同类文本应当稳定；突变说明实际跑的模型被换了。按内容成分分桶：中文 / 数字 / ASCII（不同类别的 token 密度差 2~3 倍，不可混算）"
+                >
+                  分词器比例
+                </th>
+                <th
+                  className="py-2.5 px-3 font-medium"
+                  title="本次请求上游返回的单次扣费（不是余额）。余额看 01 概览或 02 账号池"
+                >
+                  Credit
+                </th>
                 <th className="py-2.5 px-3 font-medium">耗时</th>
                 <th className="py-2.5 px-3 font-medium">账号</th>
                 <th className="py-2.5 px-3 font-medium">状态</th>
@@ -306,7 +465,7 @@ export function UsagePage({ active }: UsagePageProps) {
             <tbody id="usageRows" className="divide-y divide-[var(--border)]">
               {!rows.length ? (
                 <tr>
-                  <td colSpan={12} className="py-10 text-center text-[var(--fg-3)]">
+                  <td colSpan={14} className="py-10 text-center text-[var(--fg-3)]">
                     暂无请求明细记录
                   </td>
                 </tr>
@@ -370,6 +529,8 @@ export function UsagePage({ active }: UsagePageProps) {
                         {formatCompactNumber(totalTok)}
                       </td>
                       <td className="py-2.5 px-3 ds-mono text-[var(--fg-2)]">{hit}</td>
+                      <td className="py-2.5 px-3">{renderUpstreamModelCell(row)}</td>
+                      <td className="py-2.5 px-3">{renderTokRatioCell(row)}</td>
                       <td className="py-2.5 px-3 ds-mono text-[var(--fg-2)]">
                         {row.credit != null ? String(row.credit) : '—'}
                       </td>

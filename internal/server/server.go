@@ -2024,8 +2024,14 @@ func (s *Server) handleSystemDryRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 决定档位：body 指定优先，否则用当前。
-	mode := config.NormalizeSystemPromptMode(body.Mode)
-	if mode == "" {
+	//
+	// 不能先 Normalize 再判空：NormalizeSystemPromptMode 对空输入会落到
+	// default 返回 auto，判空永远不成立。旧写法因此把「跟随当前」静默
+	// 变成了 auto —— 线上是 keep/fold/strip 时试算结果全错。
+	mode := ""
+	if strings.TrimSpace(body.Mode) != "" {
+		mode = config.NormalizeSystemPromptMode(body.Mode)
+	} else {
 		mode = config.NormalizeSystemPromptMode(cfg.SystemPromptMode)
 	}
 

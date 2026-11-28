@@ -34,6 +34,8 @@ import { ClientPage } from '@/pages/ClientPage';
 import { ModelsPage } from '@/pages/ModelsPage';
 import { SystemPromptPage } from '@/pages/SystemPromptPage';
 import { UsagePage } from '@/pages/UsagePage';
+import { InvariantsPage } from '@/pages/InvariantsPage';
+import { TokPage } from '@/pages/TokPage';
 
 const CHAPTER_HASHES: Record<TabId, string> = {
   'tab-overview': '#overview',
@@ -43,6 +45,8 @@ const CHAPTER_HASHES: Record<TabId, string> = {
   'tab-models': '#models',
   'tab-system-prompt': '#system-prompt',
   'tab-usage': '#usage',
+  'tab-invariants': '#invariants',
+  'tab-tok': '#tok',
 };
 
 function resolveHashToTab(hash: string): {
@@ -508,6 +512,12 @@ function ConsoleApp() {
         )}
 
         {activeTab === 'tab-usage' && <UsagePage active={activeTab === 'tab-usage'} />}
+
+        {activeTab === 'tab-invariants' && (
+          <InvariantsPage active={activeTab === 'tab-invariants'} />
+        )}
+
+        {activeTab === 'tab-tok' && <TokPage active={activeTab === 'tab-tok'} />}
       </AppShell>
 
       <ToastViewport />

@@ -3,6 +3,7 @@ import {
   Activity,
   CalendarCheck2,
   Code2,
+  Fingerprint,
   GitFork,
   Globe,
   LayoutDashboard,
@@ -11,6 +12,7 @@ import {
   Moon,
   Palette,
   RefreshCw,
+  ShieldAlert,
   Sun,
   TerminalSquare,
   Users,
@@ -30,7 +32,9 @@ export type TabId =
   | 'tab-client'
   | 'tab-models'
   | 'tab-system-prompt'
-  | 'tab-usage';
+  | 'tab-usage'
+  | 'tab-invariants'
+  | 'tab-tok';
 
 interface NavItem {
   id: TabId;
@@ -110,6 +114,16 @@ export function AppShell({
           id: 'tab-usage',
           label: '请求明细',
           icon: Activity,
+        },
+        {
+          id: 'tab-invariants',
+          label: '静默体检',
+          icon: ShieldAlert,
+        },
+        {
+          id: 'tab-tok',
+          label: '词表指纹',
+          icon: Fingerprint,
         },
       ],
     },

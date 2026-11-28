@@ -17,6 +17,8 @@ import type {
   ModelRoutesPayload,
   RouteMode,
   Site,
+  TitleRoute,
+  UsageEntry,
 } from '@/types/api';
 import {
   computeModelAvailability,
@@ -25,15 +27,35 @@ import {
   routeRuleKey,
   validateModelRoutes,
 } from '@/lib/domain';
-import { bareModelId, normalizeSite, siteLabel } from '@/lib/format';
+import { bareModelId, formatTime, normalizeSite, shortId, siteLabel } from '@/lib/format';
 import { apiRequest, copyToClipboard } from '@/lib/api';
 import { useToast } from '@/hooks/useToast';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, PageHeader } from '@/components/ui/Card';
+import { ScopeNote } from '@/components/ui/ScopeNote';
 import { DirtySaveBar } from '@/components/ui/DirtySaveBar';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { SlideDrawer } from '@/components/ui/SlideDrawer';
 import { StatusBadge } from '@/components/ui/StatusBadge';
+
+interface EchoMetricProps {
+  id: string;
+  label: string;
+  value: number | string;
+  title?: string;
+}
+
+/** 回显对照的一个计数格。id 必须保留：外部探针与历史断言都按 id 找。 */
+function EchoMetric({ id, label, value, title }: EchoMetricProps) {
+  return (
+    <div title={title} className="ds-surface p-2.5">
+      <div className="text-[11px] text-[var(--fg-3)]">{label}</div>
+      <div id={id} className="ds-mono text-lg text-[var(--fg)] mt-0.5">
+        {value}
+      </div>
+    </div>
+  );
+}
 
 interface ModelsPageProps {
   activeSite: Site;
@@ -74,6 +96,17 @@ export function ModelsPage({
   const [saveError, setSaveError] = useState('');
   const [justSaved, setJustSaved] = useState(false);
 
+  // 会话标题改写（TitleRoute）。注意：POST /model-routes 是整体写入，
+  // 保存路由时如果不带 titleRoute，后端会把标题配置写成 nil。
+  const [titleRoute, setTitleRoute] = useState<TitleRoute>({ enabled: false });
+  const [savingTitle, setSavingTitle] = useState(false);
+
+  // 上游模型回显对照（I8）：直接复用 /usage 已有的 upstreamModel /
+  // modelMismatch 字段，不新增后端接口。
+  const [echoRows, setEchoRows] = useState<UsageEntry[]>([]);
+  const [echoLoading, setEchoLoading] = useState(false);
+  const [echoError, setEchoError] = useState('');
+
   useEffect(() => {
     if (!routesPayload) return;
     const normalized: ModelRouteRule[] = (routesPayload.rules || []).map((r) => ({
@@ -87,6 +120,14 @@ export function ModelsPage({
     const snap = JSON.stringify(normalized);
     setRules(normalized);
     setSavedSnapshot(snap);
+    // titleRoute 与 rules 同源同载荷，必须一起同步；否则保存路由时
+    // 会用初始空值覆盖线上标题配置。
+    const tr = routesPayload.titleRoute;
+    setTitleRoute({
+      enabled: tr?.enabled === true,
+      domestic: tr?.domestic || '',
+      global: tr?.global || '',
+    });
   }, [routesPayload]);
 
   const isDirty = useMemo(() => {
@@ -95,6 +136,60 @@ export function ModelsPage({
   }, [rules, savedSnapshot]);
 
   const catalog = routesPayload?.catalog || { domestic: [], global: [] };
+
+  // 最近 7 天里带上游回显的请求。旧数据没有该字段，过滤掉以免把
+  // 「没观测」混进「一致」。
+  const refreshModelEcho = async () => {
+    setEchoLoading(true);
+    setEchoError('');
+    try {
+      const data = await apiRequest<{ requests?: UsageEntry[] }>(
+        '/direct-admin/api/usage?range=week&limit=100',
+      );
+      setEchoRows((data.requests || []).filter((r) => r.upstreamModel));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setEchoError(`回显对照加载失败：${msg}`);
+    } finally {
+      setEchoLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshModelEcho().catch(() => {});
+    // 只在挂载时拉一次；之后用「刷新对照」按钮。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const echoStats = useMemo(() => {
+    let match = 0;
+    let mismatch = 0;
+    let auto = 0;
+    const bad: UsageEntry[] = [];
+    for (const r of echoRows) {
+      if (r.modelMismatch) {
+        mismatch++;
+        bad.push(r);
+        continue;
+      }
+      const sent = (r.routedModel || r.model || '').toLowerCase();
+      if (sent.indexOf('auto') === 0) {
+        auto++;
+        continue;
+      }
+      match++;
+    }
+    return { total: echoRows.length, match, mismatch, auto, bad };
+  }, [echoRows]);
+
+  // 上游回显单元格。函数名沿用旧面板 upstreamModelCell —— 源码级契约
+  // 测试按这个名字定位（构建产物里会被压缩）。
+  const upstreamModelCell = (r: UsageEntry) =>
+    r.modelMismatch ? (
+      <StatusBadge tone="warn">{r.upstreamModel}</StatusBadge>
+    ) : (
+      <span className="ds-mono">{r.upstreamModel || '—'}</span>
+    );
 
   const handleFetchScope = async (scope: 'domestic' | 'global' | 'both') => {
     setLoadingModels(true);
@@ -184,6 +279,39 @@ export function ModelsPage({
     setRules((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  const titleDom = titleRoute.domestic || '';
+  const titleGlo = titleRoute.global || '';
+  let titleStateText: string;
+  if (titleRoute.enabled !== true) {
+    titleStateText = '未启用（会话标题按原模型计费）';
+  } else if (!titleDom && !titleGlo) {
+    // 开关开着但一个目标都没配 —— 最常见的「以为在省钱其实没有」。
+    titleStateText = '已启用但未配置目标 ⇒ 实际不改写，标题仍由主模型生成';
+  } else {
+    titleStateText = `已启用：国内 → ${titleDom || '不改写'} · 国际 → ${titleGlo || '不改写'}`;
+  }
+
+  const handleSaveTitleRoute = async () => {
+    if (savingTitle) return;
+    setSavingTitle(true);
+    try {
+      // 路由草稿可能还没保存：只提交已保存的那一版，避免「保存标题」
+      // 顺手把未确认的路由改动写进线上。
+      const rulesToPersist = savedSnapshot
+        ? (JSON.parse(savedSnapshot) as ModelRouteRule[])
+        : rules;
+      await apiRequest('/direct-admin/api/model-routes', {
+        method: 'POST',
+        body: JSON.stringify({ rules: rulesToPersist, titleRoute }),
+      });
+      showToast('标题改写配置已保存并生效', 'success');
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setSavingTitle(false);
+    }
+  };
+
   const handleSaveRoutes = async () => {
     if (saving) return;
     const err = validateModelRoutes(rules);
@@ -197,7 +325,9 @@ export function ModelsPage({
     try {
       await apiRequest('/direct-admin/api/model-routes', {
         method: 'POST',
-        body: JSON.stringify({ rules }),
+        // 必须带 titleRoute：后端按 Store{Rules,TitleRoute} 整体写入，
+        // 少这个字段就等于把线上标题改写配置清空。
+        body: JSON.stringify({ rules, titleRoute }),
       });
       const snap = JSON.stringify(rules);
       setSavedSnapshot(snap);
@@ -286,6 +416,11 @@ export function ModelsPage({
           </>
         }
       />
+
+      <ScopeNote>
+        本页三块<strong>互不依赖</strong>：编目是从两个站各拉一份真实模型列表；
+        路由是你<strong>额外配置</strong>的改写规则，不是上游事实；标题改写只影响展示名。
+            </ScopeNote>
 
       {/* 模型编目卡片区 */}
       <Card className="p-4 space-y-4">
@@ -630,6 +765,160 @@ export function ModelsPage({
             })
           )}
         </div>
+      </Card>
+
+      {/* 会话标题改写（TitleRoute）。上游 v0.8.0 的 React 重写漏了整块。 */}
+      <Card className="p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="ds-heading text-lg text-[var(--fg)] m-0">会话标题改写路由</h2>
+            <p className="text-xs text-[var(--fg-3)] mt-1 m-0 max-w-2xl leading-relaxed">
+              会话标题由一次独立的模型请求生成。把它单独指到便宜或免费模型，正文请求完全不受影响；
+              目标留空 = 不改写 = 标题仍由当前会话的主模型生成。
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span id="titleRouteState" className="ds-mono text-xs text-[var(--fg-3)]">
+              {titleStateText}
+            </span>
+            <Button
+              id="btnSaveTitleRoute"
+              variant="primary"
+              size="sm"
+              loading={savingTitle}
+              onClick={handleSaveTitleRoute}
+            >
+              保存标题改写
+            </Button>
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row flex-wrap gap-3 items-start sm:items-center">
+          <label className="inline-flex items-center gap-2 text-xs text-[var(--fg-2)] cursor-pointer">
+            <input
+              id="titleRouteEnabled"
+              type="checkbox"
+              className="accent-[var(--accent)]"
+              checked={titleRoute.enabled === true}
+              onChange={(e) =>
+                setTitleRoute((prev) => ({ ...prev, enabled: e.target.checked }))
+              }
+            />
+            启用标题改写
+          </label>
+          <label className="text-xs text-[var(--fg-2)] flex items-center gap-2">
+            国内站
+            <select
+              className="ds-input ds-mono text-xs px-2 py-1"
+              value={titleDom}
+              disabled={titleRoute.enabled !== true}
+              onChange={(e) => setTitleRoute((prev) => ({ ...prev, domestic: e.target.value }))}
+            >
+              <option value="">沿用请求模型（不改写）</option>
+              {(catalog.domestic || []).map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs text-[var(--fg-2)] flex items-center gap-2">
+            国际站
+            <select
+              className="ds-input ds-mono text-xs px-2 py-1"
+              value={titleGlo}
+              disabled={titleRoute.enabled !== true}
+              onChange={(e) => setTitleRoute((prev) => ({ ...prev, global: e.target.value }))}
+            >
+              <option value="">沿用请求模型（不改写）</option>
+              {(catalog.global || []).map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </Card>
+
+      {/* 上游模型回显对照（I8）。模型被替换不会报错，只能靠不一致数发现。 */}
+      <Card className="p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="ds-heading text-lg text-[var(--fg)] m-0">上游模型回显对照</h2>
+            <p className="text-xs text-[var(--fg-3)] mt-1 m-0 max-w-3xl leading-relaxed">
+              发出去的模型与上游 SSE 实际回显的模型是否一致。
+              <strong className="text-[var(--fg-2)]">不一致即说明模型被替换</strong>
+              ，此时所有按模型做的分析（思考占比、档位效果、缓存命中率）都会失效，且不会有任何报错。
+              归一化后比较：<code className="ds-mono">hy4flash-free</code> 与{' '}
+              <code className="ds-mono">hy4-flash-free</code> 视为同一模型（实测上游确实少一个连字符）；
+              <code className="ds-mono">auto</code> 一族由上游选模型，标为「解析」，不算替换。
+            </p>
+          </div>
+          <Button
+            id="btnRefreshEcho"
+            variant="ghost"
+            size="sm"
+            loading={echoLoading}
+            onClick={refreshModelEcho}
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${echoLoading ? 'animate-spin' : ''}`} />
+            刷新对照
+          </Button>
+        </div>
+        {echoError && <p className="text-xs text-[var(--err)] m-0">{echoError}</p>}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          <EchoMetric
+            id="echoTotal"
+            label="观测到的请求"
+            value={echoStats.total}
+            title="最近 7 天里带上游回显的请求数"
+          />
+          <EchoMetric id="echoMatch" label="一致" value={echoStats.match} />
+          <EchoMetric
+            id="echoMismatch"
+            label="不一致"
+            value={echoStats.mismatch}
+            title="归一化后仍不一致 —— 这才是真的模型替换"
+          />
+          <EchoMetric
+            id="echoAuto"
+            label="上游解析"
+            value={echoStats.auto}
+            title="auto 一族由上游解析成具体模型，不算异常"
+          />
+        </div>
+        {echoStats.bad.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table aria-label="模型替换明细" className="ds-table w-full text-xs">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>请求 ID</th>
+                  <th>发出去</th>
+                  <th>上游回显</th>
+                  <th>账号</th>
+                </tr>
+              </thead>
+              <tbody>
+                {echoStats.bad.slice(0, 20).map((r) => (
+                  <tr key={r.proxyRequestId || String(r.at)}>
+                    <td className="ds-mono">{formatTime(r.at)}</td>
+                    <td className="ds-mono">{shortId(r.proxyRequestId)}</td>
+                    <td className="ds-mono">{r.routedModel || r.model || '—'}</td>
+                    <td>{upstreamModelCell(r)}</td>
+                    <td>{r.accountLabel || shortId(r.accountId)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-xs text-[var(--fg-3)] m-0">
+            {echoRows.length === 0
+              ? '最近 7 天没有带上游回显的记录（旧数据不含该字段）。'
+              : `最近 ${echoRows.length} 条带回显的请求里没有模型替换。`}
+          </p>
+        )}
       </Card>
 
       <DirtySaveBar
