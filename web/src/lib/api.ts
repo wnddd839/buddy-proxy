@@ -19,7 +19,11 @@ export async function apiRequest<T = unknown>(
     } catch {
       // 200 却不是 JSON：多半是平台 / 反代塞回来的 HTML 错误页。当成成功会
       // 让页面显示「暂无数据」，把一次真实的加载失败静默吞掉。
-      throw new Error(`响应不是 JSON（可能是网关错误页）：${text.slice(0, 120)}`);
+      throw new Error(
+        res.ok
+          ? `响应不是 JSON（可能是网关错误页）：${text.slice(0, 120)}`
+          : `HTTP ${res.status}（响应不是 JSON，可能是网关错误页）：${text.slice(0, 120)}`,
+      );
     }
   }
   // 200 + {"ok":false} 也是失败：这类响应如果当成功，界面会显示

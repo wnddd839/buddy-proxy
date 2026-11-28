@@ -193,6 +193,13 @@ export function ModelsPage({
     const bad: UsageEntry[] = [];
     for (const r of echoRows) {
       const sent = r.routedModel || r.model || '';
+      // 后端已判定替换时优先采信：即使 sent 看起来像 auto 一族也照收
+      //（例如 CN:auto —— 前缀大小写不匹配，后端不会剥，判定为替换）。
+      if (r.modelMismatch === true) {
+        mismatch++;
+        bad.push(r);
+        continue;
+      }
       // 与后端 / 07 明细同一判据（lib/domain），不要写 startsWith('auto')：
       // autopilot 之类会被当成 auto，真实的模型替换就被漏计了。
       if (isAutoFamilyModel(sent)) {

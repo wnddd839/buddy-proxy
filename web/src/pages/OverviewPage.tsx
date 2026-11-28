@@ -47,6 +47,9 @@ interface OverviewPageProps {
   concurrency: ConcurrencySummary;
   invariantHits: number | null;
   invariantEnabled: boolean | null;
+  invariantDropped: number;
+  invariantWriteErrors: number;
+  invariantStale: boolean;
   onNavigate: (tab: TabId) => void;
   onNavigatePoolIssues: () => void;
 }
@@ -60,6 +63,9 @@ export function OverviewPage({
   concurrency,
   invariantHits,
   invariantEnabled,
+  invariantDropped,
+  invariantWriteErrors,
+  invariantStale,
   onNavigate,
   onNavigatePoolIssues,
 }: OverviewPageProps) {
@@ -171,11 +177,13 @@ export function OverviewPage({
     status?.accounts?.globalCount ??
     (statusKnown ? allAccounts.filter((a) => normalizeSite(a.site) === 'global').length : null);
 
+  const invariantLost = invariantDropped + invariantWriteErrors;
+
   const cacheLabel =
     uSum?.cacheHitRate != null && uSum.cacheHitRate >= 0
       ? `缓存 ${formatHitRate(uSum.cacheHitRate)}`
-      : statusKnown
-        ? `缓存 ${formatCompactNumber(stats.totalCachedTokens || 0)}`
+      : statusKnown && stats.totalCachedTokens != null
+        ? `缓存 ${formatCompactNumber(stats.totalCachedTokens)}`
         : '缓存 —';
 
   return (
@@ -216,22 +224,27 @@ export function OverviewPage({
         「限流」是限流事件次数，不是账号数；Credits 为当前站点有余额快照账号的合计，无快照账号不计入。
             </ScopeNote>
 
-      {/* 静默失效命中：旧面板放在首屏，移植后不能只剩一个入口。 */}
+      {/* 静默失效命中：旧面板放在首屏，移植后不能只剩一个入口。
+          未知（—）、证据丢失（!）、过期（warn）必须与「无命中」区分开。 */}
       <button
         type="button"
         onClick={() => onNavigate('tab-invariants')}
         title="请求返回 200、但数据里出现了不该出现的变化（静默失效体检，只断言不修复）"
         className={[
           'w-full text-left ds-surface px-3.5 py-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 cursor-pointer',
-          invariantEnabled !== false && (invariantHits || 0) > 0
-            ? 'border-[var(--err)]'
-            : 'hover:border-[var(--border-strong)]',
+          invariantEnabled !== false && invariantLost > 0
+            ? 'border-[var(--warn)]'
+            : invariantEnabled !== false && (invariantHits || 0) > 0
+              ? 'border-[var(--err)]'
+              : 'hover:border-[var(--border-strong)]',
         ].join(' ')}
       >
         <ShieldAlert
           className={`w-3.5 h-3.5 shrink-0 ${
-            invariantEnabled !== false && (invariantHits || 0) > 0
-              ? 'text-[var(--err)]'
+            invariantEnabled !== false && (invariantLost > 0 || (invariantHits || 0) > 0)
+              ? invariantLost > 0
+                ? 'text-[var(--warn)]'
+                : 'text-[var(--err)]'
               : 'text-[var(--fg-3)]'
           }`}
         />
@@ -239,19 +252,36 @@ export function OverviewPage({
         <strong
           id="ovInvariantHits"
           className={`ds-mono text-sm ${
-            invariantEnabled !== false && (invariantHits || 0) > 0
-              ? 'text-[var(--err)]'
-              : 'text-[var(--fg)]'
+            invariantEnabled !== false && invariantLost > 0
+              ? 'text-[var(--warn)]'
+              : invariantEnabled !== false && (invariantHits || 0) > 0
+                ? 'text-[var(--err)]'
+                : 'text-[var(--fg)]'
           }`}
         >
-          {invariantEnabled === false ? '未启用' : invariantHits === null ? '—' : invariantHits}
+          {invariantEnabled === false
+            ? '未启用'
+            : invariantLost > 0
+              ? `已丢弃 ${invariantLost}`
+              : invariantHits === null
+                ? '—'
+                : invariantHits}
         </strong>
-        {invariantEnabled !== false && invariantHits !== null && (
-          <span className="text-[11px] text-[var(--fg-3)]">
-            {invariantHits > 0 ? '条命中，建议查看' : '无命中'}
+        {invariantEnabled !== false && invariantLost > 0 && (
+          <span className="text-[11px] text-[var(--warn)]">
+            证据被队列丢弃 / 写盘失败，命中数不可信
           </span>
         )}
-        {invariantHits === null && invariantEnabled !== false && (
+        {invariantEnabled !== false && invariantLost === 0 && invariantHits !== null && (
+          <span className="text-[11px] text-[var(--fg-3)]">
+            {invariantHits > 0
+              ? `条命中${invariantStale ? '（已过期）' : ''}，建议查看`
+              : invariantStale
+                ? '最近一次刷新失败，结果已过期'
+                : '无命中'}
+          </span>
+        )}
+        {invariantEnabled !== false && invariantLost === 0 && invariantHits === null && (
           <span className="text-[11px] text-[var(--fg-3)]">尚未加载（未知 ≠ 无命中）</span>
         )}
         <span className="ml-auto text-[11px] text-[var(--accent)]">查看体检 →</span>

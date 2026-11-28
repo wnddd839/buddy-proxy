@@ -122,10 +122,15 @@ function ConsoleApp() {
   // null = 未知（加载中或接口失败），绝不伪装成 0。
   const [invariantHits, setInvariantHits] = useState<number | null>(null);
   const [invariantEnabled, setInvariantEnabled] = useState<boolean | null>(null);
+  // 证据丢失（队列丢弃 / 写盘失败）与过期标记：命中数 0 不能掩盖这两种状态。
+  const [invariantDropped, setInvariantDropped] = useState(0);
+  const [invariantWriteErrors, setInvariantWriteErrors] = useState(0);
+  const [invariantStale, setInvariantStale] = useState(false);
 
   const statusSeqRef = useRef(0);
   const usageKickRef = useRef(false);
   const activeSiteRef = useRef<Site>('domestic');
+  const modelsSeqRef = useRef(0);
   const invariantSeqRef = useRef(0);
 
   const uiRevision = useMemo(() => {
@@ -136,20 +141,32 @@ function ConsoleApp() {
   const refreshInvariants = useCallback(async () => {
     const seq = ++invariantSeqRef.current;
     try {
-      const data = await apiRequest<InvariantsPayload>('/direct-admin/api/invariants?limit=1');
+      // limit=20 与体检页一致：命中数取 max(Σcounts, 列表条数)，
+      // 避免「24h 累计 200 次但页面只拉 20 条」时主数字被压成 20。
+      const data = await apiRequest<InvariantsPayload>('/direct-admin/api/invariants?limit=20');
       if (seq !== invariantSeqRef.current) return;
       setInvariantEnabled(data.enabled !== false);
+      setInvariantStale(false);
       if (data.enabled === false) {
         setInvariantHits(null);
+        setInvariantDropped(0);
+        setInvariantWriteErrors(0);
         return;
       }
       const counts = data.counts || {};
-      setInvariantHits(
-        Object.values(counts).reduce<number>((sum, n) => sum + (Number(n) || 0), 0),
+      const countsTotal = Object.values(counts).reduce<number>(
+        (sum, n) => sum + (Number(n) || 0),
+        0,
       );
+      setInvariantHits(Math.max(countsTotal, (data.findings || []).length));
+      // 丢弃 / 写盘失败意味着「命中数不可信」，必须和命中数一起展示；
+      // 否则空 counts 会被渲染成「无命中」，恰好掩盖了证据丢失。
+      setInvariantDropped(Number(data.dropped) || 0);
+      setInvariantWriteErrors(Number(data.writeErrors) || 0);
     } catch {
       if (seq !== invariantSeqRef.current) return;
-      // 失败不伪装成 0：保留上一次已知值；首次失败保持 null（未知）。
+      // 失败不伪装成 0，也不把旧值当成最新：保留旧值但标为已过期。
+      setInvariantStale(true);
     }
   }, []);
 
@@ -289,6 +306,7 @@ function ConsoleApp() {
 
   const refreshModels = useCallback(async (scope?: 'domestic' | 'global' | 'both') => {
     const target = scope || activeSiteRef.current || 'domestic';
+    const seq = ++modelsSeqRef.current;
     try {
       if (target === 'both') {
         const [dom, glob] = await Promise.all([
@@ -306,6 +324,7 @@ function ConsoleApp() {
           (glob as { error?: string }).error ? `国际站：${(glob as { error?: string }).error}` : '',
         ].filter(Boolean);
         if (failures.length) throw new Error(failures.join('；'));
+        if (seq !== modelsSeqRef.current) return;
         const merged = mergeModelLists(dom, glob);
         setModelsRaw(JSON.stringify({ domestic: dom, global: glob }, null, 2));
         setModelsList(merged);
@@ -313,6 +332,7 @@ function ConsoleApp() {
         const data = await apiRequest(
           `/direct-admin/api/codebuddy/models?fresh=1&site=${encodeURIComponent(target)}`,
         );
+        if (seq !== modelsSeqRef.current) return;
         setModelsRaw(JSON.stringify(data, null, 2));
         setModelsList(extractModelList(data));
       }
@@ -477,6 +497,9 @@ function ConsoleApp() {
         attentionCount={attentionCount}
         invariantHits={invariantHits}
         invariantEnabled={invariantEnabled}
+        invariantDropped={invariantDropped}
+        invariantWriteErrors={invariantWriteErrors}
+        invariantStale={invariantStale}
         poolCountLabel={siteAccountsCount ? `${siteEnabledCount}/${siteAccountsCount}` : ''}
         checkinAutoEnabled={!!checkinConfig?.auto}
         spMode={spMode}
@@ -497,6 +520,9 @@ function ConsoleApp() {
             concurrency={concurrency}
             invariantHits={invariantHits}
             invariantEnabled={invariantEnabled}
+            invariantDropped={invariantDropped}
+            invariantWriteErrors={invariantWriteErrors}
+            invariantStale={invariantStale}
             onNavigate={(t) => selectTab(t, true)}
             onNavigatePoolIssues={() => {
               setPoolInitialFilter('issue');

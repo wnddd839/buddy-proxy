@@ -515,3 +515,30 @@ describe('旧面板对账补齐（2026-11-28 第二轮）', () => {
     }
   });
 });
+
+describe('终审修复', () => {
+  const shell = src('components/layout/AppShell.tsx');
+  const app = src('App.tsx');
+
+  it('静默失效命中必须区分「证据丢弃」与「过期」', () => {
+    // 丢弃 / 写盘失败时不能渲染成「无命中」；接口失败时旧值要标过期。
+    expect(app).toContain('invariantDropped');
+    expect(app).toContain('setInvariantStale(true)');
+    expect(shell).toContain('invariantDropped + invariantWriteErrors');
+    expect(overview).toContain('已丢弃');
+    expect(overview).toContain('（已过期）');
+    expect(overview).toContain('未知 ≠ 无命中');
+  });
+
+  it('模型替换判据必须先采信后端 modelMismatch', () => {
+    const iMismatch = models.indexOf('r.modelMismatch === true');
+    const iAuto = models.indexOf('isAutoFamilyModel(sent)');
+    expect(iMismatch, '缺少后端判定优先').toBeGreaterThan(0);
+    expect(iAuto, '缺少 auto 分类').toBeGreaterThan(iMismatch);
+  });
+
+  it('非 JSON 响应必须带上 HTTP 状态码', () => {
+    const api = src('lib/api.ts');
+    expect(api).toContain('HTTP ${res.status}（响应不是 JSON');
+  });
+});

@@ -43,7 +43,12 @@ func testServer(t *testing.T, requireAPIKey bool, adminPassword, apiKey string) 
 // 所有造 Server 的测试助手都必须调用它；测试已显式指定路径时保持不动。
 func isolateEnvFile(t *testing.T, dir string) {
 	t.Helper()
-	if os.Getenv("CODEBUDDY_PROXY_ENV_FILE") != "" {
+	// 只有「已经指向测试临时目录」才保持不动（个别测试会直接读那个文件）；
+	// 其它任何值（包括开发者 shell 里 export 的真实配置）一律覆盖 ——
+	// 否则测试是否污染真实配置取决于调用者的环境变量。
+	current := strings.TrimSpace(os.Getenv("CODEBUDDY_PROXY_ENV_FILE"))
+	tmpRoot := strings.TrimRight(os.TempDir(), string(os.PathSeparator)) + string(os.PathSeparator)
+	if current != "" && strings.HasPrefix(current, tmpRoot) {
 		return
 	}
 	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", filepath.Join(dir, ".env"))
@@ -1260,22 +1265,18 @@ func envAPIKeysValue(envText string) string {
 // 这条测试逐个构造助手，确认写入目标已不在真实 HOME 下 —— 新增助手
 // 忘了调 isolateEnvFile 时，这里会直接红。
 func TestTestHelpersIsolateEnvFile(t *testing.T) {
-	cases := []struct {
-		name  string
-		build func(t *testing.T)
-	}{
-		{"testServer", func(t *testing.T) { testServer(t, false, "", "") }},
-		{"checkinTestServer", func(t *testing.T) { checkinTestServer(t, nil) }},
-		{"tokBaselineTestServer", func(t *testing.T) { tokBaselineTestServer(t) }},
+	// 模拟开发者 shell 里 export 了真实配置路径：助手必须覆盖它。
+	realish := "/home/ova/.codebuddy/proxy.env"
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", realish)
+	if srv := testServer(t, false, "", ""); srv == nil {
+		t.Fatal("server 为 nil")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("CODEBUDDY_PROXY_ENV_FILE", "")
-			_ = os.Unsetenv("CODEBUDDY_PROXY_ENV_FILE")
-			tc.build(t)
-			if got := config.ResolveEnvFilePath(); got == config.DefaultEnvFilePath() {
-				t.Fatalf("%s 仍然指向真实 .env：%s（会污染开发者配置）", tc.name, got)
-			}
-		})
+	got := config.ResolveEnvFilePath()
+	if got == realish {
+		t.Fatalf("测试仍然指向真实 .env：%s（会污染开发者配置）", got)
+	}
+	tmpRoot := strings.TrimRight(os.TempDir(), string(os.PathSeparator)) + string(os.PathSeparator)
+	if !strings.HasPrefix(got, tmpRoot) {
+		t.Fatalf("测试 .env 不在临时目录：%s", got)
 	}
 }

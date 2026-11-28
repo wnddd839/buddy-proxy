@@ -48,14 +48,16 @@ done
 cd "$REPO_ROOT"
 
 # ── TMPDIR：go test 需要可写的临时目录 ────────────────────────────────
-TMPDIR="${TMPDIR:-$HOME/gotmp}"
+# 故意不继承调用者的 TMPDIR：本机 /tmp 常是满的，继承会制造无关失败。
+# 需要指定时用 VERIFY_TMPDIR=/path。
+TMPDIR="${VERIFY_TMPDIR:-$HOME/gotmp}"
 if ! mkdir -p "$TMPDIR" 2>/dev/null; then
   echo "无法创建 TMPDIR=$TMPDIR（可用 TMPDIR=/其他可写目录 覆盖）" >&2
   exit 1
 fi
 export TMPDIR
 if [ ! -w "$TMPDIR" ]; then
-  echo "TMPDIR=$TMPDIR 不可写（可用 TMPDIR=/其他可写目录 覆盖）" >&2
+  echo "TMPDIR=$TMPDIR 不可写（可用 VERIFY_TMPDIR=/其他可写目录 覆盖）" >&2
   exit 1
 fi
 

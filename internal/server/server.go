@@ -867,11 +867,14 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		// 「读 APIKeys → 追加 → 落盘 + 写内存」是读改写，必须与其它
 		// .env 写入端点共用 envMu：不加锁时两个并发请求会拿同一份旧快照，
 		// 后落盘的那个把前一个绑定静默覆盖掉（两边都拿到 200）。
-		s.envMu.Lock()
-		cfg := s.Svc.Config()
-		next := append(slices.Clone(cfg.APIKeys), config.APIKeyBinding{Key: key, Site: site, AccountID: body.AccountID})
-		envPath, err := s.persistBoundAPIKeys(next)
-		s.envMu.Unlock()
+		var envPath string
+		func() {
+			s.envMu.Lock()
+			defer s.envMu.Unlock()
+			cfg := s.Svc.Config()
+			next := append(slices.Clone(cfg.APIKeys), config.APIKeyBinding{Key: key, Site: site, AccountID: body.AccountID})
+			envPath, err = s.persistBoundAPIKeys(next)
+		}()
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
 				"ok":    false,
@@ -897,24 +900,30 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request, path str
 		}
 		// 同「生成绑定 Key」：过滤 + 落盘是读改写，必须串行化，
 		// 否则并发删除/新增会互相覆盖绑定表。
-		s.envMu.Lock()
-		cfg := s.Svc.Config()
-		next := make([]config.APIKeyBinding, 0, len(cfg.APIKeys))
+		var envPath string
+		var err error
 		found := false
-		for _, binding := range cfg.APIKeys {
-			if binding.Key == target {
-				found = true
-				continue
+		func() {
+			s.envMu.Lock()
+			defer s.envMu.Unlock()
+			cfg := s.Svc.Config()
+			next := make([]config.APIKeyBinding, 0, len(cfg.APIKeys))
+			for _, binding := range cfg.APIKeys {
+				if binding.Key == target {
+					found = true
+					continue
+				}
+				next = append(next, binding)
 			}
-			next = append(next, binding)
-		}
+			if !found {
+				return
+			}
+			envPath, err = s.persistBoundAPIKeys(next)
+		}()
 		if !found {
-			s.envMu.Unlock()
 			httputil.WriteJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "绑定 Key 不存在"})
 			return
 		}
-		envPath, err := s.persistBoundAPIKeys(next)
-		s.envMu.Unlock()
 		if err != nil {
 			httputil.WriteJSON(w, http.StatusInternalServerError, map[string]any{
 				"ok":    false,

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -150,5 +151,48 @@ func TestBoundKeyCreateWaitsForEnvLock(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("解锁后请求仍未完成")
+	}
+}
+
+// 两个并发的「生成绑定 Key」必须都留下。没有 envMu 时它们会读到同一份
+// APIKeys 快照，后落盘的覆盖前一个，而两边都返回 200 —— 静默丢绑定。
+func TestConcurrentBoundKeyCreatesDoNotLoseBindings(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "proxy.env")
+	t.Setenv("CODEBUDDY_PROXY_ENV_FILE", envPath)
+	srv := testServer(t, true, "", "main")
+
+	ids := make([]string, 2)
+	for i := range ids {
+		acc, _, err := srv.Svc.Pool.Upsert(accounts.CreateAccount(accounts.Account{
+			Site: "domestic", BearerToken: "fixture", Enabled: true,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = acc.ID
+	}
+
+	codes := make([]int, 2)
+	var wg sync.WaitGroup
+	for i := range ids {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body, _ := json.Marshal(map[string]any{"accountId": ids[i]})
+			req := httptest.NewRequest(http.MethodPost,
+				"/direct-admin/api/client-config/bound-keys", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			srv.HTTP.Handler.ServeHTTP(rec, req)
+			codes[i] = rec.Code
+		}(i)
+	}
+	wg.Wait()
+
+	if codes[0] != http.StatusOK || codes[1] != http.StatusOK {
+		t.Fatalf("并发创建失败：%v", codes)
+	}
+	if got := len(srv.Svc.Config().APIKeys); got != 2 {
+		t.Fatalf("并发创建丢失绑定：期望 2 条，实际 %d 条", got)
 	}
 }

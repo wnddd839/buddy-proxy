@@ -460,11 +460,16 @@ export function usageRowHitRate(row: UsageEntry): number {
   return ((row.cachedTokens || 0) / p) * 100;
 }
 
-/** 剥掉客户端显式指定的站点前缀（cn: / global:），与后端 stripModelSitePrefix 同义。 */
+/**
+ * 剥掉客户端显式指定的站点前缀（cn: / global:），与后端 stripModelSitePrefix 逐字同义：
+ * 大小写敏感，且前缀后必须还有内容（"cn:" 本身不剥）。
+ */
 export function stripModelSitePrefix(model?: string): string {
-  return String(model || '')
-    .trim()
-    .replace(/^(cn:|global:)/i, '');
+  const m = String(model || '').trim();
+  for (const p of ['cn:', 'global:']) {
+    if (m.length > p.length && m.slice(0, p.length) === p) return m.slice(p.length);
+  }
+  return m;
 }
 
 /**
@@ -478,13 +483,14 @@ export function isAutoFamilyModel(model?: string): boolean {
 }
 
 /**
- * 与后端 modelMismatch 的归一化同判据：小写 + 去掉 - _ . 空白。
+ * 与后端 modelMismatch 的归一化同判据：小写 + 去掉 - _ . 空格 / :。
  * `hy4flash-free` 与 `hy4-flash-free` 视为同一模型，但 deepseek 与 glm 不会混。
+ * 少删 `/` 或 `:` 会把 `deepseek/v3` 与 `deepseekv3` 误判成替换（假警报）。
  */
 export function normalizeModelName(model?: string): string {
   return stripModelSitePrefix(model)
     .toLowerCase()
-    .replace(/[-_.\s]/g, '');
+    .replace(/[-_. /:]/g, '');
 }
 
 export function parseHHMMToMinutes(hhmm?: string): number | null {
